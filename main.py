@@ -1,7 +1,8 @@
 from datasets import D4RLDataset
 from models import ControlPointGenerator, QEstimator
 import torch
-from loss import lossInfoNCE, lossMSE
+from loss import lossInfoNCE, lossMSE, lossSeparation
+from normalizations import wireFittingNorm
 
 epochs = 100
 learning_rate = 0.00001
@@ -22,7 +23,7 @@ def main():
 
             predicted_actions = control_point_generator(states)
             # WE ALSO NEED TO ADD NORMALIZATION TO THE OUTPUTS OF THE ESTIMATOR
-            loss_generator = lossMSE(predicted_actions, actions)
+            loss_generator = lossMSE(predicted_actions, actions) + lossSeparation(predicted_actions)
             optimizer_generator.zero_grad()
             loss_generator.backward()
             optimizer_generator.step()
@@ -30,11 +31,17 @@ def main():
             with torch.no_grad(): # No gradient for generator here
                 predicted_actions_for_est = predicted_actions.detach()
 
-            estimations = estimator(predicted_actions_for_est)
-            estimations_target = estimator(actions)
-            estimations_target = estimations_target.unsqueeze(1)  # Match dimensions
+            estimations = estimator(predicted_actions_for_est).squeeze(-1)  # (B, N)
+            estimations_target = estimator(actions).squeeze(-1)             # (B,)
+            estimations = wireFittingNorm(
+                control_points=predicted_actions_for_est,
+                expert_action=actions,
+                control_point_values=estimations,
+                expert_action_value=estimations_target,
+                c=torch.ones(states.shape[0], predicted_actions_for_est.shape[1]+1) * 0.1  # Example smoothing parameters
+            )
             
-            loss_estimator = lossInfoNCE(estimations, estimations_target)
+            loss_estimator = lossInfoNCE(estimations)
             #check if ther is nan in loss   
             if torch.isnan(loss_estimator):
                 print("NaN loss detected, skipping this batch.")
