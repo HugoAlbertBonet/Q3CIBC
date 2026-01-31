@@ -1,4 +1,5 @@
 import os
+import time
 from datasets import D4RLDataset
 from models import ControlPointGenerator, QEstimator
 import torch
@@ -6,20 +7,38 @@ from loss import lossInfoNCE, lossMSE, lossSeparation
 from normalizations import wireFittingNorm
 
 epochs = 100
-learning_rate = 0.00001
+learning_rate = 0.0001
 batch_size = 64
 SMOOTHING_PARAM = 0.1
 MODEL_SAVE_DIR = "checkpoints"
+num_hidden_layers = 8
+num_neurons = 512
 
 def main():
     dataset = D4RLDataset('D4RL/pen/human-v2', download=True)
-    control_point_generator = ControlPointGenerator(input_dim =dataset.state_shape, output_dim=dataset.action_shape, control_points=30)
-    estimator = QEstimator(input_dim =dataset.action_shape, output_dim=1)
+    control_point_generator = ControlPointGenerator(
+                                            input_dim =dataset.state_shape, 
+                                            output_dim=dataset.action_shape, 
+                                            control_points=30, 
+                                            hidden_dims = [num_neurons for i in range(num_hidden_layers)])
+    estimator = QEstimator(
+                        input_dim =dataset.action_shape, 
+                        output_dim=1,
+                        hidden_dims = [num_neurons for i in range(num_hidden_layers)])
 
     optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=learning_rate)
     optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    # Training timing
+    start_time = time.time()
+    
     for epoch in range(epochs):
+        epoch_start = time.time()
+        epoch_loss_gen = 0.0
+        epoch_loss_est = 0.0
+        num_batches = 0
+        
         for batch in dataloader:
             states = batch['state'].float()
             actions = batch['action'].float()
@@ -52,8 +71,22 @@ def main():
             optimizer_estimator.zero_grad()
             loss_estimator.backward()
             optimizer_estimator.step()
+            
+            # Accumulate losses
+            epoch_loss_gen += loss_generator.item()
+            epoch_loss_est += loss_estimator.item()
+            num_batches += 1
 
-        print(f"Epoch {epoch+1}/{epochs}, Loss Generator: {loss_generator.item()}, Loss Estimator: {loss_estimator.item()}")
+        # Compute average losses for the epoch
+        avg_loss_gen = epoch_loss_gen / num_batches
+        avg_loss_est = epoch_loss_est / num_batches
+        epoch_time = time.time() - epoch_start
+        elapsed = time.time() - start_time
+        print(f"Epoch {epoch+1}/{epochs} ({epoch_time:.1f}s) | Avg Loss Gen: {avg_loss_gen:.4f}, Avg Loss Est: {avg_loss_est:.4f} | Elapsed: {elapsed:.1f}s")
+
+    # Training complete
+    total_time = time.time() - start_time
+    print(f"\nTraining completed in {total_time:.1f}s ({total_time/60:.2f} min)")
 
     # Save trained models
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)

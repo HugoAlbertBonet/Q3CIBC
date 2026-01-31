@@ -7,7 +7,7 @@ def lossInfoNCE(scores: torch.Tensor) -> torch.Tensor:
     """
     #scores = torch.cat([target_value, control_point_values], dim=1)
     log_probs = scores - torch.logsumexp(scores, dim=1, keepdim=True)
-    loss = -log_probs[:, 0].sum()
+    loss = -log_probs[:, 0].sum()  # Sum over batch for consistent scaling
     return loss
 
 def lossMSE(control_points: torch.Tensor, expert_action: torch.Tensor) -> torch.Tensor:
@@ -17,7 +17,7 @@ def lossMSE(control_points: torch.Tensor, expert_action: torch.Tensor) -> torch.
     diffs = control_points - expert_action.unsqueeze(1)  # Shape: (batch_size, control_points, action_dim)
     dists = torch.norm(diffs, dim=2)  # Shape: (batch_size, control_points)
     min_dists, _ = torch.min(dists, dim=1)  # Shape: (batch_size,)
-    loss = torch.mean(min_dists ** 2)
+    loss = torch.sum(min_dists ** 2)
     return loss
 
 
@@ -32,7 +32,7 @@ def lossSeparation(control_points: torch.Tensor, epsilon: float = 1.0) -> torch.
     inv_dists = 1.0 / dists  # Shape: (B, N, N)
     # Sum all inverse distances, excluding self-distances
     loss = torch.sum(inv_dists) - torch.sum(torch.diagonal(inv_dists, dim1=1, dim2=2))
-    loss = loss / (N * (N - 1))  # Normalize by number of pairs
+    loss = loss / (N * (N - 1))  # Normalize by (batch size and) number of pairs
     return loss
 
     

@@ -27,6 +27,8 @@ CONTROL_POINTS = 30
 DEFAULT_CHECKPOINT = "checkpoints/control_point_generator.pt"
 DEFAULT_SEEDS = [0, 1, 2]
 DEFAULT_EPISODES = 100
+num_hidden_layers = 8
+num_neurons = 512
 
 
 def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerator:
@@ -35,6 +37,7 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerat
         input_dim=STATE_DIM,
         output_dim=ACTION_DIM,
         control_points=CONTROL_POINTS,
+        hidden_dims = [num_neurons for i in range(num_hidden_layers)]
     )
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     model.to(device)
