@@ -5,6 +5,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -19,16 +20,22 @@ from models import ControlPointGenerator
 from simulations import PenHumanV2Simulation
 from simulations.plots import save_simulation_plots
 
+# Load config
+config_path = Path(__file__).parent.parent / "config.json"
+with open(config_path, "r") as f:
+    config = json.load(f)
 
-# Default model architecture parameters (must match training)
-STATE_DIM = 45
-ACTION_DIM = 24
-CONTROL_POINTS = 30
-DEFAULT_CHECKPOINT = "checkpoints/control_point_generator.pt"
-DEFAULT_SEEDS = [0, 1, 2]
-DEFAULT_EPISODES = 100
-num_hidden_layers = 8
-num_neurons = 512
+# Model architecture parameters from config
+STATE_DIM = config["environment"]["state_dim"]
+ACTION_DIM = config["environment"]["action_dim"]
+CONTROL_POINTS = config["model"]["control_points"]
+num_hidden_layers = config["model"]["num_hidden_layers"]
+num_neurons = config["model"]["num_neurons"]
+
+# Simulation defaults from config
+DEFAULT_CHECKPOINT = config["simulation"]["default_checkpoint"]
+DEFAULT_SEEDS = config["simulation"]["default_seeds"]
+DEFAULT_EPISODES = config["simulation"]["default_episodes"]
 
 
 def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerator:
@@ -37,7 +44,7 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerat
         input_dim=STATE_DIM,
         output_dim=ACTION_DIM,
         control_points=CONTROL_POINTS,
-        hidden_dims = [num_neurons for i in range(num_hidden_layers)]
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
     )
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
     model.to(device)
@@ -165,7 +172,8 @@ def main():
     print("Model loaded successfully!")
 
     # Run multi-seed evaluation
-    print(f"\nRunning evaluation on AdroitHandPen-v1 (D4RL/pen/human-v2)")
+    env_name = config["environment"]["dataset_name"]
+    print(f"\nRunning evaluation on {config['environment']['env_id']} ({env_name})")
     print(f"  Seeds: {args.seeds}")
     print(f"  Episodes per seed: {args.episodes}")
     print(f"  Total episodes: {len(args.seeds) * args.episodes}")
@@ -181,7 +189,7 @@ def main():
     print("\n" + "=" * 70)
     print("MULTI-SEED EVALUATION SUMMARY")
     print("=" * 70)
-    table = print_summary_table(aggregated, "D4RL/pen/human-v2")
+    table = print_summary_table(aggregated, env_name)
     print("=" * 70)
 
     # Save plots

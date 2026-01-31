@@ -1,30 +1,44 @@
 import os
 import time
+import json
 from datasets import D4RLDataset
 from models import ControlPointGenerator, QEstimator
 import torch
 from loss import lossInfoNCE, lossMSE, lossSeparation
 from normalizations import wireFittingNorm
 
-epochs = 100
-learning_rate = 0.0001
-batch_size = 64
-SMOOTHING_PARAM = 0.1
-MODEL_SAVE_DIR = "checkpoints"
-num_hidden_layers = 8
-num_neurons = 512
+# Load config
+with open("config.json", "r") as f:
+    config = json.load(f)
+
+# Training parameters
+epochs = config["training"]["epochs"]
+learning_rate = config["training"]["learning_rate"]
+batch_size = config["training"]["batch_size"]
+SMOOTHING_PARAM = config["training"]["smoothing_param"]
+MODEL_SAVE_DIR = config["training"]["model_save_dir"]
+
+# Model parameters
+control_points = config["model"]["control_points"]
+num_hidden_layers = config["model"]["num_hidden_layers"]
+num_neurons = config["model"]["num_neurons"]
+
+# Environment parameters
+dataset_name = config["environment"]["dataset_name"]
 
 def main():
-    dataset = D4RLDataset('D4RL/pen/human-v2', download=True)
+    dataset = D4RLDataset(dataset_name, download=True)
     control_point_generator = ControlPointGenerator(
-                                            input_dim =dataset.state_shape, 
-                                            output_dim=dataset.action_shape, 
-                                            control_points=30, 
-                                            hidden_dims = [num_neurons for i in range(num_hidden_layers)])
+        input_dim=dataset.state_shape, 
+        output_dim=dataset.action_shape, 
+        control_points=control_points, 
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
+    )
     estimator = QEstimator(
-                        input_dim =dataset.action_shape, 
-                        output_dim=1,
-                        hidden_dims = [num_neurons for i in range(num_hidden_layers)])
+        input_dim=dataset.action_shape, 
+        output_dim=1,
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
+    )
 
     optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=learning_rate)
     optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
@@ -59,11 +73,10 @@ def main():
                 expert_action=actions,
                 control_point_values=estimations,
                 expert_action_value=estimations_target,
-                c=torch.ones(states.shape[0], predicted_actions_for_est.shape[1]+1) * SMOOTHING_PARAM  # Example smoothing parameters
+                c=torch.ones(states.shape[0], predicted_actions_for_est.shape[1]+1) * SMOOTHING_PARAM
             )
             
             loss_estimator = lossInfoNCE(estimations)
-            #check if ther is nan in loss   
             if torch.isnan(loss_estimator):
                 print("NaN loss detected, skipping this batch.")
                 exit()
@@ -82,7 +95,7 @@ def main():
         avg_loss_est = epoch_loss_est / num_batches
         epoch_time = time.time() - epoch_start
         elapsed = time.time() - start_time
-        print(f"Epoch {epoch+1}/{epochs} ({epoch_time:.1f}s) | Avg Loss Gen: {avg_loss_gen:.4f}, Avg Loss Est: {avg_loss_est:.4f} | Elapsed: {elapsed:.1f}s")
+        print(f"Epoch {epoch+1}/{epochs} ({epoch_time:.1f}s) | Avg Loss Gen: {avg_loss_gen/num_batches:.4f}, Avg Loss Est: {avg_loss_est/num_batches:.4f} | Elapsed: {elapsed:.1f}s")
 
     # Training complete
     total_time = time.time() - start_time
@@ -97,4 +110,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
