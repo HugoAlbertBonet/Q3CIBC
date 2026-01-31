@@ -1,3 +1,4 @@
+import os
 from datasets import D4RLDataset
 from models import ControlPointGenerator, QEstimator
 import torch
@@ -7,6 +8,8 @@ from normalizations import wireFittingNorm
 epochs = 100
 learning_rate = 0.00001
 batch_size = 64
+SMOOTHING_PARAM = 0.1
+MODEL_SAVE_DIR = "checkpoints"
 
 def main():
     dataset = D4RLDataset('D4RL/pen/human-v2', download=True)
@@ -22,7 +25,6 @@ def main():
             actions = batch['action'].float()
 
             predicted_actions = control_point_generator(states)
-            # WE ALSO NEED TO ADD NORMALIZATION TO THE OUTPUTS OF THE ESTIMATOR
             loss_generator = lossMSE(predicted_actions, actions) + lossSeparation(predicted_actions)
             optimizer_generator.zero_grad()
             loss_generator.backward()
@@ -38,7 +40,7 @@ def main():
                 expert_action=actions,
                 control_point_values=estimations,
                 expert_action_value=estimations_target,
-                c=torch.ones(states.shape[0], predicted_actions_for_est.shape[1]+1) * 0.1  # Example smoothing parameters
+                c=torch.ones(states.shape[0], predicted_actions_for_est.shape[1]+1) * SMOOTHING_PARAM  # Example smoothing parameters
             )
             
             loss_estimator = lossInfoNCE(estimations)
@@ -53,7 +55,13 @@ def main():
 
         print(f"Epoch {epoch+1}/{epochs}, Loss Generator: {loss_generator.item()}, Loss Estimator: {loss_estimator.item()}")
 
+    # Save trained models
+    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+    torch.save(control_point_generator.state_dict(), os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
+    torch.save(estimator.state_dict(), os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
+    print(f"Models saved to {MODEL_SAVE_DIR}/")
 
 
 if __name__ == "__main__":
     main()
+

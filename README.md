@@ -15,6 +15,20 @@ Q3CIBC learns a policy from offline expert demonstrations by:
 
 ---
 
+## Evaluation Results
+
+Results from multi-seed evaluation (3 seeds × 100 episodes each, max episode steps = 200) on gymnasium environment:
+
+| Environment | Episodes | Reward (mean ± std) |
+|-------------|----------|---------------------|
+| AdroitHandPen-v1 (D4RL/pen/human-v2) | 300 | 977.91 ± 4673.24 |
+
+> Run `uv run python -m simulations.run_simulation` to reproduce these results.
+
+
+
+---
+
 ## Project Structure
 
 ```
@@ -25,6 +39,13 @@ Q3CIBC/
 ├── normalizations.py  # Wire-fitting Q-value normalization
 ├── datasets.py        # D4RL dataset loader (via Minari)
 ├── d4rl.py            # (optional) D4RL utilization example
+├── simulations/       # Evaluation module
+│   ├── base_simulation.py
+│   ├── pen_human_v2_simulation.py
+│   ├── run_simulation.py
+│   └── plots.py
+├── plots/             # Generated evaluation plots
+├── checkpoints/       # Saved model weights
 ├── pyproject.toml     # Project metadata & dependencies
 └── README.md
 ```
@@ -48,20 +69,38 @@ uv sync          # or: pip install -e .
 
 ## Usage
 
+### Training
+
 Run training on the default D4RL environment (`pen/human-v2`):
 
 ```bash
 uv run main.py
-# or
-python main.py
 ```
+
+Models are saved to `checkpoints/` after training.
+
+### Evaluation
+
+Run multi-seed evaluation on the trained model:
+
+```bash
+uv run python -m simulations.run_simulation
+```
+
+Options:
+- `--seeds 0 1 2` – Random seeds to use (default: 0, 1, 2)
+- `--episodes 100` – Episodes per seed (default: 100)
+- `--checkpoint PATH` – Model checkpoint path
+- `--output-dir DIR` – Where to save plots
+
+---
 
 ### Configuration
 
 Edit the constants at the top of `main.py`:
 
 | Parameter        | Default   | Description                        |
-|------------------|-----------|------------------------------------|
+|------------------|-----------|------------------------------------
 | `epochs`         | 100       | Number of training epochs          |
 | `learning_rate`  | 1e-5      | AdamW learning rate                |
 | `batch_size`     | 64        | Mini-batch size                    |
@@ -97,4 +136,4 @@ $$
 - `minari[all] >= 0.5`
 - `gymnasium-robotics >= 1.4`
 - `numpy >= 2.4`
-
+- `matplotlib >= 3.10`
