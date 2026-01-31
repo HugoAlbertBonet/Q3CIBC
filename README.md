@@ -21,7 +21,7 @@ Results from multi-seed evaluation (3 seeds × 100 episodes each, max episode st
 
 | Environment | Episodes | Reward (mean ± std) |
 |-------------|----------|---------------------|
-| AdroitHandPen-v1 (D4RL/pen/human-v2) | 300 | 977.91 ± 4673.24 |
+| AdroitHandPen-v1 (D4RL/pen/human-v2) | 300 | 488.18 ± 2249.91 |
 
 > Run `uv run python -m simulations.run_simulation` to reproduce these results.
 
