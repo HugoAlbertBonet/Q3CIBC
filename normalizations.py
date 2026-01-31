@@ -1,4 +1,7 @@
 import torch
+import json
+from pathlib import Path
+from typing import Optional
 
 
 def wireFittingNorm(
@@ -36,3 +39,104 @@ def wireFittingNorm(
     # Weighted average of values for each query
     norm_values = (weights * all_values.unsqueeze(1)).sum(dim=-1) / weights.sum(dim=-1)
     return norm_values  # (B, N+1)
+
+
+class ObservationNormalizer:
+    """Normalizes observations to [0, 1] range using predefined bounds.
+    
+    Loads bounds from a JSON file and provides methods to normalize
+    and denormalize observations.
+    """
+
+    def __init__(
+        self,
+        env_id: str,
+        bounds_file: Optional[str] = None,
+        device: str = "cpu",
+    ) -> None:
+        """Initialize the normalizer with bounds for a specific environment.
+        
+        Args:
+            env_id: The environment ID (e.g., 'AdroitHandPen-v1').
+            bounds_file: Path to the JSON file containing observation bounds.
+                        Defaults to 'observation_bounds.json' in the project root.
+            device: Device for tensors ('cpu' or 'cuda').
+        """
+        if bounds_file is None:
+            bounds_file = Path(__file__).parent / "observation_bounds.json"
+        
+        with open(bounds_file, "r") as f:
+            all_bounds = json.load(f)
+        
+        if env_id not in all_bounds:
+            raise ValueError(
+                f"Environment '{env_id}' not found in bounds file. "
+                f"Available: {list(all_bounds.keys())}"
+            )
+        
+        env_bounds = all_bounds[env_id]
+        self.env_id = env_id
+        self.observation_dim = env_bounds["observation_dim"]
+        
+        # Load flat bounds as tensors
+        flat_bounds = env_bounds["flat_bounds"]
+        self.obs_min = torch.tensor(flat_bounds["min"], dtype=torch.float32, device=device)
+        self.obs_max = torch.tensor(flat_bounds["max"], dtype=torch.float32, device=device)
+        
+        # Compute range, avoiding division by zero
+        self.obs_range = self.obs_max - self.obs_min
+        self.obs_range = torch.where(
+            self.obs_range == 0,
+            torch.ones_like(self.obs_range),
+            self.obs_range
+        )
+        
+        self.device = device
+
+    def normalize(self, observation: torch.Tensor) -> torch.Tensor:
+        """Normalize observation to [0, 1] range.
+        
+        Args:
+            observation: Raw observation tensor of shape (..., obs_dim).
+            
+        Returns:
+            Normalized observation in [0, 1] range, clamped.
+        """
+        # Ensure bounds are on same device as observation
+        if observation.device != self.obs_min.device:
+            self.to(observation.device)
+        
+        normalized = (observation - self.obs_min) / self.obs_range
+        return torch.clamp(normalized, 0.0, 1.0)
+
+    def denormalize(self, normalized_observation: torch.Tensor) -> torch.Tensor:
+        """Denormalize observation from [0, 1] range back to original scale.
+        
+        Args:
+            normalized_observation: Normalized observation tensor of shape (..., obs_dim).
+            
+        Returns:
+            Denormalized observation in original scale.
+        """
+        if normalized_observation.device != self.obs_min.device:
+            self.to(normalized_observation.device)
+        
+        return normalized_observation * self.obs_range + self.obs_min
+
+    def to(self, device: str) -> "ObservationNormalizer":
+        """Move bounds tensors to specified device.
+        
+        Args:
+            device: Target device ('cpu' or 'cuda').
+            
+        Returns:
+            Self for chaining.
+        """
+        self.obs_min = self.obs_min.to(device)
+        self.obs_max = self.obs_max.to(device)
+        self.obs_range = self.obs_range.to(device)
+        self.device = device
+        return self
+
+    def __repr__(self) -> str:
+        return f"ObservationNormalizer(env_id='{self.env_id}', dim={self.observation_dim})"

@@ -6,6 +6,11 @@ from abc import ABC, abstractmethod
 from typing import Any
 import gymnasium as gym
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from normalizations import ObservationNormalizer
+
 
 class BaseSimulation(ABC):
     """Abstract base class for running simulations with trained policies.
@@ -19,6 +24,8 @@ class BaseSimulation(ABC):
         self,
         env_id: str,
         control_point_generator: torch.nn.Module,
+        q_estimator: torch.nn.Module,
+        smoothing_param: torch.Tensor,
         device: str = "cpu",
         max_episode_steps: int = 400,
     ) -> None:
@@ -27,15 +34,22 @@ class BaseSimulation(ABC):
         Args:
             env_id: The gymnasium environment ID (e.g., 'AdroitHandPen-v1').
             control_point_generator: The trained policy model that generates control points.
+            q_estimator: The trained Q-value estimator.
+            smoothing_param: The smoothing parameter for wire fitting normalization.
             device: The device to run computations on ('cpu' or 'cuda').
             max_episode_steps: Maximum steps per episode.
         """
         self.env_id = env_id
         self.control_point_generator = control_point_generator
+        self.q_estimator = q_estimator
+        self.smoothing_param = smoothing_param
         self.device = device
         self.max_episode_steps = max_episode_steps
         self.env = None
         self.results: list[dict[str, Any]] = []
+        
+        # Observation normalizer (uses official bounds from JSON file)
+        self.obs_normalizer = ObservationNormalizer(env_id=env_id, device=device)
 
     @abstractmethod
     def create_env(self) -> gym.Env:
@@ -43,10 +57,10 @@ class BaseSimulation(ABC):
         pass
 
     def select_action(self, observation: np.ndarray) -> np.ndarray:
-        """Select action from control points given observation.
+        """Select action from control points based on Q-values.
         
-        Default implementation uses the first control point.
-        Override for custom action selection (e.g., based on Q-values).
+        Uses the Q-estimator to evaluate each control point and selects
+        the one with the maximum Q-value.
         
         Args:
             observation: The current observation from the environment.
@@ -55,10 +69,16 @@ class BaseSimulation(ABC):
             The selected action as a numpy array.
         """
         obs_tensor = torch.tensor(observation, dtype=torch.float32).unsqueeze(0).to(self.device)
+        obs_tensor = self.obs_normalizer.normalize(obs_tensor)  # Normalize to [0, 1]
         with torch.no_grad():
             control_points = self.control_point_generator(obs_tensor)  # (1, N, action_dim)
-            # Use first control point as action
-            action = control_points[0, 0, :].cpu().numpy()
+            
+            # Get Q-values for all control points
+            q_values = self.q_estimator(control_points).squeeze(-1)  # (1, N)
+            
+            # Select control point with maximum Q-value
+            best_idx = q_values.argmax(dim=1)  # (1,)
+            action = control_points[0, best_idx[0], :].cpu().numpy()
         return action
 
     def run_episode(self, seed: int | None = None) -> dict[str, Any]:
@@ -109,6 +129,7 @@ class BaseSimulation(ABC):
         """
         self.results = []
         self.control_point_generator.eval()
+        self.q_estimator.eval()
 
         for idx in range(num_episodes):
             episode_seed = (seed + idx) if seed is not None else None

@@ -16,7 +16,7 @@ import torch
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models import ControlPointGenerator
+from models import ControlPointGenerator, QEstimator
 from simulations import PenHumanV2Simulation
 from simulations.plots import save_simulation_plots
 
@@ -52,6 +52,25 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerat
     return model
 
 
+def load_q_estimator(checkpoint_path: str, device: str = "cpu") -> QEstimator:
+    """Load a trained Q-estimator from checkpoint."""
+    model = QEstimator(
+        input_dim=ACTION_DIM,
+        output_dim=1,
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
+    )
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+    model.to(device)
+    model.eval()
+    return model
+
+
+def load_smoothing_param(checkpoint_path: str, device: str = "cpu") -> torch.Tensor:
+    """Load the trained smoothing parameter from checkpoint."""
+    param = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    return param
+
+
 def set_seed(seed: int) -> None:
     """Set random seeds for reproducibility."""
     np.random.seed(seed)
@@ -62,6 +81,8 @@ def set_seed(seed: int) -> None:
 
 def run_multi_seed_evaluation(
     model: ControlPointGenerator,
+    q_estimator: QEstimator,
+    smoothing_param: torch.Tensor,
     seeds: list[int],
     episodes_per_seed: int,
     device: str = "cpu",
@@ -77,6 +98,8 @@ def run_multi_seed_evaluation(
         
         simulation = PenHumanV2Simulation(
             control_point_generator=model,
+            q_estimator=q_estimator,
+            smoothing_param=smoothing_param,
             device=device,
         )
         results = simulation.run_simulation(num_episodes=episodes_per_seed, seed=seed)
@@ -161,15 +184,37 @@ def main():
     args = parser.parse_args()
 
     # Check checkpoint exists
+    checkpoint_dir = os.path.dirname(args.checkpoint)
+    q_estimator_path = os.path.join(checkpoint_dir, "q_estimator.pt")
+    smoothing_param_path = os.path.join(checkpoint_dir, "smoothing_param.pt")
+    
     if not os.path.exists(args.checkpoint):
         print(f"Error: Checkpoint not found at '{args.checkpoint}'")
         print("Please train a model first using: python main.py")
         sys.exit(1)
+    
+    if not os.path.exists(q_estimator_path):
+        print(f"Error: Q-estimator checkpoint not found at '{q_estimator_path}'")
+        print("Please train a model first using: python main.py")
+        sys.exit(1)
 
-    # Load model
-    print(f"Loading model from {args.checkpoint}...")
+    # Load models
+    print(f"Loading control point generator from {args.checkpoint}...")
     model = load_model(args.checkpoint, device=args.device)
-    print("Model loaded successfully!")
+    
+    print(f"Loading Q-estimator from {q_estimator_path}...")
+    q_estimator = load_q_estimator(q_estimator_path, device=args.device)
+    
+    # Load smoothing param (use config default if not found)
+    if os.path.exists(smoothing_param_path):
+        print(f"Loading smoothing parameter from {smoothing_param_path}...")
+        smoothing_param = load_smoothing_param(smoothing_param_path, device=args.device)
+        print(f"  Learned smoothing_param: {smoothing_param.item():.6f}")
+    else:
+        smoothing_param = torch.tensor(config["training"]["smoothing_param"])
+        print(f"  Using config smoothing_param: {smoothing_param.item():.6f}")
+    
+    print("Models loaded successfully!")
 
     # Run multi-seed evaluation
     env_name = config["environment"]["dataset_name"]
@@ -180,6 +225,8 @@ def main():
     
     aggregated, all_results = run_multi_seed_evaluation(
         model=model,
+        q_estimator=q_estimator,
+        smoothing_param=smoothing_param,
         seeds=args.seeds,
         episodes_per_seed=args.episodes,
         device=args.device,

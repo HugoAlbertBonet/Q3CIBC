@@ -4,8 +4,9 @@ import json
 from datasets import D4RLDataset
 from models import ControlPointGenerator, QEstimator
 import torch
+import torch.nn as nn
 from loss import lossInfoNCE, lossMSE, lossSeparation
-from normalizations import wireFittingNorm
+from normalizations import wireFittingNorm, ObservationNormalizer
 
 # Load config
 with open("config.json", "r") as f:
@@ -15,7 +16,8 @@ with open("config.json", "r") as f:
 epochs = config["training"]["epochs"]
 learning_rate = config["training"]["learning_rate"]
 batch_size = config["training"]["batch_size"]
-SMOOTHING_PARAM = config["training"]["smoothing_param"]
+smoothing_param = config["training"]["smoothing_param"]
+smoothing_param_trainable = config["training"]["smoothing_param_trainable"]
 MODEL_SAVE_DIR = config["training"]["model_save_dir"]
 
 # Model parameters
@@ -25,6 +27,7 @@ num_neurons = config["model"]["num_neurons"]
 
 # Environment parameters
 dataset_name = config["environment"]["dataset_name"]
+env_id = config["environment"]["env_id"]
 
 def main():
     dataset = D4RLDataset(dataset_name, download=True)
@@ -39,10 +42,22 @@ def main():
         output_dim=1,
         hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
     )
-
-    optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=learning_rate)
+    
+    # Smoothing parameter (environment-level, not state-dependent)
+    if smoothing_param_trainable:
+        smoothing_param_tensor = nn.Parameter(torch.tensor(smoothing_param))
+        optimizer_estimator = torch.optim.AdamW(
+            list(estimator.parameters()) + [smoothing_param_tensor], lr=learning_rate
+        )
+    else:
+        smoothing_param_tensor = torch.tensor(smoothing_param)
+        optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=learning_rate)
+    
     optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    # Observation normalizer (uses official bounds from JSON file)
+    obs_normalizer = ObservationNormalizer(env_id=env_id)
     
     # Training timing
     start_time = time.time()
@@ -55,6 +70,7 @@ def main():
         
         for batch in dataloader:
             states = batch['state'].float()
+            states = obs_normalizer.normalize(states)  # Normalize to [0, 1]
             actions = batch['action'].float()
 
             predicted_actions = control_point_generator(states)
@@ -73,7 +89,7 @@ def main():
                 expert_action=actions,
                 control_point_values=estimations,
                 expert_action_value=estimations_target,
-                c=torch.ones(states.shape[0], predicted_actions_for_est.shape[1]+1) * SMOOTHING_PARAM
+                c=smoothing_param_tensor.expand(states.shape[0], predicted_actions_for_est.shape[1]+1)
             )
             
             loss_estimator = lossInfoNCE(estimations)
@@ -105,6 +121,9 @@ def main():
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     torch.save(control_point_generator.state_dict(), os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
     torch.save(estimator.state_dict(), os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
+    if smoothing_param_trainable:
+        torch.save(smoothing_param_tensor, os.path.join(MODEL_SAVE_DIR, "smoothing_param.pt"))
+        print(f"Learned smoothing_param: {smoothing_param_tensor.item():.6f}")
     print(f"Models saved to {MODEL_SAVE_DIR}/")
 
 

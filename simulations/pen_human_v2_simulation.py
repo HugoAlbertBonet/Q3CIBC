@@ -17,6 +17,8 @@ class PenHumanV2Simulation(BaseSimulation):
     def __init__(
         self,
         control_point_generator,
+        q_estimator,
+        smoothing_param,
         device: str = "cpu",
         max_episode_steps: int = 200,
         render_mode: str | None = None,
@@ -25,6 +27,8 @@ class PenHumanV2Simulation(BaseSimulation):
         
         Args:
             control_point_generator: The trained policy model.
+            q_estimator: The trained Q-value estimator.
+            smoothing_param: The smoothing parameter for wire fitting normalization.
             device: The device to run computations on.
             max_episode_steps: Maximum steps per episode.
             render_mode: Gymnasium render mode (None, 'human', 'rgb_array').
@@ -32,6 +36,8 @@ class PenHumanV2Simulation(BaseSimulation):
         super().__init__(
             env_id="AdroitHandPen-v1",
             control_point_generator=control_point_generator,
+            q_estimator=q_estimator,
+            smoothing_param=smoothing_param,
             device=device,
             max_episode_steps=max_episode_steps,
         )
