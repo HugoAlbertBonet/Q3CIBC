@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -55,8 +56,8 @@ def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerat
 def load_q_estimator(checkpoint_path: str, device: str = "cpu") -> QEstimator:
     """Load a trained Q-estimator from checkpoint."""
     model = QEstimator(
-        input_dim=ACTION_DIM,
-        output_dim=1,
+        state_dim=STATE_DIM,
+        action_dim=ACTION_DIM,
         hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
     )
     model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
@@ -183,6 +184,17 @@ def main():
     )
     args = parser.parse_args()
 
+    # Initialize W&B for simulation logging
+    wandb.init(
+        project="Q3CIBC",
+        job_type="evaluation",
+        config={
+            "checkpoint": args.checkpoint,
+            "seeds": args.seeds,
+            "episodes_per_seed": args.episodes,
+        }
+    )
+
     # Check checkpoint exists
     checkpoint_dir = os.path.dirname(args.checkpoint)
     q_estimator_path = os.path.join(checkpoint_dir, "q_estimator.pt")
@@ -247,6 +259,19 @@ def main():
         show_plots=args.show_plots,
     )
     print("Done!")
+    
+    # Log simulation results to W&B
+    wandb.summary["reward_mean"] = aggregated["reward_mean"]
+    wandb.summary["reward_std"] = aggregated["reward_std"]
+    wandb.summary["total_episodes"] = aggregated["total_episodes"]
+    
+    # Log plots as W&B artifacts
+    if os.path.exists(args.output_dir):
+        artifact = wandb.Artifact("simulation-plots", type="plots")
+        artifact.add_dir(args.output_dir)
+        wandb.log_artifact(artifact)
+    
+    wandb.finish()
     
     return aggregated
 

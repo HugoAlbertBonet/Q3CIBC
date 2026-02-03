@@ -73,8 +73,11 @@ class BaseSimulation(ABC):
         with torch.no_grad():
             control_points = self.control_point_generator(obs_tensor)  # (1, N, action_dim)
             
-            # Get Q-values for all control points
-            q_values = self.q_estimator(control_points).squeeze(-1)  # (1, N)
+            # Expand state to match control points: (1, state_dim) -> (1, N, state_dim)
+            obs_expanded = obs_tensor.unsqueeze(1).expand(-1, control_points.shape[1], -1)
+            
+            # Get Q-values for all control points (state-conditioned)
+            q_values = self.q_estimator(obs_expanded, control_points).squeeze(-1)  # (1, N)
             
             # Select control point with maximum Q-value
             best_idx = q_values.argmax(dim=1)  # (1,)

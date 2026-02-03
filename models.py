@@ -35,19 +35,22 @@ class ControlPointGenerator(nn.Module):
 		return out.view(batch, self.control_points, self.output_dim)
 
 class QEstimator(nn.Module):
-	"""Simple fully-connected network used to map states to actions."""
+	"""State-conditioned Q-network that maps (state, action) pairs to Q-values."""
 
 	def __init__(
 		self,
-		input_dim: int,
-		output_dim: int,
+		state_dim: int,
+		action_dim: int,
+		output_dim: int = 1,
 		hidden_dims: Sequence[int] = (256, 256),
 		activation: type[nn.Module] = nn.ReLU,
 	) -> None:
 		super().__init__()
+		self.state_dim = state_dim
+		self.action_dim = action_dim
 
 		layers = []
-		prev_dim = input_dim
+		prev_dim = state_dim + action_dim  # Concatenate state and action
 		for dim in hidden_dims:
 			layers.append(nn.Linear(prev_dim, dim))
 			layers.append(activation())
@@ -56,6 +59,14 @@ class QEstimator(nn.Module):
 		layers.append(nn.Linear(prev_dim, output_dim))
 		self.network = nn.Sequential(*layers)
 
-	def forward(self, x: torch.Tensor) -> torch.Tensor:
+	def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+		"""
+		Args:
+			state: State tensor of shape (B, state_dim) or (B, N, state_dim)
+			action: Action tensor of shape (B, action_dim) or (B, N, action_dim)
+		Returns:
+			Q-values of shape (B, 1) or (B, N, 1)
+		"""
+		x = torch.cat([state, action], dim=-1)
 		return self.network(x)
 

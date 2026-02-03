@@ -4,11 +4,12 @@
         "learning_rate": 0.0001,
         "batch_size": 64,
         "smoothing_param": 0.1,
-        "smoothing_param_trainable": true,
+        "smoothing_param_trainable": false,
+        "separation_weight": 5,
         "model_save_dir": "checkpoints"
     },
     "model": {
-        "control_points": 30,
+        "control_points": 50,
         "num_hidden_layers": 8,
         "num_neurons": 512
     },

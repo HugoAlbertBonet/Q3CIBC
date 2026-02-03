@@ -10,6 +10,7 @@ dependencies = [
     "minari[all]>=0.5.3",
     "numpy>=2.4.1",
     "torch>=2.9.1",
+    "wandb>=0.18.0",
 ]
 
 [dependency-groups]

@@ -57,8 +57,8 @@ class BaseEnvironmentTest(ABC):
     def q_estimator(self, dataset):
         """Create the QEstimator model."""
         return QEstimator(
-            input_dim=dataset.action_shape,
-            output_dim=1,
+            state_dim=dataset.state_shape,
+            action_dim=dataset.action_shape,
             hidden_dims=self.hidden_dims,
         )
 
@@ -91,8 +91,9 @@ class BaseEnvironmentTest(ABC):
     def test_estimator_output_shape(self, dataset, q_estimator):
         """Test QEstimator produces correct output shape."""
         batch_size = 4
+        dummy_states = torch.randn(batch_size, dataset.state_shape)
         dummy_actions = torch.randn(batch_size, dataset.action_shape)
-        output = q_estimator(dummy_actions)
+        output = q_estimator(dummy_states, dummy_actions)
         
         expected_shape = (batch_size, 1)
         assert output.shape == expected_shape, (
@@ -134,8 +135,10 @@ class BaseEnvironmentTest(ABC):
         with torch.no_grad():
             predicted_actions = control_point_generator(states)
 
-        estimations = q_estimator(predicted_actions).squeeze(-1)
-        estimations_target = q_estimator(actions).squeeze(-1)
+        # Expand states to match control points: (B, state_dim) -> (B, N, state_dim)
+        states_expanded = states.unsqueeze(1).expand(-1, predicted_actions.shape[1], -1)
+        estimations = q_estimator(states_expanded, predicted_actions).squeeze(-1)
+        estimations_target = q_estimator(states, actions).squeeze(-1)
         
         estimations = wireFittingNorm(
             control_points=predicted_actions,
@@ -190,8 +193,10 @@ class BaseEnvironmentTest(ABC):
             with torch.no_grad():
                 predicted_actions_detached = predicted_actions.detach()
 
-            estimations = q_estimator(predicted_actions_detached).squeeze(-1)
-            estimations_target = q_estimator(actions).squeeze(-1)
+            # Expand states to match control points: (B, state_dim) -> (B, N, state_dim)
+            states_expanded = states.unsqueeze(1).expand(-1, predicted_actions_detached.shape[1], -1)
+            estimations = q_estimator(states_expanded, predicted_actions_detached).squeeze(-1)
+            estimations_target = q_estimator(states, actions).squeeze(-1)
             
             estimations = wireFittingNorm(
                 control_points=predicted_actions_detached,
