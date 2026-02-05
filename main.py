@@ -19,6 +19,7 @@ learning_rate = config["training"]["learning_rate"]
 batch_size = config["training"]["batch_size"]
 smoothing_param = config["training"]["smoothing_param"]
 smoothing_param_trainable = config["training"]["smoothing_param_trainable"]
+use_wire_fitting = config["training"]["use_wire_fitting"]
 separation_weight = config["training"]["separation_weight"]
 MODEL_SAVE_DIR = config["training"]["model_save_dir"]
 
@@ -98,14 +99,17 @@ def main():
             # Expand states to match control points: (B, state_dim) -> (B, N, state_dim)
             states_expanded = states.unsqueeze(1).expand(-1, predicted_actions_for_est.shape[1], -1)
             estimations = estimator(states_expanded, predicted_actions_for_est).squeeze(-1)  # (B, N)
-            estimations_target = estimator(states, actions).squeeze(-1)                       # (B,)
-            estimations = wireFittingNorm(
-                control_points=predicted_actions_for_est,
-                expert_action=actions,
-                control_point_values=estimations,
-                expert_action_value=estimations_target,
-                c=smoothing_param_tensor.expand(states.shape[0], predicted_actions_for_est.shape[1]+1)
-            )
+            estimations_target = estimator(states, actions).squeeze(-1)  
+            if use_wire_fitting:                    # (B,)
+                estimations = wireFittingNorm(
+                    control_points=predicted_actions_for_est,
+                    expert_action=actions,
+                    control_point_values=estimations,
+                    expert_action_value=estimations_target,
+                    c=smoothing_param_tensor.expand(states.shape[0], predicted_actions_for_est.shape[1]+1)
+                )
+            else:
+                estimations = torch.cat([estimations, estimations_target.unsqueeze(1)], dim=1)
             
             loss_estimator = lossInfoNCE(estimations)
             if torch.isnan(loss_estimator):

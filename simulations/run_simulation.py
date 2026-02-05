@@ -87,6 +87,7 @@ def run_multi_seed_evaluation(
     seeds: list[int],
     episodes_per_seed: int,
     device: str = "cpu",
+    render_mode: str | None = None,
 ) -> tuple[dict, list]:
     """Run evaluation across multiple seeds and aggregate results."""
     all_rewards = []
@@ -102,6 +103,7 @@ def run_multi_seed_evaluation(
             q_estimator=q_estimator,
             smoothing_param=smoothing_param,
             device=device,
+            render_mode=render_mode,
         )
         results = simulation.run_simulation(num_episodes=episodes_per_seed, seed=seed)
         all_results.extend(results)
@@ -139,6 +141,14 @@ def print_summary_table(aggregated: dict, env_name: str) -> str:
 """
     print(table)
     return table
+
+
+def get_render_mode(args_render: bool, config: dict) -> str | None:
+    """Determine render mode based on args and config."""
+    render_from_config = config["simulation"].get("render", False)
+    if args_render or render_from_config:
+        return "human"
+    return None
 
 
 def main():
@@ -181,6 +191,11 @@ def main():
         "--show-plots",
         action="store_true",
         help="Display plots interactively",
+    )
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render the environment during simulation",
     )
     args = parser.parse_args()
 
@@ -235,6 +250,11 @@ def main():
     print(f"  Episodes per seed: {args.episodes}")
     print(f"  Total episodes: {len(args.seeds) * args.episodes}")
     
+    # Determine render mode
+    render_mode = get_render_mode(args.render, config)
+    if render_mode:
+        print(f"Rendering enabled (mode: {render_mode})")
+
     aggregated, all_results = run_multi_seed_evaluation(
         model=model,
         q_estimator=q_estimator,
@@ -242,6 +262,7 @@ def main():
         seeds=args.seeds,
         episodes_per_seed=args.episodes,
         device=args.device,
+        render_mode=render_mode,
     )
 
     # Print summary

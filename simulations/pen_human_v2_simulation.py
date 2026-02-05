@@ -3,6 +3,7 @@
 import numpy as np
 import gymnasium as gym
 import gymnasium_robotics
+import mujoco
 
 from .base_simulation import BaseSimulation
 
@@ -50,10 +51,27 @@ class PenHumanV2Simulation(BaseSimulation):
         
         env = gym.make(
             self.env_id,
+            reward_type="dense",
             max_episode_steps=self.max_episode_steps,
             render_mode=self.render_mode,
         )
         return env
+
+    def _render_callback(self, reward: float, total_reward: float) -> None:
+        """Render reward overlay."""
+        if self.render_mode == "human" and hasattr(self.env.unwrapped, "mujoco_renderer"):
+            renderer = self.env.unwrapped.mujoco_renderer
+            if hasattr(renderer, "viewer") and renderer.viewer:
+                renderer.viewer.add_overlay(
+                    mujoco.mjtGridPos.mjGRID_TOPLEFT, 
+                    "Reward", 
+                    f"{reward:.4f}"
+                )
+                renderer.viewer.add_overlay(
+                    mujoco.mjtGridPos.mjGRID_TOPLEFT, 
+                    "Total Reward", 
+                    f"{total_reward:.4f}"
+                )
 
     def get_summary(self) -> dict[str, float]:
         """Get summary statistics including success rate if available.

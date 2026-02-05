@@ -56,6 +56,10 @@ class BaseSimulation(ABC):
         """Create and return the gymnasium environment."""
         pass
 
+    def _render_callback(self, reward: float, total_reward: float) -> None:
+        """Callback for rendering custom overlays (optional)."""
+        pass
+
     def select_action(self, observation: np.ndarray) -> np.ndarray:
         """Select action from control points based on Q-values.
         
@@ -107,6 +111,10 @@ class BaseSimulation(ABC):
             obs, reward, terminated, truncated, info = self.env.step(action)
             total_reward += reward
             episode_length += 1
+            
+            # Render callback
+            self._render_callback(reward, total_reward)
+
             done = terminated or truncated
         
         return {

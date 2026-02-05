@@ -5,23 +5,25 @@
         "batch_size": 64,
         "smoothing_param": 0.1,
         "smoothing_param_trainable": false,
-        "separation_weight": 5,
+        "use_wire_fitting": true,
+        "separation_weight": 0,
         "model_save_dir": "checkpoints"
     },
     "model": {
-        "control_points": 50,
+        "control_points": 5,
         "num_hidden_layers": 8,
         "num_neurons": 512
     },
     "simulation": {
         "default_checkpoint": "checkpoints/control_point_generator.pt",
         "default_seeds": [
-            0,
-            35,
+            88,
+            99,
             42
         ],
-        "default_episodes": 100,
-        "max_episode_steps": 200
+        "default_episodes": 5,
+        "max_episode_steps": 200, 
+        "render": true
     },
     "environment": {
         "dataset_name": "D4RL/pen/human-v2",
