@@ -1,0 +1,38 @@
+{
+    "training": {
+        "training_steps": 100000,
+        "log_interval": 1000,
+        "save_interval": 10000,
+        "lr_decay_interval": 100,
+        "learning_rate": 0.001,
+        "batch_size": 128,
+        "smoothing_param": 0.1,
+        "smoothing_param_trainable": false,
+        "use_wire_fitting": true,
+        "separation_weight": 20,
+        "lr_decay": 0.99,
+        "model_save_dir": "checkpoints"
+    },
+    "model": {
+        "control_points": 10,
+        "num_hidden_layers": 8,
+        "num_neurons": 512
+    },
+    "simulation": {
+        "default_checkpoint": "checkpoints/control_point_generator.pt",
+        "default_seeds": [
+            0,
+            35,
+            42
+        ],
+        "default_episodes": 100,
+        "max_episode_steps": 200, 
+        "render": false
+    },
+    "environment": {
+        "dataset_name": "D4RL/pen/human-v2",
+        "env_id": "AdroitHandPen-v1",
+        "state_dim": 45,
+        "action_dim": 24
+    }
+}

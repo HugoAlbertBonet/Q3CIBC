@@ -17,12 +17,12 @@ import wandb
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models import ControlPointGenerator, QEstimator
+from utils.models import ControlPointGenerator, QEstimator
 from simulations import PenHumanV2Simulation
 from simulations.plots import save_simulation_plots
 
 # Load config
-config_path = Path(__file__).parent.parent / "config.json"
+config_path = Path(__file__).parent.parent / "config_json" / "config.json"
 with open(config_path, "r") as f:
     config = json.load(f)
 

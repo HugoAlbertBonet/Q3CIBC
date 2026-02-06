@@ -9,7 +9,7 @@ import gymnasium as gym
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from normalizations import ObservationNormalizer
+from utils.normalizations import ObservationNormalizer
 
 
 class BaseSimulation(ABC):
