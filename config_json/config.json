@@ -4,17 +4,19 @@
         "log_interval": 1000,
         "save_interval": 10000,
         "lr_decay_interval": 100,
-        "learning_rate": 0.001,
+        "learning_rate": 0.005,
         "batch_size": 128,
         "smoothing_param": 0.1,
         "smoothing_param_trainable": false,
         "use_wire_fitting": true,
         "separation_weight": 20,
         "lr_decay": 0.99,
+        "counter_examples": 8,
+        "top_k_control_points": 10,
         "model_save_dir": "checkpoints"
     },
     "model": {
-        "control_points": 10,
+        "control_points": 70,
         "num_hidden_layers": 8,
         "num_neurons": 512
     },

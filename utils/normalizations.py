@@ -41,6 +41,48 @@ def wireFittingNorm(
     return norm_values  # (B, N+1)
 
 
+def wireFittingInterpolation(
+        control_points: torch.Tensor,           # (B, N, D)
+        interpolated_points: torch.Tensor,      # (B, M, D)
+        control_point_values: torch.Tensor,     # (B, N)
+        c: torch.Tensor,                        # (B, N) learnable smoothing parameters
+        k: int = 10,
+) -> torch.Tensor:
+    """
+    Fully vectorized wire-fitting interpolation.
+    Returns interpolated Q-values for each interpolated point.
+    Shape: (B, M).
+    """
+
+    # Squared distances: each query (row j, point to interpolate) vs all keys (col i, control points)
+    # query: (B, M, 1, D), keys: (B, 1, N, D) -> sq_dists: (B, M, N)
+    query = interpolated_points.unsqueeze(2)
+    keys = control_points.unsqueeze(1)
+    sq_dists = ((query - keys) ** 2).sum(dim=-1)
+
+    # Value penalty: max_Q - Q_i, shape (B, N)
+    max_q = control_point_values.max(dim=1, keepdim=True).values
+    value_penalty = max_q - control_point_values
+
+    # Weights: for each query j, weight over keys i
+    # c is (B, N), value_penalty is (B, N) -> broadcast to (B, 1, N)
+    denom = sq_dists + c.unsqueeze(1) * value_penalty.unsqueeze(1) + 1e-8
+    weights = 1.0 / denom  # (B, M, N)
+
+    # Weighted average of values for each query, choose top k control points for each interpolated point based on weights
+    topk_result = torch.topk(weights, k=k, dim=-1)
+    top_k_weights = topk_result.values  # (B, M, k)
+    top_k_indices = topk_result.indices  # (B, M, k)
+    
+    # Gather the control point values corresponding to top-k indices
+    # control_point_values: (B, N) -> expand to (B, M, N) then gather along dim=-1
+    control_point_values_expanded = control_point_values.unsqueeze(1).expand(-1, interpolated_points.shape[1], -1)  # (B, M, N)
+    top_k_values = torch.gather(control_point_values_expanded, dim=-1, index=top_k_indices)  # (B, M, k)
+    
+    norm_values = (top_k_weights * top_k_values).sum(dim=-1) / top_k_weights.sum(dim=-1)
+    return norm_values  # (B, M)
+
+
 class ObservationNormalizer:
     """Normalizes observations to [0, 1] range using predefined bounds.
     
@@ -140,3 +182,5 @@ class ObservationNormalizer:
 
     def __repr__(self) -> str:
         return f"ObservationNormalizer(env_id='{self.env_id}', dim={self.observation_dim})"
+
+
