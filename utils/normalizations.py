@@ -95,6 +95,7 @@ class ObservationNormalizer:
         env_id: str,
         bounds_file: Optional[str] = None,
         device: str = "cpu",
+        frame_stack: int = 1,
     ) -> None:
         """Initialize the normalizer with bounds for a specific environment.
         
@@ -132,6 +133,12 @@ class ObservationNormalizer:
             torch.ones_like(self.obs_range),
             self.obs_range
         )
+        
+        # Tile bounds for frame stacking
+        if frame_stack > 1:
+            self.obs_min = self.obs_min.repeat(frame_stack)
+            self.obs_max = self.obs_max.repeat(frame_stack)
+            self.obs_range = self.obs_range.repeat(frame_stack)
         
         self.device = device
 

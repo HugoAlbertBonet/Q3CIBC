@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "minari[all]>=0.5.3",
     "numpy>=2.4.1",
+    "tensorflow>=2.20.0",
     "tfrecord>=1.14.6",
     "torch>=2.9.1",
     "wandb>=0.18.0",

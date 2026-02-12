@@ -23,6 +23,7 @@ class PenHumanV2Simulation(BaseSimulation):
         device: str = "cpu",
         max_episode_steps: int = 200,
         render_mode: str | None = None,
+        frame_stack: int = 1,
     ) -> None:
         """Initialize the PenHumanV2 simulation.
         
@@ -41,6 +42,7 @@ class PenHumanV2Simulation(BaseSimulation):
             smoothing_param=smoothing_param,
             device=device,
             max_episode_steps=max_episode_steps,
+            frame_stack=frame_stack,
         )
         self.render_mode = render_mode
 

@@ -331,5 +331,126 @@
                 1.0
             ]
         }
+    },
+    "Particle-v0": {
+        "description": "Observation bounds for Particle-v0 (2D particle environment)",
+        "source": "https://github.com/google-research/ibc/tree/master/environments/particle",
+        "observation_dim": 8,
+        "bounds": {
+            "pos_agent": {
+                "description": "Agent position (normalized to [0, 1])",
+                "indices": [
+                    0,
+                    1
+                ],
+                "min": [
+                    0.0,
+                    0.0
+                ],
+                "max": [
+                    1.0,
+                    1.0
+                ]
+            },
+            "vel_agent": {
+                "description": "Agent velocity",
+                "indices": [
+                    2,
+                    3
+                ],
+                "min": [
+                    -100.0,
+                    -100.0
+                ],
+                "max": [
+                    100.0,
+                    100.0
+                ]
+            },
+            "pos_first_goal": {
+                "description": "First goal position (normalized to [0, 1])",
+                "indices": [
+                    4,
+                    5
+                ],
+                "min": [
+                    0.0,
+                    0.0
+                ],
+                "max": [
+                    1.0,
+                    1.0
+                ]
+            },
+            "pos_second_goal": {
+                "description": "Second goal position (normalized to [0, 1])",
+                "indices": [
+                    6,
+                    7
+                ],
+                "min": [
+                    0.0,
+                    0.0
+                ],
+                "max": [
+                    1.0,
+                    1.0
+                ]
+            }
+        },
+        "flat_bounds": {
+            "min": [
+                0.0,
+                0.0,
+                -100.0,
+                -100.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "max": [
+                1.0,
+                1.0,
+                100.0,
+                100.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ]
+        }
+    },
+    "Dummy-v0": {
+        "description": "Observation bounds for Dummy-v0 (Synthetic 2D Directional)",
+        "source": "Synthetic",
+        "observation_dim": 2,
+        "bounds": {
+            "rel_goal_pos": {
+                "description": "Relative Goal Position (Fixed)",
+                "indices": [
+                    0,
+                    1
+                ],
+                "min": [
+                    -2.0,
+                    -2.0
+                ],
+                "max": [
+                    2.0,
+                    2.0
+                ]
+            }
+        },
+        "flat_bounds": {
+            "min": [
+                -2.0,
+                -2.0
+            ],
+            "max": [
+                2.0,
+                2.0
+            ]
+        }
     }
 }

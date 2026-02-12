@@ -3,6 +3,7 @@
 import torch
 import numpy as np
 from abc import ABC, abstractmethod
+from collections import deque
 from typing import Any
 import gymnasium as gym
 
@@ -28,6 +29,7 @@ class BaseSimulation(ABC):
         smoothing_param: torch.Tensor,
         device: str = "cpu",
         max_episode_steps: int = 400,
+        frame_stack: int = 1,
     ) -> None:
         """Initialize the simulation.
         
@@ -47,9 +49,11 @@ class BaseSimulation(ABC):
         self.max_episode_steps = max_episode_steps
         self.env = None
         self.results: list[dict[str, Any]] = []
+        self.frame_stack = frame_stack
+        self._frame_buffer: deque[np.ndarray] = deque(maxlen=frame_stack)
         
         # Observation normalizer (uses official bounds from JSON file)
-        self.obs_normalizer = ObservationNormalizer(env_id=env_id, device=device)
+        self.obs_normalizer = ObservationNormalizer(env_id=env_id, device=device, frame_stack=frame_stack)
 
     @abstractmethod
     def create_env(self) -> gym.Env:
@@ -88,6 +92,24 @@ class BaseSimulation(ABC):
             action = control_points[0, best_idx[0], :].cpu().numpy()
         return action
 
+    def _reset_frame_buffer(self, obs: np.ndarray) -> np.ndarray:
+        """Reset the frame buffer and return the stacked initial observation."""
+        self._frame_buffer.clear()
+        for _ in range(self.frame_stack):
+            self._frame_buffer.append(obs.copy())
+        return self._get_stacked_obs()
+
+    def _update_frame_buffer(self, obs: np.ndarray) -> np.ndarray:
+        """Add a new frame and return the stacked observation."""
+        self._frame_buffer.append(obs.copy())
+        return self._get_stacked_obs()
+
+    def _get_stacked_obs(self) -> np.ndarray:
+        """Concatenate buffered frames into a single observation vector."""
+        if self.frame_stack <= 1:
+            return self._frame_buffer[-1]
+        return np.concatenate(list(self._frame_buffer))
+
     def run_episode(self, seed: int | None = None) -> dict[str, Any]:
         """Run a single episode and return metrics.
         
@@ -101,14 +123,16 @@ class BaseSimulation(ABC):
             self.env = self.create_env()
         
         obs, info = self.env.reset(seed=seed)
+        stacked_obs = self._reset_frame_buffer(obs)
         
         total_reward = 0.0
         episode_length = 0
         done = False
         
         while not done:
-            action = self.select_action(obs)
+            action = self.select_action(stacked_obs)
             obs, reward, terminated, truncated, info = self.env.step(action)
+            stacked_obs = self._update_frame_buffer(obs)
             total_reward += reward
             episode_length += 1
             

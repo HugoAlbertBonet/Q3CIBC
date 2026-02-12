@@ -13,10 +13,13 @@ class ControlPointGenerator(nn.Module):
 		hidden_dims: Sequence[int] = (256, 256),
 		activation: type[nn.Module] = nn.ReLU,
 		control_points: int = 10,
+		action_bounds: tuple[float, float] = (-1.0, 1.0),
 	) -> None:
 		super().__init__()
 		self.output_dim = output_dim
 		self.control_points = control_points
+		self.action_min = action_bounds[0]
+		self.action_max = action_bounds[1]
 
 		layers = []
 		prev_dim = input_dim
@@ -24,7 +27,8 @@ class ControlPointGenerator(nn.Module):
 			layers.append(nn.Linear(prev_dim, dim))
 			layers.append(activation())
 			prev_dim = dim
-		layers[-1] = nn.Tanh()  # Final activation to bound outputs
+
+		#layers[-1] = nn.Tanh()  # Bound last hidden to [-1,1] to prevent sigmoid saturation
 
 		layers.append(nn.Linear(prev_dim, output_dim * control_points))
 		self.network = nn.Sequential(*layers)
@@ -32,7 +36,10 @@ class ControlPointGenerator(nn.Module):
 	def forward(self, x: torch.Tensor) -> torch.Tensor:
 		batch = x.shape[0]
 		out = self.network(x)
-		return out.view(batch, self.control_points, self.output_dim)
+		out = out.view(batch, self.control_points, self.output_dim)
+		# Sigmoid maps to [0, 1], then scale to [action_min, action_max]
+		#out = torch.sigmoid(out) * (self.action_max - self.action_min) + self.action_min
+		return out
 
 class QEstimator(nn.Module):
 	"""State-conditioned Q-network that maps (state, action) pairs to Q-values."""

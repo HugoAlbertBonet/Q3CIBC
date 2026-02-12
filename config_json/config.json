@@ -1,24 +1,114 @@
 {
-    "training": {
-        "training_steps": 100000,
-        "log_interval": 1000,
-        "save_interval": 10000,
-        "lr_decay_interval": 100,
-        "learning_rate": 0.005,
-        "batch_size": 128,
+    "active_env": "dummy",
+    "environments": {
+        "pen": {
+            "dataset_name": "D4RL/pen/human-v2",
+            "env_id": "AdroitHandPen-v1",
+            "state_dim": 45,
+            "action_dim": 24,
+            "frame_stack": 1,
+            "action_bounds": [
+                -1,
+                1
+            ],
+            "training": {
+                "training_steps": 50000,
+                "learning_rate": 0.0005,
+                "batch_size": 128,
+                "sampling_method": "langevin",
+                "counter_examples": 64,
+                "top_k_control_points": 10
+            },
+            "model": {
+                "control_points": 50,
+                "num_hidden_layers": 16,
+                "num_neurons": 128,
+                "langevin_config": {
+                    "num_iterations": 50,
+                    "lr_init": 0.1,
+                    "lr_final": 1e-05,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.1,
+                    "noise_scale": 1.0
+                }
+            }
+        },
+        "particle": {
+            "data_dir": "datasets/particle",
+            "env_id": "Particle-v0",
+            "n_dim": 2,
+            "state_dim": 8,
+            "action_dim": 2,
+            "frame_stack": 2,
+            "action_bounds": [
+                0,
+                1
+            ],
+            "training": {
+                "training_steps": 50000,
+                "learning_rate": 0.001,
+                "batch_size": 128,
+                "sampling_method": "uniform",
+                "counter_examples": 64,
+                "top_k_control_points": 10
+            },
+            "model": {
+                "control_points": 10,
+                "num_hidden_layers": 16,
+                "num_neurons": 128,
+                "langevin_config": {
+                    "num_iterations": 50,
+                    "lr_init": 0.1,
+                    "lr_final": 1e-05,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.1,
+                    "noise_scale": 1.0
+                }
+            }
+        },
+        "dummy": {
+            "n_dim": 2,
+            "env_id": "Dummy-v0",
+            "state_dim": 2,
+            "action_dim": 1,
+            "frame_stack": 1,
+            "action_bounds": [
+                -3.14159265,
+                3.14159265
+            ],
+            "training": {
+                "training_steps": 2000,
+                "learning_rate": 0.001,
+                "batch_size": 128,
+                "sampling_method": "langevin",
+                "counter_examples": 64,
+                "top_k_control_points": 10
+            },
+            "model": {
+                "control_points": 32,
+                "num_hidden_layers": 4,
+                "num_neurons": 128,
+                "langevin_config": {
+                    "num_iterations": 20,
+                    "lr_init": 0.1,
+                    "lr_final": 0.01,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.5,
+                    "noise_scale": 0.5
+                }
+            }
+        }
+    },
+    "training_shared": {
         "smoothing_param": 0.1,
         "smoothing_param_trainable": false,
         "use_wire_fitting": true,
-        "separation_weight": 20,
+        "separation_weight": 10,
         "lr_decay": 0.99,
-        "counter_examples": 8,
-        "top_k_control_points": 10,
+        "lr_decay_interval": 100,
+        "log_interval": 1000,
+        "save_interval": 5000,
         "model_save_dir": "checkpoints"
-    },
-    "model": {
-        "control_points": 70,
-        "num_hidden_layers": 8,
-        "num_neurons": 512
     },
     "simulation": {
         "default_checkpoint": "checkpoints/control_point_generator.pt",
@@ -28,13 +118,7 @@
             42
         ],
         "default_episodes": 100,
-        "max_episode_steps": 200, 
+        "max_episode_steps": 200,
         "render": false
-    },
-    "environment": {
-        "dataset_name": "D4RL/pen/human-v2",
-        "env_id": "AdroitHandPen-v1",
-        "state_dim": 45,
-        "action_dim": 24
     }
 }
