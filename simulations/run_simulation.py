@@ -127,12 +127,18 @@ def create_simulation(
     elif active_env == "dummy":
         from simulations.dummy_simulation import DummySimulation
         langevin_config = env_config.get("model", {}).get("langevin_config", {})
+        dummy_sim_config = env_config.get("simulation", {})
         return DummySimulation(
             control_point_generator=model,
             q_estimator=q_estimator,
             device=device,
             render_mode=render_mode,
-            langevin_config=langevin_config
+            step_size=env_config.get("step_size", 0.1),
+            goal_radius=env_config.get("goal_radius", 0.05),
+            max_episode_steps=max_steps,
+            frame_stack=FRAME_STACK,
+            snapshot_steps=dummy_sim_config.get("snapshot_steps", [1, 5, 10, 20, 50]),
+            langevin_config=langevin_config,
         )
     else:
         raise ValueError(f"Unknown environment: {active_env}")
@@ -325,6 +331,12 @@ def main():
     render_mode = get_render_mode(args.render, config)
     if render_mode:
         print(f"Rendering enabled (mode: {render_mode})")
+
+    # Clear previous plots before running
+    if os.path.exists(args.output_dir):
+        import shutil
+        shutil.rmtree(args.output_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
 
     aggregated, all_results = run_multi_seed_evaluation(
         model=model,

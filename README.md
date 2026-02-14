@@ -1,6 +1,6 @@
 # Q3CIBC
 
-**Q3C for Imitation with Behavioral Cloning** – an offline imitation learning method that combines control-point generation with wire-fitting Q-value approximation and Implicit Behavioral Clonning (IBC).
+**Q3C for Imitation with Behavioral Cloning** – an offline imitation learning method that combines control-point generation with wire-fitting Q-value approximation and Implicit Behavioral Cloning (IBC).
 
 ---
 
@@ -8,24 +8,43 @@
 
 Q3CIBC learns a policy from offline expert demonstrations by:
 
-1. **Control Point Generator** – produces multiple wire-fitting control points per state.
+1. **Control Point Generator** – produces multiple wire-fitting control points per state, bounded via `tanh` to the action space.
 2. **Q-Estimator** – estimates the Q-values of each candidate action.
 3. **Wire-Fitting Normalization** – smoothly interpolates Q-values using inverse-distance weighting, making the learned Q-function structurally maximizable.
-4. **Implicit Behavioral Clonning** – instead of explicit models trained on MSE, we train Q3C as an implicit model, maximizing the probability of the expert's action.
+4. **Implicit Behavioral Cloning** – instead of explicit models trained on MSE, we train Q3C as an implicit model, maximizing the probability of the expert's action.
 
 ---
 
-## Evaluation Results
+## Environments
 
-Results from multi-seed evaluation (3 seeds × 100 episodes each, max episode steps = 200) on gymnasium environment:
+Configuration is driven by `config_json/config.json`. Set `"active_env"` to switch between environments.
 
-| Environment | Episodes | Reward (mean ± std) |
-|-------------|----------|---------------------|
-| AdroitHandPen-v1 (D4RL/pen/human-v2) | 300 | 5562.36 ± 4743.29 |
+### Pen (AdroitHandPen-v1)
+Dexterous hand manipulation task from D4RL. The agent must rotate a pen to match a target orientation.
+- **State**: 45D (joint positions, velocities, pen pose)
+- **Action**: 24D continuous (joint torques)
+- **Dataset**: `D4RL/pen/human-v2` via Minari
 
-> Run `uv run python -m simulations.run_simulation --episodes 100` to reproduce these results.
+### Dummy (2D Grid Navigation)
+A diagnostic environment for verifying the training pipeline. An agent navigates a `[-1, 1]²` grid towards a randomly placed goal.
+- **State**: `[goal_x, goal_y, agent_x, agent_y]` (4D, extensible via `frame_stack`)
+- **Action**: scalar ∈ `[-1, 1]`, mapped to angle `θ = a × π`
+- **Dynamics**: agent moves `step_size` per step, clamped to grid
+- **Reward**: `-distance(agent, goal)`
+- **Termination**: distance < `goal_radius`
+- **Dataset**: synthetically generated expert trajectories using `atan2`
 
+#### Dummy Diagnostic Plots
+During simulation, 5 plots are saved at configurable mid-episode timesteps (`snapshot_steps`):
+1. **CPs & Expert** – radial plot with CPs colored by Q-value, expert on same scale
+2. **Q-value Heatmap** – polar sweep of Q across all 360°
+3. **CP Probabilities** – softmax(Q) per CP, selected action marked as ▲
+4. **Langevin Evolution** – uniform init → MCMC refinement → final samples
+5. **2D Map** – agent trajectory, current position, and goal
 
+### Particle
+Particle-based environment for multi-dimensional control.
+- **State/Action**: configurable via `n_dim`
 
 ---
 
@@ -33,20 +52,31 @@ Results from multi-seed evaluation (3 seeds × 100 episodes each, max episode st
 
 ```
 Q3CIBC/
-├── main.py            # Training loop
-├── models.py          # ControlPointGenerator & QEstimator networks
-├── loss.py            # InfoNCE, MSE, and separation losses
-├── normalizations.py  # Wire-fitting Q-value normalization
-├── datasets.py        # D4RL dataset loader (via Minari)
-├── d4rl.py            # (optional) D4RL utilization example
-├── simulations/       # Evaluation module
-│   ├── base_simulation.py
-│   ├── pen_human_v2_simulation.py
-│   ├── run_simulation.py
-│   └── plots.py
-├── plots/             # Generated evaluation plots
-├── checkpoints/       # Saved model weights
-├── pyproject.toml     # Project metadata & dependencies
+├── combined_training.py    # Combined generator + estimator training
+├── mse_training.py         # MSE-only training
+├── uniform_training.py     # Uniform counter-example training
+├── joint_training.py       # Joint training variant
+├── config_json/
+│   ├── config.json             # All environment & training configuration
+│   └── observation_bounds.json # Observation normalization bounds
+├── utils/
+│   ├── models.py           # ControlPointGenerator & QEstimator
+│   ├── loss.py             # InfoNCE, MSE, and separation losses
+│   ├── normalizations.py   # Wire-fitting Q-value normalization
+│   ├── datasets.py         # Dataset loaders (D4RL, Particle, Dummy)
+│   ├── sampling.py         # Uniform & Langevin MCMC sampling
+│   └── vis_dummy.py        # Dummy environment diagnostic plots
+├── simulations/
+│   ├── base_simulation.py          # Base simulation class
+│   ├── pen_human_v2_simulation.py  # Pen environment simulation
+│   ├── dummy_env.py                # 2D grid navigation Gymnasium env
+│   ├── dummy_simulation.py         # Dummy evaluation with snapshot capture
+│   ├── run_simulation.py           # Multi-seed evaluation entry point
+│   └── plots.py                    # Plots for evaluation
+├── tests/                  # Test suite
+├── plots/                  # Generated evaluation plots
+├── checkpoints/            # Saved model weights
+├── pyproject.toml          # Project metadata & dependencies
 └── README.md
 ```
 
@@ -57,11 +87,8 @@ Q3CIBC/
 Requires **Python ≥ 3.12**.
 
 ```bash
-# Clone the repository
 git clone https://github.com/HugoAlbertBonet/Q3CIBC.git
 cd Q3CIBC
-
-# Install dependencies (using uv, pip, or your preferred tool)
 uv sync          # or: pip install -e .
 ```
 
@@ -71,25 +98,30 @@ uv sync          # or: pip install -e .
 
 ### Training
 
-Run training on the default D4RL environment (`pen/human-v2`):
+All training scripts read from `config_json/config.json`. Set `"active_env"` to choose the environment.
 
 ```bash
-uv run main.py
+# Combined training (generator MSE + estimator InfoNCE)
+uv run combined_training.py
+
+# MSE-only generator training
+uv run mse_training.py
+
+# Uniform counter-example training
+uv run uniform_training.py
 ```
 
 Models are saved to `checkpoints/` after training.
 
 ### Evaluation
 
-Run multi-seed evaluation on the trained model:
-
 ```bash
 uv run python -m simulations.run_simulation
 ```
 
 Options:
-- `--seeds 0 1 2` – Random seeds to use (default: 0, 1, 2)
-- `--episodes 100` – Episodes per seed (default: 100)
+- `--seeds 0 1 2` – Random seeds (default: 0, 35, 42)
+- `--episodes N` – Episodes per seed (default: 1)
 - `--checkpoint PATH` – Model checkpoint path
 - `--output-dir DIR` – Where to save plots
 
@@ -97,24 +129,29 @@ Options:
 
 ### Configuration
 
-Edit the constants at the top of `main.py`:
+All parameters are in `config_json/config.json`:
 
-| Parameter        | Default   | Description                        |
-|------------------|-----------|------------------------------------
-| `epochs`         | 100       | Number of training epochs          |
-| `learning_rate`  | 1e-5      | AdamW learning rate                |
-| `batch_size`     | 64        | Mini-batch size                    |
-| `control_points` | 30        | Candidate actions per state        |
+| Parameter          | Description                                    |
+|--------------------|------------------------------------------------|
+| `active_env`       | Environment to use (`pen`, `dummy`, `particle`) |
+| `state_dim`        | Observation dimensionality                     |
+| `action_dim`       | Action dimensionality                          |
+| `frame_stack`      | Number of consecutive observations to stack    |
+| `step_size`        | (dummy) Agent movement per step                |
+| `goal_radius`      | (dummy) Success threshold distance             |
+| `control_points`   | Candidate actions per state                    |
+| `counter_examples` | Negative samples for InfoNCE                   |
+| `snapshot_steps`   | (dummy) Timesteps at which to save diagnostic plots |
 
 ---
 
 ## Key Components
 
 ### `ControlPointGenerator`
-Fully-connected network mapping states to `N` candidate action vectors.
+Fully-connected network mapping states to `N` candidate action vectors, bounded via `tanh` to `[action_min, action_max]`.
 
 ### `QEstimator`
-Fully-connected network mapping actions to scalar Q-values.
+Fully-connected network mapping (state, action) pairs to scalar Q-values.
 
 ### `wireFittingNorm`
 Vectorized wire-fitting normalization:

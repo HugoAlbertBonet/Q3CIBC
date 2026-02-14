@@ -422,34 +422,53 @@
         }
     },
     "Dummy-v0": {
-        "description": "Observation bounds for Dummy-v0 (Synthetic 2D Directional)",
+        "description": "Observation bounds for Dummy-v0 (2D Grid Navigation)",
         "source": "Synthetic",
-        "observation_dim": 2,
+        "observation_dim": 4,
         "bounds": {
-            "rel_goal_pos": {
-                "description": "Relative Goal Position (Fixed)",
+            "goal_pos": {
+                "description": "Goal position (x, y)",
                 "indices": [
                     0,
                     1
                 ],
                 "min": [
-                    -2.0,
-                    -2.0
+                    -1.0,
+                    -1.0
                 ],
                 "max": [
-                    2.0,
-                    2.0
+                    1.0,
+                    1.0
+                ]
+            },
+            "agent_pos": {
+                "description": "Agent position (x, y)",
+                "indices": [
+                    2,
+                    3
+                ],
+                "min": [
+                    -1.0,
+                    -1.0
+                ],
+                "max": [
+                    1.0,
+                    1.0
                 ]
             }
         },
         "flat_bounds": {
             "min": [
-                -2.0,
-                -2.0
+                -1.0,
+                -1.0,
+                -1.0,
+                -1.0
             ],
             "max": [
-                2.0,
-                2.0
+                1.0,
+                1.0,
+                1.0,
+                1.0
             ]
         }
     }

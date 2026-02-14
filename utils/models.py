@@ -37,8 +37,8 @@ class ControlPointGenerator(nn.Module):
 		batch = x.shape[0]
 		out = self.network(x)
 		out = out.view(batch, self.control_points, self.output_dim)
-		# Sigmoid maps to [0, 1], then scale to [action_min, action_max]
-		#out = torch.sigmoid(out) * (self.action_max - self.action_min) + self.action_min
+		# Tanh maps to [-1, 1], then scale to [action_min, action_max]
+		out = torch.tanh(out) * ((self.action_max - self.action_min) / 2) + (self.action_max + self.action_min) / 2
 		return out
 
 class QEstimator(nn.Module):

@@ -69,23 +69,25 @@
         "dummy": {
             "n_dim": 2,
             "env_id": "Dummy-v0",
-            "state_dim": 2,
+            "state_dim": 4,
             "action_dim": 1,
             "frame_stack": 1,
+            "step_size": 0.1,
+            "goal_radius": 0.1,
             "action_bounds": [
-                -3.14159265,
-                3.14159265
+                -1,
+                1
             ],
             "training": {
-                "training_steps": 2000,
+                "training_steps": 100000,
                 "learning_rate": 0.001,
                 "batch_size": 128,
-                "sampling_method": "langevin",
+                "sampling_method": "uniform",
                 "counter_examples": 64,
-                "top_k_control_points": 10
+                "top_k_control_points": 20
             },
             "model": {
-                "control_points": 32,
+                "control_points": 30,
                 "num_hidden_layers": 4,
                 "num_neurons": 128,
                 "langevin_config": {
@@ -96,6 +98,16 @@
                     "delta_action_clip": 0.5,
                     "noise_scale": 0.5
                 }
+            },
+            "simulation": {
+                "snapshot_steps": [
+                    1,
+                    5,
+                    10,
+                    20,
+                    50
+                ],
+                "num_episodes": 3
             }
         }
     },
@@ -103,7 +115,7 @@
         "smoothing_param": 0.1,
         "smoothing_param_trainable": false,
         "use_wire_fitting": true,
-        "separation_weight": 10,
+        "separation_weight": 5,
         "lr_decay": 0.99,
         "lr_decay_interval": 100,
         "log_interval": 1000,
@@ -115,9 +127,12 @@
         "default_seeds": [
             0,
             35,
-            42
+            42,
+            10,
+            135,
+            142
         ],
-        "default_episodes": 100,
+        "default_episodes": 1,
         "max_episode_steps": 200,
         "render": false
     }

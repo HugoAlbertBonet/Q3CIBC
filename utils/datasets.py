@@ -260,40 +260,99 @@ if __name__ == "__main__":
     sample = particle_stacked[0]
     print(f"Sample state shape: {sample['state'].shape}")
 class DummyDataset(Dataset):
-    """Synthetic dataset for Dummy 2D verification task.
-    
-    Goal: Action should point towards 0 degrees (relative to objective).
-    State: Fixed relative goal position [1, 0].
-    Action: Angle in [-pi, pi].
+    """Synthetic dataset for 2D Grid Navigation task.
+
+    Generates expert trajectories where an agent navigates towards a goal
+    on a [-1, 1]² grid. The expert uses atan2 to compute the optimal angle
+    towards the goal, with small Gaussian noise for diversity.
+
+    State: [goal_x, goal_y, agent_x, agent_y] (before frame stacking)
+    Action: Scalar in [-1, 1], representing angle / π.
     """
-    
-    def __init__(self, size: int = 10000, n_dim: int = 2, frame_stack: int = 1):
-        self.size = size
+
+    def __init__(
+        self,
+        size: int = 10000,
+        step_size: float = 0.1,
+        goal_radius: float = 0.05,
+        max_steps_per_episode: int = 200,
+        expert_noise_std: float = 0.05,
+        n_dim: int = 2,
+        frame_stack: int = 1,
+    ):
         self.frame_stack = frame_stack
-        
-        # Fixed state: Relative position of goal is always (1, 0)
-        # This implies angle to goal is 0.
-        self.state = np.array([1.0, 0.0], dtype=np.float32)
-        
-        # Generate Expert Actions: Gaussian around 0 radians
-        self.mu = 0.0
-        self.sigma = 0.2 # Expert is confident
-        
-        raw_actions = np.random.normal(self.mu, self.sigma, (size, 1)).astype(np.float32)
-        self.actions = np.clip(raw_actions, -np.pi, np.pi)
-        
-        # Replicate fixed state
-        self.observations = np.tile(self.state, (size, 1))
-        
-        # Apply frame stacking (trivial here)
+        self.step_size = step_size
+        self.goal_radius = goal_radius
+
+        all_observations = []
+        all_actions = []
+        episode_starts = []
+
+        total_samples = 0
+        rng = np.random.default_rng(seed=42)
+
+        while total_samples < size:
+            # Random goal and start
+            goal = rng.uniform(-0.9, 0.9, size=2).astype(np.float32)
+            agent_pos = rng.uniform(-0.9, 0.9, size=2).astype(np.float32)
+            # Avoid spawning on top of goal
+            while np.linalg.norm(agent_pos - goal) < goal_radius * 3:
+                agent_pos = rng.uniform(-0.9, 0.9, size=2).astype(np.float32)
+
+            ep_obs = []
+            ep_acts = []
+
+            for step_i in range(max_steps_per_episode):
+                # Current observation
+                obs = np.concatenate([goal, agent_pos]).astype(np.float32)
+
+                # Expert action: angle towards goal + noise
+                diff = goal - agent_pos
+                optimal_angle = np.arctan2(diff[1], diff[0])
+                # Map to [-1, 1] (action space)
+                optimal_action = optimal_angle / np.pi
+                noise = rng.normal(0, expert_noise_std)
+                action = np.clip(optimal_action + noise, -1.0, 1.0).astype(np.float32)
+
+                ep_obs.append(obs)
+                ep_acts.append(np.array([action], dtype=np.float32))
+
+                # Move agent
+                angle = action * np.pi
+                dx = step_size * np.cos(angle)
+                dy = step_size * np.sin(angle)
+                agent_pos = np.clip(
+                    agent_pos + np.array([dx, dy], dtype=np.float32),
+                    -1.0, 1.0
+                )
+
+                # Check termination
+                if np.linalg.norm(agent_pos - goal) < goal_radius:
+                    break
+
+            ep_starts = np.zeros(len(ep_obs), dtype=bool)
+            ep_starts[0] = True
+
+            all_observations.append(np.array(ep_obs))
+            all_actions.append(np.array(ep_acts))
+            episode_starts.append(ep_starts)
+            total_samples += len(ep_obs)
+
+        self.observations = np.concatenate(all_observations)[:size]
+        self.actions = np.concatenate(all_actions)[:size]
+        self._episode_starts = np.concatenate(episode_starts)[:size]
+
+        # Apply frame stacking
         if frame_stack > 1:
-            self.observations = np.tile(self.observations, (1, frame_stack))
-            
+            self.observations = stack_frames(
+                self.observations, self._episode_starts, frame_stack
+            )
+
         self.state_shape = self.observations.shape[1]
         self.action_shape = self.actions.shape[1]
-        
+
     def __getitem__(self, index):
         return {'state': self.observations[index], 'action': self.actions[index]}
 
     def __len__(self):
-        return self.size
+        return len(self.observations)

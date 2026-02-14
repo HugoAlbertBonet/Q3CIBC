@@ -89,7 +89,7 @@ def load_dataset():
         return ParticleDataset(data_dir, n_dim=n_dim, frame_stack=frame_stack)
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
-        return DummyDataset(size=10000, n_dim=env_config["n_dim"], frame_stack=frame_stack)
+        return DummyDataset(size=10000, step_size=env_config.get("step_size", 0.1), goal_radius=env_config.get("goal_radius", 0.05), n_dim=env_config.get("n_dim", 2), frame_stack=frame_stack)
     else:
         raise ValueError(f"Unknown environment: {active_env}")
 
