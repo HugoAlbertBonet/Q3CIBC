@@ -52,10 +52,11 @@ Particle-based environment for multi-dimensional control.
 
 ```
 Q3CIBC/
-├── combined_training.py    # Combined generator + estimator training
-├── mse_training.py         # MSE-only training
-├── uniform_training.py     # Uniform counter-example training
-├── joint_training.py       # Joint training variant
+├── combined_training.py    # Gen trained with MSE and separation losses, estimator with InfoNCE, interpolates Q-values of expert action and counter samples from CPs (-3.98 ± 3.78 | 100.00%)
+├── mse_training.py         # Gen trained with MSE and separation losses, estimator with InfoNCE, CPs as counter samples (-4.34 ± 4.76 | 100.00%, 63 steps in seed 0)
+├── uniform_training.py     # Gen trained with InfoNCE and separation losses, estimator with InfoNCE, counter samples and expert action interpolated (-5.71 ± 7.87 | 100.00%)
+├── joint_training.py       # Gen trained with InfoNCE, MSE, and separation losses, estimator with InfoNCE, counter samples and control points as negative samples (-3.71 ± 2.38 | 100.00%)
+├── direct_training.py      # Gen trained with MSE and separation losses, estimator with InfoNCE, estimates counter samples and expert action, generator totally decoupled (-4.62 ± 4.71 | 100.00%)
 ├── config_json/
 │   ├── config.json             # All environment & training configuration
 │   └── observation_bounds.json # Observation normalization bounds

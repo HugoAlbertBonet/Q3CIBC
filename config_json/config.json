@@ -83,7 +83,7 @@
                 "learning_rate": 0.001,
                 "batch_size": 128,
                 "sampling_method": "uniform",
-                "counter_examples": 64,
+                "counter_examples": 128,
                 "top_k_control_points": 20
             },
             "model": {
