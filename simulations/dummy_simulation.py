@@ -11,6 +11,7 @@ import torch
 from simulations.dummy_env import DummyEnv
 from utils.vis_dummy import plot_dummy_debug
 from utils.sampling import sample_langevin, sample_uniform
+from utils.normalizations import ObservationNormalizer
 
 
 class DummySimulation:
@@ -39,6 +40,10 @@ class DummySimulation:
         self.frame_stack = frame_stack
         self.snapshot_steps = snapshot_steps or [1, 5, 10, 20, 50]
         self.langevin_config = kwargs.get("langevin_config", {})
+
+        self.obs_normalizer = ObservationNormalizer(
+            env_id="Dummy-v0", device=self.device, frame_stack=self.frame_stack
+        )
 
         self.env = DummyEnv(
             step_size=step_size,
@@ -133,6 +138,7 @@ class DummySimulation:
                 # Build state with frame stacking
                 state_np = self._build_state_with_history(obs, history_buffer)
                 state_tensor = torch.from_numpy(state_np).float().unsqueeze(0).to(self.device)
+                state_tensor = self.obs_normalizer.normalize(state_tensor)
 
                 # Check if we should save a snapshot at this step
                 if step in self.snapshot_steps:

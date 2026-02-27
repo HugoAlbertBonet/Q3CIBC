@@ -1,12 +1,15 @@
 import torch 
 
-def lossInfoNCE(scores: torch.Tensor) -> torch.Tensor:
+def lossInfoNCE(scores: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
     """
     InfoNCE loss for contrastive learning between control point values and target values.
-    Assumes that the first column in 'scores' corresponds to the target values.
+    Assumes that the first column in 'scores' corresponds to the target (expert) values.
+    Scores should be raw energies or logits.
+    Returns the mean NLL across the batch.
     """
-    log_probs = scores - torch.logsumexp(scores, dim=1, keepdim=True)
-    loss = -log_probs[:, 0].sum()  # Sum over batch for consistent scaling
+    logits = scores / temperature
+    log_probs = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    loss = -log_probs[:, 0].mean()  # Mean over batch
     return loss
 
 def lossMSE(control_points: torch.Tensor, expert_action: torch.Tensor) -> torch.Tensor:

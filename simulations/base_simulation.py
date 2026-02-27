@@ -26,7 +26,6 @@ class BaseSimulation(ABC):
         env_id: str,
         control_point_generator: torch.nn.Module,
         q_estimator: torch.nn.Module,
-        smoothing_param: torch.Tensor,
         device: str = "cpu",
         max_episode_steps: int = 400,
         frame_stack: int = 1,
@@ -37,14 +36,12 @@ class BaseSimulation(ABC):
             env_id: The gymnasium environment ID (e.g., 'AdroitHandPen-v1').
             control_point_generator: The trained policy model that generates control points.
             q_estimator: The trained Q-value estimator.
-            smoothing_param: The smoothing parameter for wire fitting normalization.
             device: The device to run computations on ('cpu' or 'cuda').
             max_episode_steps: Maximum steps per episode.
         """
         self.env_id = env_id
         self.control_point_generator = control_point_generator
         self.q_estimator = q_estimator
-        self.smoothing_param = smoothing_param
         self.device = device
         self.max_episode_steps = max_episode_steps
         self.env = None

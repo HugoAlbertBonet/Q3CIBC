@@ -21,7 +21,6 @@ class ParticleSimulation(BaseSimulation):
         self,
         control_point_generator: torch.nn.Module,
         q_estimator: torch.nn.Module,
-        smoothing_param: torch.Tensor,
         n_dim: int = 2,
         device: str = "cpu",
         max_episode_steps: int = 50,
@@ -34,7 +33,6 @@ class ParticleSimulation(BaseSimulation):
         Args:
             control_point_generator: The trained policy model.
             q_estimator: The trained Q-value estimator.
-            smoothing_param: The smoothing parameter for wire fitting normalization.
             n_dim: Dimensionality of the particle environment.
             device: The device to run computations on.
             max_episode_steps: Maximum steps per episode.
@@ -44,7 +42,6 @@ class ParticleSimulation(BaseSimulation):
             env_id="Particle-v0",
             control_point_generator=control_point_generator,
             q_estimator=q_estimator,
-            smoothing_param=smoothing_param,
             device=device,
             max_episode_steps=max_episode_steps,
             frame_stack=frame_stack,

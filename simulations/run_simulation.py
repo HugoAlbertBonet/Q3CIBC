@@ -77,24 +77,9 @@ def load_q_estimator(checkpoint_path: str, device: str = "cpu") -> QEstimator:
     return model
 
 
-def load_smoothing_param(checkpoint_path: str, device: str = "cpu") -> torch.Tensor:
-    """Load the trained smoothing parameter from checkpoint."""
-    param = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    return param
-
-
-def set_seed(seed: int) -> None:
-    """Set random seeds for reproducibility."""
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
 def create_simulation(
     model: ControlPointGenerator,
     q_estimator: QEstimator,
-    smoothing_param: torch.Tensor,
     device: str = "cpu",
     render_mode: str | None = None,
 ):
@@ -105,7 +90,6 @@ def create_simulation(
         return PenHumanV2Simulation(
             control_point_generator=model,
             q_estimator=q_estimator,
-            smoothing_param=smoothing_param,
             device=device,
             max_episode_steps=max_steps,
             render_mode=render_mode,
@@ -116,7 +100,6 @@ def create_simulation(
         return ParticleSimulation(
             control_point_generator=model,
             q_estimator=q_estimator,
-            smoothing_param=smoothing_param,
             n_dim=n_dim,
             device=device,
             max_episode_steps=max_steps,
@@ -144,10 +127,20 @@ def create_simulation(
         raise ValueError(f"Unknown environment: {active_env}")
 
 
+def set_seed(seed: int):
+    """Set seeds for reproducibility."""
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
 def run_multi_seed_evaluation(
     model: ControlPointGenerator,
     q_estimator: QEstimator,
-    smoothing_param: torch.Tensor,
     seeds: list[int],
     episodes_per_seed: int,
     device: str = "cpu",
@@ -165,7 +158,6 @@ def run_multi_seed_evaluation(
         simulation = create_simulation(
             model=model,
             q_estimator=q_estimator,
-            smoothing_param=smoothing_param,
             device=device,
             render_mode=render_mode,
         )
@@ -290,7 +282,6 @@ def main():
     # Check checkpoint exists
     checkpoint_dir = os.path.dirname(args.checkpoint)
     q_estimator_path = os.path.join(checkpoint_dir, "q_estimator.pt")
-    smoothing_param_path = os.path.join(checkpoint_dir, "smoothing_param.pt")
     
     if not os.path.exists(args.checkpoint):
         print(f"Error: Checkpoint not found at '{args.checkpoint}'")
@@ -308,15 +299,6 @@ def main():
     
     print(f"Loading Q-estimator from {q_estimator_path}...")
     q_estimator = load_q_estimator(q_estimator_path, device=args.device)
-    
-    # Load smoothing param (use config default if not found)
-    if os.path.exists(smoothing_param_path):
-        print(f"Loading smoothing parameter from {smoothing_param_path}...")
-        smoothing_param = load_smoothing_param(smoothing_param_path, device=args.device)
-        print(f"  Learned smoothing_param: {smoothing_param.item():.6f}")
-    else:
-        smoothing_param = torch.tensor(training_shared.get("smoothing_param", 0.1))
-        print(f"  Using config smoothing_param: {smoothing_param.item():.6f}")
     
     print("Models loaded successfully!")
 
@@ -341,7 +323,6 @@ def main():
     aggregated, all_results = run_multi_seed_evaluation(
         model=model,
         q_estimator=q_estimator,
-        smoothing_param=smoothing_param,
         seeds=args.seeds,
         episodes_per_seed=args.episodes,
         device=args.device,
