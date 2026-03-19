@@ -168,6 +168,13 @@ $$
 
 ---
 
+## Results
+
+| Environment | Metric | Q3CIBC | IBC |
+|-------------|--------|--------|-----|
+| Dummy       | Extra steps | 0 | 0.33 |
+| Particle 2D | Success rate |  | 100% |
+
 ## Dependencies
 
 - `torch >= 2.9`

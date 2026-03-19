@@ -1,0 +1,615 @@
+"""Run particle simulation with full diagnostic logging.
+
+Logs at each timestep:
+  - Raw observation (stacked)
+  - Normalized observation (model input)
+  - Control points (model output)
+  - Q-values for each control point
+  - Selected action
+
+Generates diagnostic plots showing all of the above over time.
+
+Usage:
+    python -m simulations.run_diagnostic_particle [--seed 42] [--output-dir plots/particle_diagnostic]
+"""
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from dataclasses import dataclass
+
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import numpy as np
+import torch
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from utils.models import ControlPointGenerator, QEstimator
+from utils.normalizations import ObservationNormalizer
+from utils.sampling import sample_langevin
+from simulations.particle_simulation import ParticleSimulation
+
+# Load config
+config_path = Path(__file__).parent.parent / "config_json" / "config.json"
+with open(config_path, "r") as f:
+    config = json.load(f)
+
+env_config = config["environments"]["particle"]
+
+STATE_DIM = env_config["state_dim"]
+ACTION_DIM = env_config["action_dim"]
+FRAME_STACK = env_config.get("frame_stack", 1)
+CONTROL_POINTS = env_config["model"]["control_points"]
+num_hidden_layers = env_config["model"]["num_hidden_layers"]
+num_neurons = env_config["model"]["num_neurons"]
+ACTION_BOUNDS = tuple(env_config.get("action_bounds", [0, 1]))
+
+
+# Observation component names (per single frame, n_dim=2)
+OBS_COMPONENTS = [
+    "pos_agent_x", "pos_agent_y",
+    "vel_agent_x", "vel_agent_y",
+    "pos_goal1_x", "pos_goal1_y",
+    "pos_goal2_x", "pos_goal2_y",
+]
+
+
+@dataclass
+class StepLog:
+    """Logged data from a single timestep."""
+    step: int
+    raw_obs: np.ndarray            # stacked raw observation
+    normalized_obs: np.ndarray     # normalized observation (model input)
+    control_points: np.ndarray     # (N, action_dim) control point outputs
+    q_values: np.ndarray           # (N,) Q-value for each control point
+    best_idx: int                  # index of selected control point
+    action: np.ndarray             # final action taken
+
+
+class DiagnosticParticleSimulation(ParticleSimulation):
+    """Particle simulation with full diagnostic logging at each step."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.step_logs: list[StepLog] = []
+
+    def select_action(self, observation: np.ndarray, return_q_range: bool = False):
+        """Select action and log all intermediate values."""
+        raw_obs = observation.copy()
+
+        obs_tensor = torch.tensor(observation, dtype=torch.float32).unsqueeze(0).to(self.device)
+        normalized_tensor = self.obs_normalizer.normalize(obs_tensor)
+        normalized_obs = normalized_tensor.squeeze(0).cpu().numpy()
+
+        with torch.no_grad():
+            control_points = self.control_point_generator(normalized_tensor)  # (1, N, action_dim)
+            obs_expanded = normalized_tensor.unsqueeze(1).expand(-1, control_points.shape[1], -1)
+            q_values = self.q_estimator(obs_expanded, control_points).squeeze(-1)  # (1, N)
+
+            best_idx = q_values.argmax(dim=1)  # (1,)
+            action = control_points[0, best_idx[0], :].cpu().numpy()
+            q_range = (q_values.min().item(), q_values.max().item())
+
+        action_clipped = np.clip(action, 0.0, 1.0)
+
+        log = StepLog(
+            step=len(self.step_logs),
+            raw_obs=raw_obs,
+            normalized_obs=normalized_obs,
+            control_points=control_points[0].cpu().numpy(),
+            q_values=q_values[0].cpu().numpy(),
+            best_idx=best_idx[0].item(),
+            action=action_clipped.copy(),
+        )
+        self.step_logs.append(log)
+
+        if return_q_range:
+            return action_clipped, q_range
+        return action_clipped
+
+
+def generate_diagnostic_plots(
+    step_logs: list[StepLog],
+    output_dir: str,
+    seed: int,
+    q_estimator: QEstimator | None = None,
+    action_bounds: tuple[float, float] = (0.0, 1.0),
+    heatmap_grid_size: int = 81,
+    n_dim: int = 2,
+    langevin_config: dict | None = None,
+    langevin_num_samples: int | None = None,
+):
+    """Generate comprehensive diagnostic plots from logged step data."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    steps = [l.step for l in step_logs]
+    n_steps = len(steps)
+
+    # Extract arrays
+    raw_obs_all = np.array([l.raw_obs for l in step_logs])           # (T, stacked_dim)
+    norm_obs_all = np.array([l.normalized_obs for l in step_logs])   # (T, stacked_dim)
+    actions_all = np.array([l.action for l in step_logs])            # (T, action_dim)
+    q_values_all = np.array([l.q_values for l in step_logs])         # (T, N)
+    cp_all = np.array([l.control_points for l in step_logs])         # (T, N, action_dim)
+    best_idx_all = np.array([l.best_idx for l in step_logs])         # (T,)
+
+    single_frame_dim = 4 * n_dim  # 8 for 2D
+
+    # ─── PLOT 1: Raw observation components over time (current frame) ───
+    fig, axes = plt.subplots(4, 2, figsize=(14, 12), sharex=True)
+    fig.suptitle(f"Raw Observation (Current Frame) — Seed {seed}", fontsize=14, fontweight="bold")
+
+    for i, (ax_row, start_i) in enumerate(zip(axes, range(0, single_frame_dim, 2))):
+        for j in range(2):
+            idx = start_i + j
+            # Use the last frame from stacked obs
+            global_idx = raw_obs_all.shape[1] - single_frame_dim + idx
+            ax_row[j].plot(steps, raw_obs_all[:, global_idx], ".-", markersize=3, linewidth=1)
+            ax_row[j].set_ylabel(OBS_COMPONENTS[idx], fontsize=10)
+            ax_row[j].grid(alpha=0.3)
+            if idx < 4:  # positions
+                ax_row[j].set_ylim(-0.1, 1.1)
+    axes[-1][0].set_xlabel("Step")
+    axes[-1][1].set_xlabel("Step")
+    plt.tight_layout()
+    plt.savefig(output_path / "1_raw_observation.png", dpi=150)
+    plt.close()
+
+    # ─── PLOT 2: Normalized observation components over time (current frame) ───
+    fig, axes = plt.subplots(4, 2, figsize=(14, 12), sharex=True)
+    fig.suptitle(f"Normalized Observation / Model Input (Current Frame) — Seed {seed}", fontsize=14, fontweight="bold")
+
+    for i, (ax_row, start_i) in enumerate(zip(axes, range(0, single_frame_dim, 2))):
+        for j in range(2):
+            idx = start_i + j
+            global_idx = norm_obs_all.shape[1] - single_frame_dim + idx
+            ax_row[j].plot(steps, norm_obs_all[:, global_idx], ".-", markersize=3, linewidth=1, color="tab:orange")
+            ax_row[j].set_ylabel(f"{OBS_COMPONENTS[idx]}\n(norm)", fontsize=10)
+            ax_row[j].set_ylim(-0.05, 1.05)
+            ax_row[j].grid(alpha=0.3)
+    axes[-1][0].set_xlabel("Step")
+    axes[-1][1].set_xlabel("Step")
+    plt.tight_layout()
+    plt.savefig(output_path / "2_normalized_observation.png", dpi=150)
+    plt.close()
+
+    # ─── PLOT 3: Raw vs Normalized side-by-side for each component ───
+    fig, axes = plt.subplots(single_frame_dim, 1, figsize=(14, 2.5 * single_frame_dim), sharex=True)
+    fig.suptitle(f"Raw vs Normalized Observation — Seed {seed}", fontsize=14, fontweight="bold")
+
+    for idx in range(single_frame_dim):
+        ax = axes[idx]
+        global_idx_raw = raw_obs_all.shape[1] - single_frame_dim + idx
+        global_idx_norm = norm_obs_all.shape[1] - single_frame_dim + idx
+
+        ax.plot(steps, raw_obs_all[:, global_idx_raw], ".-", markersize=3, linewidth=1, label="raw", color="tab:blue")
+        ax_twin = ax.twinx()
+        ax_twin.plot(steps, norm_obs_all[:, global_idx_norm], ".-", markersize=3, linewidth=1, label="normalized", color="tab:orange")
+        ax_twin.set_ylim(-0.05, 1.05)
+        ax.set_ylabel(f"{OBS_COMPONENTS[idx]}\n(raw)", fontsize=9, color="tab:blue")
+        ax_twin.set_ylabel("norm", fontsize=9, color="tab:orange")
+        ax.grid(alpha=0.3)
+        if idx == 0:
+            lines1, labels1 = ax.get_legend_handles_labels()
+            lines2, labels2 = ax_twin.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=8)
+    axes[-1].set_xlabel("Step")
+    plt.tight_layout()
+    plt.savefig(output_path / "3_raw_vs_normalized.png", dpi=150)
+    plt.close()
+
+    # ─── PLOT 4: Selected action over time + goal positions ───
+    fig, axes = plt.subplots(n_dim, 1, figsize=(14, 4 * n_dim), sharex=True)
+    if n_dim == 1:
+        axes = [axes]
+    fig.suptitle(f"Selected Action vs Goal Positions — Seed {seed}", fontsize=14, fontweight="bold")
+
+    dim_names = ["x", "y"] if n_dim == 2 else [f"dim{d}" for d in range(n_dim)]
+    for d in range(n_dim):
+        ax = axes[d]
+        # Action
+        ax.plot(steps, actions_all[:, d], ".-", markersize=4, linewidth=1.5, color="red", label=f"action_{dim_names[d]}", zorder=5)
+
+        # Goal 1 position (from raw obs, last frame)
+        goal1_idx = raw_obs_all.shape[1] - single_frame_dim + 2 * n_dim + d
+        ax.plot(steps, raw_obs_all[:, goal1_idx], "--", linewidth=1.5, color="green", label=f"goal1_{dim_names[d]}")
+
+        # Goal 2 position (from raw obs, last frame)
+        goal2_idx = raw_obs_all.shape[1] - single_frame_dim + 3 * n_dim + d
+        ax.plot(steps, raw_obs_all[:, goal2_idx], "--", linewidth=1.5, color="blue", label=f"goal2_{dim_names[d]}")
+
+        # Agent position
+        agent_idx = raw_obs_all.shape[1] - single_frame_dim + d
+        ax.plot(steps, raw_obs_all[:, agent_idx], "-", linewidth=1, color="gray", alpha=0.6, label=f"agent_{dim_names[d]}")
+
+        ax.set_ylabel(dim_names[d], fontsize=12)
+        ax.set_ylim(-0.05, 1.05)
+        ax.legend(loc="upper right", fontsize=9)
+        ax.grid(alpha=0.3)
+    axes[-1].set_xlabel("Step")
+    plt.tight_layout()
+    plt.savefig(output_path / "4_action_vs_goals.png", dpi=150)
+    plt.close()
+
+    # ─── PLOT 5: Control points scatter at each step (2D) ───
+    if n_dim == 2:
+        # Show a grid of snapshots at evenly spaced steps
+        snapshot_count = min(12, n_steps)
+        snapshot_indices = np.linspace(0, n_steps - 1, snapshot_count, dtype=int)
+
+        cols = 4
+        rows = (snapshot_count + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
+        fig.suptitle(f"Control Points at Selected Steps — Seed {seed}", fontsize=14, fontweight="bold")
+        axes_flat = axes.flatten() if snapshot_count > 1 else [axes]
+
+        for i, step_idx in enumerate(snapshot_indices):
+            ax = axes_flat[i]
+            log = step_logs[step_idx]
+            cp = log.control_points  # (N, 2)
+            qv = log.q_values        # (N,)
+
+            # Color control points by Q-value
+            scatter = ax.scatter(cp[:, 0], cp[:, 1], c=qv, cmap="viridis", s=30, alpha=0.8, zorder=3)
+
+            # Highlight selected point
+            ax.scatter(cp[log.best_idx, 0], cp[log.best_idx, 1],
+                       c="red", s=100, marker="*", edgecolors="black", zorder=5, label="selected")
+
+            # Goal positions (from raw obs, last frame)
+            raw = log.raw_obs
+            g1x = raw[-single_frame_dim + 4]
+            g1y = raw[-single_frame_dim + 5]
+            g2x = raw[-single_frame_dim + 6]
+            g2y = raw[-single_frame_dim + 7]
+            ax.scatter(g1x, g1y, c="green", s=120, marker="*", zorder=5, label="goal1")
+            ax.scatter(g2x, g2y, c="blue", s=120, marker="*", zorder=5, label="goal2")
+
+            # Agent position
+            ax.scatter(raw[-single_frame_dim + 0], raw[-single_frame_dim + 1],
+                       c="gray", s=60, marker="o", edgecolors="black", zorder=4, label="agent")
+
+            ax.set_xlim(-0.05, 1.05)
+            ax.set_ylim(-0.05, 1.05)
+            ax.set_aspect("equal")
+            ax.set_title(f"Step {log.step}", fontsize=10)
+            ax.grid(alpha=0.2)
+            if i == 0:
+                ax.legend(fontsize=7, loc="upper left")
+
+        # Hide unused axes
+        for j in range(i + 1, len(axes_flat)):
+            axes_flat[j].set_visible(False)
+
+        plt.tight_layout()
+        plt.savefig(output_path / "5_control_points_snapshots.png", dpi=150)
+        plt.close()
+
+    # ─── PLOT 6: Q-value statistics over time ───
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    fig.suptitle(f"Q-Value Statistics Over Time — Seed {seed}", fontsize=14, fontweight="bold")
+
+    q_min = q_values_all.min(axis=1)
+    q_max = q_values_all.max(axis=1)
+    q_mean = q_values_all.mean(axis=1)
+    q_std = q_values_all.std(axis=1)
+    q_selected = np.array([l.q_values[l.best_idx] for l in step_logs])
+
+    axes[0].fill_between(steps, q_min, q_max, alpha=0.3, color="tab:blue", label="min-max range")
+    axes[0].plot(steps, q_mean, "-", color="tab:blue", linewidth=1.5, label="mean Q")
+    axes[0].plot(steps, q_selected, ".-", color="red", linewidth=1.5, markersize=4, label="selected Q")
+    axes[0].set_ylabel("Q-value")
+    axes[0].legend(fontsize=9)
+    axes[0].grid(alpha=0.3)
+
+    axes[1].plot(steps, q_max - q_min, ".-", color="purple", markersize=3, linewidth=1)
+    axes[1].set_ylabel("Q range\n(max - min)")
+    axes[1].grid(alpha=0.3)
+
+    axes[2].plot(steps, q_std, ".-", color="teal", markersize=3, linewidth=1)
+    axes[2].set_ylabel("Q std")
+    axes[2].set_xlabel("Step")
+    axes[2].grid(alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path / "6_q_value_stats.png", dpi=150)
+    plt.close()
+
+    # ─── PLOT 7: 2D trajectory with action arrows ───
+    if n_dim == 2:
+        fig, ax = plt.subplots(figsize=(8, 8))
+        fig.suptitle(f"Agent Trajectory & Actions — Seed {seed}", fontsize=14, fontweight="bold")
+
+        # Agent trajectory
+        agent_x = raw_obs_all[:, raw_obs_all.shape[1] - single_frame_dim + 0]
+        agent_y = raw_obs_all[:, raw_obs_all.shape[1] - single_frame_dim + 1]
+        ax.plot(agent_x, agent_y, "-", color="gray", linewidth=1, alpha=0.5, zorder=2)
+        scatter_agent = ax.scatter(agent_x, agent_y, c=steps, cmap="Reds", s=20, zorder=3)
+
+        # Action arrows (from agent to action position)
+        arrow_step = max(1, n_steps // 20)
+        for t in range(0, n_steps, arrow_step):
+            dx = actions_all[t, 0] - agent_x[t]
+            dy = actions_all[t, 1] - agent_y[t]
+            ax.annotate("", xy=(actions_all[t, 0], actions_all[t, 1]),
+                        xytext=(agent_x[t], agent_y[t]),
+                        arrowprops=dict(arrowstyle="->", color="red", lw=1.2, alpha=0.6))
+
+        # Goals (constant, from first step)
+        g1x = raw_obs_all[0, raw_obs_all.shape[1] - single_frame_dim + 4]
+        g1y = raw_obs_all[0, raw_obs_all.shape[1] - single_frame_dim + 5]
+        g2x = raw_obs_all[0, raw_obs_all.shape[1] - single_frame_dim + 6]
+        g2y = raw_obs_all[0, raw_obs_all.shape[1] - single_frame_dim + 7]
+        ax.scatter(g1x, g1y, c="green", s=200, marker="*", zorder=10, label="Goal 1")
+        ax.scatter(g2x, g2y, c="blue", s=200, marker="*", zorder=10, label="Goal 2")
+
+        # Start and end positions
+        ax.scatter(agent_x[0], agent_y[0], c="black", marker="s", s=80, zorder=10, label="Start")
+        ax.scatter(agent_x[-1], agent_y[-1], c="darkred", marker="D", s=80, zorder=10, label="End")
+
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_aspect("equal")
+        ax.legend(fontsize=10)
+        ax.grid(alpha=0.3)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        plt.colorbar(scatter_agent, ax=ax, label="Step")
+        plt.tight_layout()
+        plt.savefig(output_path / "7_trajectory_with_actions.png", dpi=150)
+        plt.close()
+
+    # ─── PLOT 8: Action-space Q heatmaps at selected steps (2D) ───
+    if n_dim == 2 and q_estimator is not None and ACTION_DIM == 2:
+        snapshot_count = min(12, n_steps)
+        snapshot_indices = np.linspace(0, n_steps - 1, snapshot_count, dtype=int)
+
+        cfg = dict(env_config.get("model", {}).get("langevin_config", {}))
+        if langevin_config is not None:
+            cfg.update(langevin_config)
+        num_langevin_samples = (
+            int(langevin_num_samples)
+            if langevin_num_samples is not None
+            else int(env_config.get("training", {}).get("counter_examples", 32))
+        )
+
+        cols = 4
+        rows = (snapshot_count + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(4.4 * cols, 4.2 * rows))
+        fig.suptitle(
+            f"Q-Estimator Action-Space Heatmaps at Selected Steps — Seed {seed}",
+            fontsize=14,
+            fontweight="bold",
+        )
+        axes_flat = axes.flatten() if snapshot_count > 1 else [axes]
+
+        low, high = float(action_bounds[0]), float(action_bounds[1])
+        x_axis = np.linspace(low, high, heatmap_grid_size, dtype=np.float32)
+        y_axis = np.linspace(low, high, heatmap_grid_size, dtype=np.float32)
+        xx, yy = np.meshgrid(x_axis, y_axis)
+        grid_actions_np = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+
+        q_model = q_estimator
+        model_device = next(q_model.parameters()).device
+        action_min_tensor = torch.full((ACTION_DIM,), low, dtype=torch.float32, device=model_device)
+        action_max_tensor = torch.full((ACTION_DIM,), high, dtype=torch.float32, device=model_device)
+
+        for i, step_idx in enumerate(snapshot_indices):
+            ax = axes_flat[i]
+            log = step_logs[step_idx]
+
+            obs_t = torch.from_numpy(log.normalized_obs).float().unsqueeze(0).to(model_device)
+            actions_t = torch.from_numpy(grid_actions_np).float().unsqueeze(0).to(model_device)
+            obs_expanded = obs_t.unsqueeze(1).expand(-1, actions_t.shape[1], -1)
+
+            with torch.no_grad():
+                q_grid = q_model(obs_expanded, actions_t).squeeze(-1).squeeze(0).cpu().numpy()
+
+            # Recreate Langevin counter-example trajectories for this state and overlay them.
+            obs_single = obs_t
+
+            def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
+                return -q_model(obs_batch, act_batch).squeeze(-1)
+
+            _, traj_steps = sample_langevin(
+                energy_function=energy_fn,
+                observations=obs_single,
+                num_samples=num_langevin_samples,
+                action_min=action_min_tensor,
+                action_max=action_max_tensor,
+                num_iterations=int(cfg.get("num_iterations", 100)),
+                lr_init=float(cfg.get("lr_init", 0.1)),
+                lr_final=float(cfg.get("lr_final", 1e-5)),
+                polynomial_decay_power=float(cfg.get("polynomial_decay_power", 2.0)),
+                delta_action_clip=float(cfg.get("delta_action_clip", 0.1)),
+                noise_scale=float(cfg.get("noise_scale", 1.0)),
+                return_trajectories=True,
+                device=model_device,
+            )
+
+            traj_np = torch.stack(traj_steps, dim=0).squeeze(1).cpu().numpy()  # (K, N, 2)
+
+            q_map = q_grid.reshape(heatmap_grid_size, heatmap_grid_size)
+            im = ax.imshow(
+                q_map,
+                origin="lower",
+                extent=[low, high, low, high],
+                cmap="viridis",
+                aspect="equal",
+            )
+
+            for traj_idx in range(traj_np.shape[1]):
+                path_xy = traj_np[:, traj_idx, :]
+                ax.plot(
+                    path_xy[:, 0],
+                    path_xy[:, 1],
+                    color="white",
+                    alpha=0.35,
+                    linewidth=0.8,
+                    zorder=5,
+                    label="Langevin counterexample traj" if (i == 0 and traj_idx == 0) else None,
+                )
+                if i == 0:
+                    ax.scatter(path_xy[0, 0], path_xy[0, 1], c="white", s=10, alpha=0.4, zorder=5)
+                    ax.scatter(path_xy[-1, 0], path_xy[-1, 1], c="yellow", s=10, alpha=0.6, zorder=5)
+
+            raw = log.raw_obs
+            ax_x = raw[-single_frame_dim + 0]
+            ax_y = raw[-single_frame_dim + 1]
+            g1x = raw[-single_frame_dim + 4]
+            g1y = raw[-single_frame_dim + 5]
+            g2x = raw[-single_frame_dim + 6]
+            g2y = raw[-single_frame_dim + 7]
+
+            ax.scatter(log.action[0], log.action[1], c="red", s=95, marker="*",
+                       edgecolors="black", linewidths=0.8, zorder=6, label="chosen action")
+            ax.scatter(ax_x, ax_y, c="white", s=70, marker="o", edgecolors="black",
+                       linewidths=0.8, zorder=6, label="agent")
+            ax.scatter(g1x, g1y, c="lime", s=110, marker="*", edgecolors="black",
+                       linewidths=0.6, zorder=6, label="goal1")
+            ax.scatter(g2x, g2y, c="cyan", s=110, marker="*", edgecolors="black",
+                       linewidths=0.6, zorder=6, label="goal2")
+
+            ax.set_xlim(low, high)
+            ax.set_ylim(low, high)
+            ax.set_title(f"Step {log.step}", fontsize=10)
+            ax.grid(alpha=0.15)
+            if i == 0:
+                ax.legend(fontsize=7, loc="upper left")
+
+            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cbar.ax.tick_params(labelsize=7)
+            cbar.set_label("Q", fontsize=8)
+
+        for j in range(i + 1, len(axes_flat)):
+            axes_flat[j].set_visible(False)
+
+        plt.tight_layout()
+        plt.savefig(output_path / "8_q_heatmap_snapshots.png", dpi=150)
+        plt.close()
+
+    print(f"Diagnostic plots saved to: {output_path.absolute()}")
+
+
+def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerator:
+    """Load a trained control point generator from checkpoint."""
+    model = ControlPointGenerator(
+        input_dim=STATE_DIM * FRAME_STACK,
+        output_dim=ACTION_DIM,
+        control_points=CONTROL_POINTS,
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)],
+        action_bounds=ACTION_BOUNDS,
+    )
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+    model.to(device)
+    model.eval()
+    return model
+
+
+def load_q_estimator(checkpoint_path: str, device: str = "cpu") -> QEstimator:
+    """Load a trained Q-estimator from checkpoint."""
+    model = QEstimator(
+        state_dim=STATE_DIM * FRAME_STACK,
+        action_dim=ACTION_DIM,
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
+    )
+    model.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
+    model.to(device)
+    model.eval()
+    return model
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run particle simulation with diagnostic logging and plots"
+    )
+    parser.add_argument(
+        "--checkpoint", type=str,
+        default=config["simulation"]["default_checkpoint"],
+        help="Path to model checkpoint",
+    )
+    parser.add_argument(
+        "--seeds", type=int, nargs="+", default=None,
+        help="Seeds for episodes (default: config simulation.default_seeds)",
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default="plots/particle_diagnostic",
+        help="Directory to save diagnostic plots",
+    )
+    parser.add_argument(
+        "--render", action="store_true",
+        help="Render the environment during simulation",
+    )
+    args = parser.parse_args()
+    seeds_to_run = args.seeds if args.seeds is not None else config["simulation"].get("default_seeds", [42])
+
+    checkpoint_dir = os.path.dirname(args.checkpoint)
+    q_estimator_path = os.path.join(checkpoint_dir, "q_estimator.pt")
+
+    if not os.path.exists(args.checkpoint):
+        print(f"Error: Checkpoint not found at '{args.checkpoint}'")
+        sys.exit(1)
+    if not os.path.exists(q_estimator_path):
+        print(f"Error: Q-estimator not found at '{q_estimator_path}'")
+        sys.exit(1)
+
+    # Load models
+    print(f"Loading models from {checkpoint_dir}...")
+    model = load_model(args.checkpoint)
+    q_estimator = load_q_estimator(q_estimator_path)
+
+    n_dim = env_config.get("n_dim", 2)
+    max_steps = config["simulation"].get("max_episode_steps", 200)
+    render_mode = "human" if args.render else None
+
+    print(f"Running diagnostics for seeds: {seeds_to_run}")
+
+    for seed in seeds_to_run:
+        # Create a new simulation per seed so logs are isolated.
+        sim = DiagnosticParticleSimulation(
+            control_point_generator=model,
+            q_estimator=q_estimator,
+            n_dim=n_dim,
+            device="cpu",
+            max_episode_steps=max_steps,
+            render_mode=render_mode,
+            frame_stack=FRAME_STACK,
+        )
+
+        print(f"\nRunning episode with seed {seed}...")
+        result = sim.run_episode(seed=seed)
+
+        print(f"  Episode length: {result['episode_length']}")
+        print(f"  Total reward:   {result['total_reward']}")
+        print(f"  Success:        {result.get('success', False)}")
+        print(f"  Min dist goal1: {result.get('min_dist_to_first_goal', 'N/A'):.6f}")
+        print(f"  Min dist goal2: {result.get('min_dist_to_second_goal', 'N/A'):.6f}")
+        print(f"  Steps logged:   {len(sim.step_logs)}")
+
+        seed_output_dir = os.path.join(args.output_dir, str(seed))
+        if os.path.exists(seed_output_dir):
+            import shutil
+            shutil.rmtree(seed_output_dir)
+
+        generate_diagnostic_plots(
+            step_logs=sim.step_logs,
+            output_dir=seed_output_dir,
+            seed=seed,
+            q_estimator=q_estimator,
+            action_bounds=ACTION_BOUNDS,
+            n_dim=n_dim,
+            langevin_config=env_config.get("model", {}).get("langevin_config", {}),
+            langevin_num_samples=env_config.get("training", {}).get("counter_examples", 32),
+        )
+
+        sim.close()
+
+    print("Done!")
+
+
+if __name__ == "__main__":
+    main()

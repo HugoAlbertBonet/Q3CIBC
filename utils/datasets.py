@@ -166,6 +166,25 @@ class ParticleDataset(Dataset):
             return example
         except tf.errors.InvalidArgumentError:
             return None
+
+    @staticmethod
+    def _decode_step_type(feature) -> int | None:
+        """Decode TF-Agents step_type from a TF Example feature.
+
+        In these particle TFRecords, step_type may be stored either as an
+        int64_list scalar or as raw bytes (little-endian integer).
+        Returns None when the value cannot be decoded.
+        """
+        try:
+            if feature.int64_list.value:
+                return int(feature.int64_list.value[0])
+            if feature.bytes_list.value:
+                raw = feature.bytes_list.value[0]
+                # TF-Agents often serializes small scalar ints into raw bytes.
+                return int.from_bytes(raw, byteorder="little", signed=False)
+        except Exception:
+            return None
+        return None
     
     def _load_all_data(self):
         """Load all data from TFRecord files into numpy arrays.
@@ -198,11 +217,14 @@ class ParticleDataset(Dataset):
                     all_observations.append(observation)
                     all_actions.append(action)
                     
-                    # Detect episode boundaries via step_type (0=FIRST) or file boundaries
+                    # Detect episode boundaries via step_type (0=FIRST) or file boundaries.
+                    # Important: step_type is byte-encoded in these TFRecords.
                     is_start = is_first_in_episode
                     try:
-                        if 'step_type' in features and features['step_type'].int64_list.value:
-                            is_start = (features['step_type'].int64_list.value[0] == 0)
+                        if 'step_type' in features:
+                            step_type = self._decode_step_type(features['step_type'])
+                            if step_type is not None:
+                                is_start = (step_type == 0)
                     except Exception:
                         pass
                     episode_starts.append(is_start)

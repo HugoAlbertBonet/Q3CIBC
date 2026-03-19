@@ -14,7 +14,7 @@ import torch.nn as nn
 import wandb
 
 from utils.models import ControlPointGenerator, QEstimator
-from utils.loss import lossInfoNCE, lossMSE, lossSeparation
+from utils.loss import lossInfoNCE, lossMSE, lossSeparation, lossEntropyKDE
 from utils.normalizations import ObservationNormalizer
 from utils.sampling import sample_uniform, sample_langevin
 
@@ -46,6 +46,11 @@ save_interval = training_shared.get("save_interval", 10000)
 
 num_counter_examples = env_training.get("counter_examples", training_shared.get("counter_examples", 64))
 sampling_method = env_training.get("sampling_method", training_shared.get("sampling_method", "uniform"))
+# Separation loss epsilon: must be << action-space diameter so overlapping control
+# points are strongly repelled.  Default 1.0 is too large for particle's [0,1]^2.
+separation_epsilon = env_training.get("separation_epsilon", training_shared.get("separation_epsilon", 1.0))
+separation_loss_type = env_training.get("separation_loss", training_shared.get("separation_loss", "separation"))
+entropy_bandwidth = env_training.get("entropy_bandwidth", training_shared.get("entropy_bandwidth", 0.1))
 
 # Langevin config
 langevin_config = env_model.get("langevin_config", {})
@@ -121,6 +126,21 @@ def main():
     print(f"Loading {active_env} dataset...")
     dataset = load_dataset()
     print(f"Dataset size: {len(dataset)}")
+
+    if active_env == "particle" and hasattr(dataset, "_episode_starts"):
+        episode_starts = int(dataset._episode_starts.sum())
+        tfrecord_count = len(getattr(dataset, "tfrecord_files", []))
+        avg_episode_length = len(dataset) / max(episode_starts, 1)
+        print(
+            f"Particle dataset episodes: {episode_starts} | "
+            f"Avg samples/episode: {avg_episode_length:.2f}"
+        )
+        if tfrecord_count and episode_starts <= tfrecord_count:
+            raise RuntimeError(
+                "Particle dataset episode boundary parsing looks wrong: "
+                f"detected {episode_starts} episode starts across {tfrecord_count} TFRecord files. "
+                "This usually means step_type decoding failed and frame stacking would mix episodes."
+            )
     
     # Create models
     control_point_generator = ControlPointGenerator(
@@ -178,18 +198,29 @@ def main():
             # Both lossMSE and lossSeparation return SUMS over the batch.
             # We divide by B to make them MEANs over the batch, matching InfoNCE.
             loss_mse = mse_weight * (lossMSE(predicted_actions, actions) / B)
-            loss_sep = separation_weight * (lossSeparation(predicted_actions) / B)
+            if separation_loss_type == "entropy":
+                loss_sep = separation_weight * lossEntropyKDE(predicted_actions, bandwidth=entropy_bandwidth)
+            elif separation_loss_type == "separation":
+                loss_sep = separation_weight * (lossSeparation(predicted_actions, epsilon=separation_epsilon) / B)
+            else:
+                raise ValueError(f"Unknown separation_loss '{separation_loss_type}'. Expected 'separation' or 'entropy'.")
             loss_generator = loss_mse + loss_sep
             
             # ==================== Estimator Training (Direct InfoNCE) ====================
             # Generate counter-example samples
+            action_min_tensor = torch.full((actions.shape[1],), action_min, device=device)
+            action_max_tensor = torch.full((actions.shape[1],), action_max, device=device)
+
+            def energy_fn(obs, act):
+                return -estimator(obs, act).squeeze(-1)
+
+            def sample_uniform_torch(num_samples: int) -> torch.Tensor:
+                return (
+                    torch.rand(states.shape[0], num_samples, actions.shape[1], device=device)
+                    * (action_max - action_min) + action_min
+                )
+
             if sampling_method == "langevin":
-                action_min_tensor = torch.full((actions.shape[1],), action_min, device=device)
-                action_max_tensor = torch.full((actions.shape[1],), action_max, device=device)
-                
-                def energy_fn(obs, act):
-                    return -estimator(obs, act).squeeze(-1)
-                
                 counter_samples = sample_langevin(
                     energy_function=energy_fn,
                     observations=states,
@@ -204,11 +235,38 @@ def main():
                     noise_scale=langevin_noise_scale,
                     device=device
                 )
+            elif sampling_method == "uniform":
+                counter_samples = sample_uniform_torch(num_counter_examples)
+            elif sampling_method == "both":
+                # Split counter examples half uniform, half Langevin.
+                num_uniform = num_counter_examples // 2
+                num_langevin = num_counter_examples - num_uniform
+
+                samples = []
+                if num_uniform > 0:
+                    samples.append(sample_uniform_torch(num_uniform))
+                if num_langevin > 0:
+                    samples.append(
+                        sample_langevin(
+                            energy_function=energy_fn,
+                            observations=states,
+                            num_samples=num_langevin,
+                            action_min=action_min_tensor,
+                            action_max=action_max_tensor,
+                            num_iterations=langevin_num_iterations,
+                            lr_init=langevin_lr_init,
+                            lr_final=langevin_lr_final,
+                            polynomial_decay_power=langevin_decay_power,
+                            delta_action_clip=langevin_delta_clip,
+                            noise_scale=langevin_noise_scale,
+                            device=device
+                        )
+                    )
+                counter_samples = torch.cat(samples, dim=1)
             else:
-                # Uniform sampling
-                counter_samples = (
-                    torch.rand(states.shape[0], num_counter_examples, actions.shape[1], device=device)
-                    * (action_max - action_min) + action_min
+                raise ValueError(
+                    f"Unknown sampling_method '{sampling_method}'. "
+                    "Expected one of: 'uniform', 'langevin', 'both'."
                 )
             
             # Concatenate expert action (index 0) with counter-examples

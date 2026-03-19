@@ -60,7 +60,7 @@ class ParticleSimulation(BaseSimulation):
         )
         return env
 
-    def select_action(self, observation: np.ndarray) -> np.ndarray:
+    def select_action(self, observation: np.ndarray, return_q_range: bool = False):
         """Select action from control points based on Q-values.
         
         Override to handle particle action bounds [0, 1].
@@ -80,9 +80,14 @@ class ParticleSimulation(BaseSimulation):
             # Select control point with maximum Q-value
             best_idx = q_values.argmax(dim=1)
             action = control_points[0, best_idx[0], :].cpu().numpy()
+            q_range = (q_values.min().item(), q_values.max().item())
         
         # Clip to valid range [0, 1] for particle env
-        return np.clip(action, 0.0, 1.0)
+        ret_action = np.clip(action, 0.0, 1.0)
+        
+        if return_q_range:
+            return ret_action, q_range
+        return ret_action
 
     def run_episode(self, seed: int | None = None) -> dict:
         """Run a single episode and return metrics."""
@@ -99,6 +104,8 @@ class ParticleSimulation(BaseSimulation):
         
         while not done:
             action = self.select_action(stacked_obs)
+
+
             obs, reward, terminated, truncated, info = self.env.step(action)
             stacked_obs = self._update_frame_buffer(obs)
             total_reward += reward
@@ -116,7 +123,7 @@ class ParticleSimulation(BaseSimulation):
         self._episode_counter += 1
         if frames and self.save_gif_dir:
             os.makedirs(self.save_gif_dir, exist_ok=True)
-            gif_path = os.path.join(self.save_gif_dir, f"episode_{self._episode_counter:03d}.gif")
+            gif_path = os.path.join(self.save_gif_dir, f"seed_{seed}_episode_{self._episode_counter:03d}.gif")
             pil_frames = [Image.fromarray(f) for f in frames]
             pil_frames[0].save(
                 gif_path, save_all=True, append_images=pil_frames[1:],
