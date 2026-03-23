@@ -121,6 +121,8 @@ def generate_diagnostic_plots(
     n_dim: int = 2,
     langevin_config: dict | None = None,
     langevin_num_samples: int | None = None,
+    show_langevin_trajectories: bool = True,
+    show_langevin_final_positions: bool = True,
 ):
     """Generate comprehensive diagnostic plots from logged step data."""
     output_path = Path(output_dir)
@@ -256,10 +258,6 @@ def generate_diagnostic_plots(
             # Color control points by Q-value
             scatter = ax.scatter(cp[:, 0], cp[:, 1], c=qv, cmap="viridis", s=30, alpha=0.8, zorder=3)
 
-            # Highlight selected point
-            ax.scatter(cp[log.best_idx, 0], cp[log.best_idx, 1],
-                       c="red", s=100, marker="*", edgecolors="black", zorder=5, label="selected")
-
             # Goal positions (from raw obs, last frame)
             raw = log.raw_obs
             g1x = raw[-single_frame_dim + 4]
@@ -272,6 +270,10 @@ def generate_diagnostic_plots(
             # Agent position
             ax.scatter(raw[-single_frame_dim + 0], raw[-single_frame_dim + 1],
                        c="gray", s=60, marker="o", edgecolors="black", zorder=4, label="agent")
+
+            # Draw chosen action last so it stays on top of all other markers.
+            ax.scatter(cp[log.best_idx, 0], cp[log.best_idx, 1],
+                       c="red", s=120, marker="*", edgecolors="black", zorder=10, label="chosen action")
 
             ax.set_xlim(-0.05, 1.05)
             ax.set_ylim(-0.05, 1.05)
@@ -409,29 +411,31 @@ def generate_diagnostic_plots(
             with torch.no_grad():
                 q_grid = q_model(obs_expanded, actions_t).squeeze(-1).squeeze(0).cpu().numpy()
 
-            # Recreate Langevin counter-example trajectories for this state and overlay them.
-            obs_single = obs_t
+            traj_np = None
+            if show_langevin_trajectories or show_langevin_final_positions:
+                # Recreate Langevin counter-example trajectories for this state and overlay them.
+                obs_single = obs_t
 
-            def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
-                return -q_model(obs_batch, act_batch).squeeze(-1)
+                def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
+                    return -q_model(obs_batch, act_batch).squeeze(-1)
 
-            _, traj_steps = sample_langevin(
-                energy_function=energy_fn,
-                observations=obs_single,
-                num_samples=num_langevin_samples,
-                action_min=action_min_tensor,
-                action_max=action_max_tensor,
-                num_iterations=int(cfg.get("num_iterations", 100)),
-                lr_init=float(cfg.get("lr_init", 0.1)),
-                lr_final=float(cfg.get("lr_final", 1e-5)),
-                polynomial_decay_power=float(cfg.get("polynomial_decay_power", 2.0)),
-                delta_action_clip=float(cfg.get("delta_action_clip", 0.1)),
-                noise_scale=float(cfg.get("noise_scale", 1.0)),
-                return_trajectories=True,
-                device=model_device,
-            )
+                _, traj_steps = sample_langevin(
+                    energy_function=energy_fn,
+                    observations=obs_single,
+                    num_samples=num_langevin_samples,
+                    action_min=action_min_tensor,
+                    action_max=action_max_tensor,
+                    num_iterations=int(cfg.get("num_iterations", 100)),
+                    lr_init=float(cfg.get("lr_init", 0.1)),
+                    lr_final=float(cfg.get("lr_final", 1e-5)),
+                    polynomial_decay_power=float(cfg.get("polynomial_decay_power", 2.0)),
+                    delta_action_clip=float(cfg.get("delta_action_clip", 0.1)),
+                    noise_scale=float(cfg.get("noise_scale", 1.0)),
+                    return_trajectories=True,
+                    device=model_device,
+                )
 
-            traj_np = torch.stack(traj_steps, dim=0).squeeze(1).cpu().numpy()  # (K, N, 2)
+                traj_np = torch.stack(traj_steps, dim=0).squeeze(1).cpu().numpy()  # (K, N, 2)
 
             q_map = q_grid.reshape(heatmap_grid_size, heatmap_grid_size)
             im = ax.imshow(
@@ -442,20 +446,37 @@ def generate_diagnostic_plots(
                 aspect="equal",
             )
 
-            for traj_idx in range(traj_np.shape[1]):
-                path_xy = traj_np[:, traj_idx, :]
-                ax.plot(
-                    path_xy[:, 0],
-                    path_xy[:, 1],
-                    color="white",
-                    alpha=0.35,
-                    linewidth=0.8,
-                    zorder=5,
-                    label="Langevin counterexample traj" if (i == 0 and traj_idx == 0) else None,
-                )
-                if i == 0:
-                    ax.scatter(path_xy[0, 0], path_xy[0, 1], c="white", s=10, alpha=0.4, zorder=5)
-                    ax.scatter(path_xy[-1, 0], path_xy[-1, 1], c="yellow", s=10, alpha=0.6, zorder=5)
+            if traj_np is not None:
+                for traj_idx in range(traj_np.shape[1]):
+                    path_xy = traj_np[:, traj_idx, :]
+                    if show_langevin_trajectories:
+                        ax.plot(
+                            path_xy[:, 0],
+                            path_xy[:, 1],
+                            color="white",
+                            alpha=0.35,
+                            linewidth=0.8,
+                            zorder=5,
+                            label="Langevin counterexample traj" if (i == 0 and traj_idx == 0) else None,
+                        )
+                        if i == 0:
+                            ax.scatter(path_xy[0, 0], path_xy[0, 1], c="white", s=12, alpha=0.45, zorder=6)
+
+                    if show_langevin_final_positions:
+                        # Highlight final Langevin positions with a larger high-contrast marker
+                        # so they remain visible on top of the Q heatmap.
+                        ax.scatter(
+                            path_xy[-1, 0],
+                            path_xy[-1, 1],
+                            c="yellow",
+                            s=46,
+                            alpha=0.95,
+                            marker="X",
+                            edgecolors="black",
+                            linewidths=0.65,
+                            zorder=7,
+                            label="Langevin final" if (i == 0 and traj_idx == 0) else None,
+                        )
 
             raw = log.raw_obs
             ax_x = raw[-single_frame_dim + 0]
@@ -544,8 +565,31 @@ def main():
         "--render", action="store_true",
         help="Render the environment during simulation",
     )
+    parser.add_argument(
+        "--show-langevin-trajectories",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show Langevin trajectory lines in Plot 8 (use --no-show-langevin-trajectories to hide)",
+    )
+    parser.add_argument(
+        "--show-langevin-final-positions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show Langevin final position markers in Plot 8 (use --no-show-langevin-final-positions to hide)",
+    )
+    parser.add_argument(
+        "--hide-langevin-overlays",
+        action="store_true",
+        help="Hide both Langevin trajectories and final position markers in Plot 8",
+    )
     args = parser.parse_args()
     seeds_to_run = args.seeds if args.seeds is not None else config["simulation"].get("default_seeds", [42])
+
+    show_langevin_trajectories = args.show_langevin_trajectories
+    show_langevin_final_positions = args.show_langevin_final_positions
+    if args.hide_langevin_overlays:
+        show_langevin_trajectories = False
+        show_langevin_final_positions = False
 
     checkpoint_dir = os.path.dirname(args.checkpoint)
     q_estimator_path = os.path.join(checkpoint_dir, "q_estimator.pt")
@@ -604,6 +648,8 @@ def main():
             n_dim=n_dim,
             langevin_config=env_config.get("model", {}).get("langevin_config", {}),
             langevin_num_samples=env_config.get("training", {}).get("counter_examples", 32),
+            show_langevin_trajectories=show_langevin_trajectories,
+            show_langevin_final_positions=show_langevin_final_positions,
         )
 
         sim.close()
