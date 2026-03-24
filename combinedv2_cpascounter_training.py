@@ -165,7 +165,13 @@ def main():
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
     # Observation normalizer
-    obs_normalizer = ObservationNormalizer(env_id=env_id, device=device, frame_stack=frame_stack)
+    particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
+    obs_normalizer = ObservationNormalizer(
+        env_id=env_id,
+        device=device,
+        frame_stack=frame_stack,
+        particle_n_dim=particle_n_dim,
+    )
     
     # Number of generated control points used as counter examples.
     k_counter_examples = max(1, min(top_k_control_points, control_points))

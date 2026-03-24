@@ -96,6 +96,7 @@ class ObservationNormalizer:
         bounds_file: Optional[str] = None,
         device: str = "cpu",
         frame_stack: int = 1,
+        particle_n_dim: Optional[int] = None,
     ) -> None:
         """Initialize the normalizer with bounds for a specific environment.
         
@@ -119,12 +120,23 @@ class ObservationNormalizer:
         
         env_bounds = all_bounds[env_id]
         self.env_id = env_id
-        self.observation_dim = env_bounds["observation_dim"]
-        
-        # Load flat bounds as tensors
-        flat_bounds = env_bounds["flat_bounds"]
-        self.obs_min = torch.tensor(flat_bounds["min"], dtype=torch.float32, device=device)
-        self.obs_max = torch.tensor(flat_bounds["max"], dtype=torch.float32, device=device)
+
+        # Particle bounds are dimension-dependent (2D/3D/...) while env_id remains Particle-v0.
+        # Build bounds dynamically when particle_n_dim is provided.
+        if env_id == "Particle-v0" and particle_n_dim is not None:
+            n = int(particle_n_dim)
+            self.observation_dim = 4 * n
+            obs_min = [0.0] * n + [-1.5] * n + [0.0] * n + [0.0] * n
+            obs_max = [1.0] * n + [1.5] * n + [1.0] * n + [1.0] * n
+            self.obs_min = torch.tensor(obs_min, dtype=torch.float32, device=device)
+            self.obs_max = torch.tensor(obs_max, dtype=torch.float32, device=device)
+        else:
+            self.observation_dim = env_bounds["observation_dim"]
+            
+            # Load flat bounds as tensors
+            flat_bounds = env_bounds["flat_bounds"]
+            self.obs_min = torch.tensor(flat_bounds["min"], dtype=torch.float32, device=device)
+            self.obs_max = torch.tensor(flat_bounds["max"], dtype=torch.float32, device=device)
         
         # Compute range, avoiding division by zero
         self.obs_range = self.obs_max - self.obs_min

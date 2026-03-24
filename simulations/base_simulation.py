@@ -29,6 +29,7 @@ class BaseSimulation(ABC):
         device: str = "cpu",
         max_episode_steps: int = 400,
         frame_stack: int = 1,
+        particle_n_dim: int | None = None,
     ) -> None:
         """Initialize the simulation.
         
@@ -50,7 +51,12 @@ class BaseSimulation(ABC):
         self._frame_buffer: deque[np.ndarray] = deque(maxlen=frame_stack)
         
         # Observation normalizer (uses official bounds from JSON file)
-        self.obs_normalizer = ObservationNormalizer(env_id=env_id, device=device, frame_stack=frame_stack)
+        self.obs_normalizer = ObservationNormalizer(
+            env_id=env_id,
+            device=device,
+            frame_stack=frame_stack,
+            particle_n_dim=particle_n_dim,
+        )
 
     @abstractmethod
     def create_env(self) -> gym.Env:

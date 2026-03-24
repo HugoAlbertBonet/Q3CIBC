@@ -45,6 +45,7 @@ class ParticleSimulation(BaseSimulation):
             device=device,
             max_episode_steps=max_episode_steps,
             frame_stack=frame_stack,
+            particle_n_dim=n_dim,
         )
         self.n_dim = n_dim
         self.render_mode = render_mode
