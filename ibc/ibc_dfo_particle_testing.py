@@ -346,6 +346,7 @@ def main():
         env_id=env_config["env_id"],
         device=device,
         frame_stack=frame_stack,
+        particle_n_dim=n_dim,
     )
 
     os.makedirs(PLOT_DIR, exist_ok=True)

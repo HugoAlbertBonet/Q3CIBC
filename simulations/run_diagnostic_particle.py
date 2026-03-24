@@ -921,7 +921,7 @@ def main():
         print(f"  Min dist goal2: {result.get('min_dist_to_second_goal', 'N/A'):.6f}")
         print(f"  Steps logged:   {len(sim.step_logs)}")
 
-        seed_output_dir = os.path.join(args.output_dir, str(seed))
+        seed_output_dir = os.path.join(args.output_dir, str(n_dim), str(seed))
         if os.path.exists(seed_output_dir):
             import shutil
             shutil.rmtree(seed_output_dir)

@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn.utils import spectral_norm
 from typing import Sequence
 
 
@@ -51,20 +52,57 @@ class QEstimator(nn.Module):
 		output_dim: int = 1,
 		hidden_dims: Sequence[int] = (256, 256),
 		activation: type[nn.Module] = nn.ReLU,
+		dropout_rate: float = 0.0,
+		use_spectral_norm: bool = False,
+		init_mode: str = "default",
+		init_std: float = 0.05,
 	) -> None:
 		super().__init__()
 		self.state_dim = state_dim
 		self.action_dim = action_dim
+		self.dropout_rate = dropout_rate
+		self.use_spectral_norm = use_spectral_norm
+		self.init_mode = init_mode
+		self.init_std = init_std
 
 		layers = []
 		prev_dim = state_dim + action_dim  # Concatenate state and action
 		for dim in hidden_dims:
-			layers.append(nn.Linear(prev_dim, dim))
+			layers.append(self._make_linear(prev_dim, dim))
 			layers.append(activation())
+			if dropout_rate > 0.0:
+				layers.append(nn.Dropout(p=dropout_rate))
 			prev_dim = dim
 
-		layers.append(nn.Linear(prev_dim, output_dim))
+		layers.append(self._make_linear(prev_dim, output_dim))
 		self.network = nn.Sequential(*layers)
+		self._init_parameters()
+
+	def _make_linear(self, in_dim: int, out_dim: int) -> nn.Module:
+		"""Create a linear layer with optional spectral normalization."""
+		layer = nn.Linear(in_dim, out_dim)
+		if self.use_spectral_norm:
+			layer = spectral_norm(layer)
+		return layer
+
+	def _init_parameters(self) -> None:
+		"""Initialize model parameters.
+
+		Modes:
+		- default: keep PyTorch defaults
+		- normal: Normal(0, init_std) for weights and biases
+		"""
+		if self.init_mode == "default":
+			return
+
+		if self.init_mode != "normal":
+			raise ValueError(f"Unsupported init_mode: {self.init_mode}")
+
+		for module in self.modules():
+			if isinstance(module, nn.Linear):
+				nn.init.normal_(module.weight, mean=0.0, std=self.init_std)
+				if module.bias is not None:
+					nn.init.normal_(module.bias, mean=0.0, std=self.init_std)
 
 	def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
 		"""

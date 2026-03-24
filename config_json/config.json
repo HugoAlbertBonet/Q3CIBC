@@ -62,7 +62,7 @@
                 "wirefit_smoothing_param": 0.1
             },
             "model": {
-                "control_points": 50,
+                "control_points": 30,
                 "num_hidden_layers": 2,
                 "num_neurons": 256,
                 "langevin_config": {
@@ -141,6 +141,7 @@
     },
     "simulation": {
         "default_checkpoint": "checkpoints/control_point_generator.pt",
+        "num_seeds": 50,
         "default_seeds": [
             0,
             35,

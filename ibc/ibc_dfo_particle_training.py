@@ -186,6 +186,7 @@ def main():
         env_id=env_config["env_id"],
         device=device,
         frame_stack=frame_stack,
+        particle_n_dim=n_dim,
     )
 
     # ─── Energy model (no spectral norm — paper particle gin: 'regular') ──
