@@ -36,9 +36,9 @@
         "particle": {
             "data_dir": "datasets/particle",
             "env_id": "Particle-v0",
-            "n_dim": 3,
-            "state_dim": 12,
-            "action_dim": 3,
+            "n_dim": 8,
+            "state_dim": 32,
+            "action_dim": 8,
             "frame_stack": 2,
             "action_bounds": [
                 0,
@@ -55,14 +55,14 @@
                 "entropy_bandwidth": 0.1,
                 "gradient_penalty_margin": 1.0,
                 "gradient_penalty_weight": 1.0,
-                "top_k_control_points": 50,
+                "top_k_control_points": 15,
                 "wirefit_top_k_control_points": 20,
                 "wirefit_distribution_weight": 1.0,
                 "wirefit_distribution_temperature": 1.0,
                 "wirefit_smoothing_param": 0.1
             },
             "model": {
-                "control_points": 30,
+                "control_points": 20,
                 "num_hidden_layers": 2,
                 "num_neurons": 256,
                 "langevin_config": {
@@ -124,9 +124,11 @@
         "smoothing_param": 0.1,
         "smoothing_param_trainable": false,
         "use_wire_fitting": true,
-        "separation_weight": 0.05,
-        "mse_weight": 5.0,
+        "separation_weight": 0.1,
+        "mse_weight": 20.0,
         "info_nce_weight": 1.0,
+        "top_k_langevin_counter_examples": 10,
+        "generator_infonce_weight": 0.05,
         "gradient_penalty_margin": 1.0,
         "gradient_penalty_weight": 1.0,
         "wirefit_smoothing_param": 0.1,
@@ -137,7 +139,7 @@
         "lr_decay_interval": 100,
         "log_interval": 1000,
         "save_interval": 5000,
-        "model_save_dir": "checkpoints"
+        "model_save_dir": "/home/halbertb/Q3CIBC/checkpoints/_q3c_eval_tmp"
     },
     "simulation": {
         "default_checkpoint": "checkpoints/control_point_generator.pt",

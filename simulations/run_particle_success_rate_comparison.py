@@ -288,17 +288,43 @@ def _upsert_csv_row(
     success_rate_dfo: float,
     success_rate_q3cibc: float,
     num_seeds: int,
+    train_time_dfo: float | None = None,
+    inference_time_dfo: float | None = None,
+    train_time_q3cibc: float | None = None,
+    inference_time_q3cibc: float | None = None,
 ) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    headers = ["n_dim", "success_rate_dfo", "success_rate_q3cibc", "num_seeds"]
+    headers = [
+        "n_dim",
+        "success_rate_dfo", "train_time_dfo", "inference_time_dfo",
+        "success_rate_q3cibc", "train_time_q3cibc", "inference_time_q3cibc",
+        "num_seeds",
+    ]
     rows: list[dict[str, str]] = []
 
     if csv_path.exists():
         with open(csv_path, "r", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                rows.append(dict(row))
+                filtered = {k: v for k, v in row.items() if k in headers}
+                rows.append(filtered)
+
+    def _fmt_time(t: float | None) -> str:
+        if t is None:
+            return ""
+        return f"{t:.1f}"
+
+    new_row = {
+        "n_dim": str(n_dim),
+        "success_rate_dfo": f"{success_rate_dfo:.6f}",
+        "train_time_dfo": _fmt_time(train_time_dfo),
+        "inference_time_dfo": _fmt_time(inference_time_dfo),
+        "success_rate_q3cibc": f"{success_rate_q3cibc:.6f}",
+        "train_time_q3cibc": _fmt_time(train_time_q3cibc),
+        "inference_time_q3cibc": _fmt_time(inference_time_q3cibc),
+        "num_seeds": str(num_seeds),
+    }
 
     updated = False
     for row in rows:
@@ -308,21 +334,12 @@ def _upsert_csv_row(
             continue
 
         if row_n_dim == n_dim:
-            row["success_rate_dfo"] = f"{success_rate_dfo:.6f}"
-            row["success_rate_q3cibc"] = f"{success_rate_q3cibc:.6f}"
-            row["num_seeds"] = str(num_seeds)
+            row.update(new_row)
             updated = True
             break
 
     if not updated:
-        rows.append(
-            {
-                "n_dim": str(n_dim),
-                "success_rate_dfo": f"{success_rate_dfo:.6f}",
-                "success_rate_q3cibc": f"{success_rate_q3cibc:.6f}",
-                "num_seeds": str(num_seeds),
-            }
-        )
+        rows.append(new_row)
 
     rows.sort(key=lambda r: int(r.get("n_dim", "0")))
 
@@ -330,6 +347,54 @@ def _upsert_csv_row(
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
         writer.writerows(rows)
+
+
+import time as _time
+
+
+def _get_dfo_train_time(checkpoint_path: str, device: torch.device) -> float | None:
+    """Extract training duration from DFO checkpoint's sibling train_summary.json."""
+    try:
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        if not isinstance(ckpt, dict):
+            return None
+        run_id = ckpt.get("run_id") or (ckpt.get("hparams") or {}).get("RUN_ID")
+        run_name = ckpt.get("run_name") or (ckpt.get("hparams") or {}).get("RUN_NAME")
+        if run_id is not None and run_name:
+            summary_path = os.path.join(
+                os.path.dirname(checkpoint_path),
+                f"run_{int(run_id):02d}_{run_name}",
+                "train_summary.json",
+            )
+            if os.path.exists(summary_path):
+                with open(summary_path) as f:
+                    return json.load(f).get("duration_seconds")
+    except Exception:
+        pass
+    return None
+
+
+def _get_q3c_train_time(model_dir: str) -> float | None:
+    """Try to find Q3C training duration from hpsearch trial results."""
+    trials_path = os.path.join(
+        "results", "hyperparam_search",
+        "combinedv2_cpascounter_training", "trials.jsonl",
+    )
+    if not os.path.exists(trials_path):
+        return None
+    try:
+        best_duration = None
+        best_sr = -1.0
+        with open(trials_path) as f:
+            for line in f:
+                trial = json.loads(line)
+                sr = trial.get("success_rate", 0)
+                if sr > best_sr:
+                    best_sr = sr
+                    best_duration = trial.get("duration_seconds")
+        return best_duration
+    except Exception:
+        return None
 
 
 def main() -> None:
@@ -418,8 +483,15 @@ def main() -> None:
         "render_mode": None,
     }
 
+    train_time_dfo = _get_dfo_train_time(dfo_q_path, device)
+    train_time_q3cibc = _get_q3c_train_time(model_dir)
+
     print(f"Evaluating Particle success rate for n_dim={n_dim} over {num_seeds} seeds...")
+    print(f"  DFO train time:  {train_time_dfo:.1f}s" if train_time_dfo else "  DFO train time:  N/A")
+    print(f"  Q3C train time:  {train_time_q3cibc:.1f}s" if train_time_q3cibc else "  Q3C train time:  N/A")
+
     print("Method 1/2: IBC-DFO")
+    t0 = _time.time()
     success_rate_dfo = _run_method_success_rate(
         method="dfo",
         seeds=seeds,
@@ -433,8 +505,10 @@ def main() -> None:
         dfo_norm_stats=dfo_norm_stats,
         dfo_langevin_cfg=dfo_langevin_cfg,
     )
+    inference_time_dfo = _time.time() - t0
 
     print("Method 2/2: Q3C-IBC")
+    t0 = _time.time()
     success_rate_q3c = _run_method_success_rate(
         method="q3cibc",
         seeds=seeds,
@@ -447,6 +521,7 @@ def main() -> None:
         q3c_control_point_generator=q3c_control_point_generator,
         q3c_q_estimator=q3c_q_estimator,
     )
+    inference_time_q3cibc = _time.time() - t0
 
     _upsert_csv_row(
         csv_path=RESULTS_CSV_PATH,
@@ -454,12 +529,16 @@ def main() -> None:
         success_rate_dfo=success_rate_dfo,
         success_rate_q3cibc=success_rate_q3c,
         num_seeds=num_seeds,
+        train_time_dfo=train_time_dfo,
+        inference_time_dfo=inference_time_dfo,
+        train_time_q3cibc=train_time_q3cibc,
+        inference_time_q3cibc=inference_time_q3cibc,
     )
 
     print("Done.")
     print(f"  n_dim: {n_dim}")
-    print(f"  success_rate_dfo: {success_rate_dfo:.4f}")
-    print(f"  success_rate_q3cibc: {success_rate_q3c:.4f}")
+    print(f"  success_rate_dfo:     {success_rate_dfo:.4f}  (inference: {inference_time_dfo:.1f}s, train: {train_time_dfo:.1f}s)" if train_time_dfo else f"  success_rate_dfo:     {success_rate_dfo:.4f}  (inference: {inference_time_dfo:.1f}s)")
+    print(f"  success_rate_q3cibc:  {success_rate_q3c:.4f}  (inference: {inference_time_q3cibc:.1f}s, train: {train_time_q3cibc:.1f}s)" if train_time_q3cibc else f"  success_rate_q3cibc:  {success_rate_q3c:.4f}  (inference: {inference_time_q3cibc:.1f}s)")
     print(f"  results file: {RESULTS_CSV_PATH}")
 
 

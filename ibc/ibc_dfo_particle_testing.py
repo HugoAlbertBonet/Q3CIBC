@@ -21,6 +21,7 @@ import os
 import json
 from collections import deque
 from pathlib import Path
+from datetime import datetime, timezone
 
 import numpy as np
 import torch
@@ -70,6 +71,37 @@ CHECKPOINT_DIR = os.path.join(
     "ibc_dfo", "particle",
 )
 PLOT_DIR = "plots/ibc_dfo/particle"
+RESULTS_DIR = os.path.join("results", "ibc_dfo", "particle")
+EVAL_LEDGER_PATH = os.path.join(RESULTS_DIR, "evaluation_runs.jsonl")
+RUN_ID_ENV = "IBC_PARTICLE_RUN_ID"
+
+
+def append_jsonl(path, payload):
+    """Append one JSON record as a single line."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def resolve_checkpoint_path():
+    """Resolve checkpoint path, preferring run-specific checkpoints when set."""
+    run_id_raw = os.getenv(RUN_ID_ENV, "").strip()
+    if run_id_raw:
+        if not run_id_raw.isdigit():
+            raise ValueError(f"{RUN_ID_ENV} must be an integer if set, got: {run_id_raw!r}")
+        run_id = int(run_id_raw)
+        prefix = f"run_{run_id:02d}_"
+        if os.path.isdir(CHECKPOINT_DIR):
+            for name in sorted(os.listdir(CHECKPOINT_DIR)):
+                candidate_dir = os.path.join(CHECKPOINT_DIR, name)
+                candidate_ckpt = os.path.join(candidate_dir, "q_estimator.pt")
+                if name.startswith(prefix) and os.path.isfile(candidate_ckpt):
+                    return candidate_ckpt
+        raise FileNotFoundError(
+            f"No run-specific checkpoint found for {RUN_ID_ENV}={run_id} under {CHECKPOINT_DIR}"
+        )
+
+    return os.path.join(CHECKPOINT_DIR, "q_estimator.pt")
 
 
 def normalize_obs(obs_tensor, obs_normalizer):
@@ -214,7 +246,7 @@ def plot_path(
 
 def load_energy_model(device):
     """Load the trained energy model and normalization stats from checkpoint."""
-    checkpoint_path = os.path.join(CHECKPOINT_DIR, "q_estimator.pt")
+    checkpoint_path = resolve_checkpoint_path()
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(
             f"Checkpoint not found at '{checkpoint_path}'.\n"
@@ -243,7 +275,7 @@ def load_energy_model(device):
     model.to(device)
     model.eval()
     print(f"Loaded energy model from {checkpoint_path}")
-    return model, norm_stats
+    return model, norm_stats, checkpoint_path
 
 
 def run_episode(energy_model, device, seed, norm_stats, obs_normalizer):
@@ -341,7 +373,7 @@ def main():
     print()
 
     # Load model and norm stats
-    energy_model, norm_stats = load_energy_model(device)
+    energy_model, norm_stats, checkpoint_path = load_energy_model(device)
     obs_normalizer = ObservationNormalizer(
         env_id=env_config["env_id"],
         device=device,
@@ -406,6 +438,53 @@ def main():
     print(f"  Avg min dist to Goal 2:  {np.mean(second_dists):.4f}")
     print(f"  Plots saved to:          {PLOT_DIR}/")
     print("=" * 85)
+
+    eval_summary = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "run_id": os.getenv(RUN_ID_ENV, "legacy_or_latest"),
+        "checkpoint_path": checkpoint_path,
+        "seeds": seeds,
+        "num_seeds": len(seeds),
+        "inference_hparams": {
+            "num_samples": LANGEVIN_NUM_SAMPLES,
+            "num_iterations": LANGEVIN_NUM_ITERATIONS,
+            "lr_init": LANGEVIN_LR_INIT,
+            "lr_final": LANGEVIN_LR_FINAL,
+            "decay_power": LANGEVIN_DECAY_POWER,
+            "delta_action_clip": LANGEVIN_DELTA_ACTION_CLIP,
+            "noise_scale": LANGEVIN_NOISE_SCALE,
+            "uniform_boundary_buffer": UNIFORM_BOUNDARY_BUFFER,
+        },
+        "global_metrics": {
+            "avg_reward": float(np.mean(rewards)),
+            "std_reward": float(np.std(rewards)),
+            "avg_steps": float(np.mean(steps_list)),
+            "success_rate": float(np.mean(successes)),
+            "avg_min_dist_goal_1": float(np.mean(first_dists)),
+            "avg_min_dist_goal_2": float(np.mean(second_dists)),
+        },
+        "per_seed": [
+            {
+                "seed": int(r["seed"]),
+                "steps": int(r["steps"]),
+                "reward": float(r["reward"]),
+                "success": bool(r["success"]),
+                "min_dist_goal_1": float(r["min_dist_first"]),
+                "min_dist_goal_2": float(r["min_dist_second"]),
+                "plot_path": os.path.join(PLOT_DIR, f"path_seed_{r['seed']}.png"),
+            }
+            for r in all_results
+        ],
+    }
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    run_slug = str(os.getenv(RUN_ID_ENV, "legacy_or_latest"))
+    summary_path = os.path.join(RESULTS_DIR, f"eval_summary_run_{run_slug}.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(eval_summary, f, indent=2)
+    append_jsonl(EVAL_LEDGER_PATH, eval_summary)
+    print(f"Evaluation summary saved to: {summary_path}")
+    print(f"Evaluation ledger appended to: {EVAL_LEDGER_PATH}")
 
 
 if __name__ == "__main__":

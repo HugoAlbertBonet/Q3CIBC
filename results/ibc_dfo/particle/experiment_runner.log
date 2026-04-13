@@ -1,0 +1,733 @@
+[2026-03-25T17:06:23-07:00] Starting 10-run experiment sweep (clean launch)
+[2026-03-25T17:06:23-07:00] === RUN 1 / 10: TRAIN START ===
+2026-03-25 17:06:25.000430: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-03-25 17:06:25.056262: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Using device: cuda
+Training IBC (paper-faithful) on Particle environment
+Run: 1/10 (baseline_paper)
+Steps: 100000, Batch: 512, LR: 0.001
+Counter-examples: 16 (Langevin, 100 iters)
+Architecture: MLP [256, 256]
+Grad penalty: L-inf, margin=1.0
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1774483588.899827   75966 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 3586 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 3060 Laptop GPU, pci bus id: 0000:01:00.0, compute capability: 8.6
+2026-03-25 17:06:29.042384: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+2026-03-25 17:06:30.182517: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-25 17:06:31.304722: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-25 17:06:33.291087: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-25 17:06:37.299564: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+Dataset size: 102000
+Act range: [0.000, 1.000]
+
+Starting training...
+  Step 1000/100000 | Loss: 2.7785 (NCE: 2.7731, GP: 0.0054) | Acc: 0.217 | LR: 9.04e-04 | Elapsed: 122.0s
+  Step 2000/100000 | Loss: 2.7908 (NCE: 2.7864, GP: 0.0044) | Acc: 0.279 | LR: 8.18e-04 | Elapsed: 250.7s
+  Step 3000/100000 | Loss: 2.7939 (NCE: 2.7904, GP: 0.0035) | Acc: 0.201 | LR: 7.40e-04 | Elapsed: 383.4s
+  Step 4000/100000 | Loss: 2.7894 (NCE: 2.7870, GP: 0.0024) | Acc: 0.668 | LR: 6.69e-04 | Elapsed: 517.9s
+  Step 5000/100000 | Loss: 2.7894 (NCE: 2.7862, GP: 0.0032) | Acc: 0.516 | LR: 6.05e-04 | Elapsed: 644.2s
+  Step 6000/100000 | Loss: 2.7907 (NCE: 2.7874, GP: 0.0033) | Acc: 0.766 | LR: 5.47e-04 | Elapsed: 774.7s
+  Step 7000/100000 | Loss: 2.7939 (NCE: 2.7911, GP: 0.0028) | Acc: 0.496 | LR: 4.95e-04 | Elapsed: 905.6s
+  Step 8000/100000 | Loss: 2.7877 (NCE: 2.7848, GP: 0.0029) | Acc: 0.713 | LR: 4.48e-04 | Elapsed: 1034.1s
+  Step 9000/100000 | Loss: 2.7892 (NCE: 2.7861, GP: 0.0031) | Acc: 0.795 | LR: 4.05e-04 | Elapsed: 1162.5s
+  Step 10000/100000 | Loss: 2.7866 (NCE: 2.7840, GP: 0.0026) | Acc: 0.764 | LR: 3.66e-04 | Elapsed: 1291.3s
+  Step 11000/100000 | Loss: 2.7914 (NCE: 2.7887, GP: 0.0027) | Acc: 0.805 | LR: 3.31e-04 | Elapsed: 1423.3s
+  Step 12000/100000 | Loss: 2.7848 (NCE: 2.7822, GP: 0.0026) | Acc: 0.830 | LR: 2.99e-04 | Elapsed: 1556.3s
+  Step 13000/100000 | Loss: 2.7898 (NCE: 2.7872, GP: 0.0026) | Acc: 0.658 | LR: 2.71e-04 | Elapsed: 1686.8s
+  Step 14000/100000 | Loss: 2.7911 (NCE: 2.7883, GP: 0.0028) | Acc: 0.588 | LR: 2.45e-04 | Elapsed: 1813.8s
+  Step 15000/100000 | Loss: 2.7876 (NCE: 2.7848, GP: 0.0029) | Acc: 0.799 | LR: 2.21e-04 | Elapsed: 1942.9s
+  Step 16000/100000 | Loss: 2.7896 (NCE: 2.7867, GP: 0.0029) | Acc: 0.756 | LR: 2.00e-04 | Elapsed: 2071.6s
+  Step 17000/100000 | Loss: 2.7881 (NCE: 2.7854, GP: 0.0026) | Acc: 0.803 | LR: 1.81e-04 | Elapsed: 2202.5s
+  Step 18000/100000 | Loss: 2.7910 (NCE: 2.7881, GP: 0.0029) | Acc: 0.844 | LR: 1.64e-04 | Elapsed: 2330.0s
+  Step 19000/100000 | Loss: 2.7941 (NCE: 2.7915, GP: 0.0026) | Acc: 0.834 | LR: 1.48e-04 | Elapsed: 2459.2s
+  Step 20000/100000 | Loss: 2.7911 (NCE: 2.7887, GP: 0.0024) | Acc: 0.891 | LR: 1.34e-04 | Elapsed: 2587.9s
+  Step 21000/100000 | Loss: 2.7924 (NCE: 2.7893, GP: 0.0031) | Acc: 0.814 | LR: 1.21e-04 | Elapsed: 2716.4s
+  Step 22000/100000 | Loss: 2.7886 (NCE: 2.7859, GP: 0.0027) | Acc: 0.865 | LR: 1.10e-04 | Elapsed: 2843.0s
+  Step 23000/100000 | Loss: 2.7864 (NCE: 2.7840, GP: 0.0024) | Acc: 0.961 | LR: 9.91e-05 | Elapsed: 2971.6s
+  Step 24000/100000 | Loss: 2.7902 (NCE: 2.7876, GP: 0.0026) | Acc: 0.883 | LR: 8.96e-05 | Elapsed: 3100.1s
+  Step 25000/100000 | Loss: 2.7874 (NCE: 2.7850, GP: 0.0023) | Acc: 0.947 | LR: 8.11e-05 | Elapsed: 3228.5s
+  Step 26000/100000 | Loss: 2.7894 (NCE: 2.7868, GP: 0.0026) | Acc: 0.910 | LR: 7.33e-05 | Elapsed: 3354.8s
+  Step 27000/100000 | Loss: 2.7892 (NCE: 2.7866, GP: 0.0025) | Acc: 0.939 | LR: 6.63e-05 | Elapsed: 3483.7s
+  Step 28000/100000 | Loss: 2.7895 (NCE: 2.7872, GP: 0.0023) | Acc: 0.932 | LR: 6.00e-05 | Elapsed: 3612.3s
+  Step 29000/100000 | Loss: 2.7904 (NCE: 2.7879, GP: 0.0025) | Acc: 0.926 | LR: 5.42e-05 | Elapsed: 3738.5s
+  Step 30000/100000 | Loss: 2.7896 (NCE: 2.7875, GP: 0.0021) | Acc: 0.963 | LR: 4.90e-05 | Elapsed: 3867.0s
+  Step 31000/100000 | Loss: 2.7891 (NCE: 2.7864, GP: 0.0027) | Acc: 0.934 | LR: 4.44e-05 | Elapsed: 3995.5s
+  Step 32000/100000 | Loss: 2.7890 (NCE: 2.7867, GP: 0.0023) | Acc: 0.961 | LR: 4.01e-05 | Elapsed: 4124.1s
+  Step 33000/100000 | Loss: 2.7883 (NCE: 2.7859, GP: 0.0025) | Acc: 0.955 | LR: 3.63e-05 | Elapsed: 4250.4s
+  Step 34000/100000 | Loss: 2.7892 (NCE: 2.7869, GP: 0.0023) | Acc: 0.963 | LR: 3.28e-05 | Elapsed: 4378.1s
+  Step 35000/100000 | Loss: 2.7892 (NCE: 2.7868, GP: 0.0024) | Acc: 0.943 | LR: 2.97e-05 | Elapsed: 4506.3s
+  Step 36000/100000 | Loss: 2.7897 (NCE: 2.7874, GP: 0.0024) | Acc: 0.955 | LR: 2.68e-05 | Elapsed: 4634.0s
+  Step 37000/100000 | Loss: 2.7877 (NCE: 2.7855, GP: 0.0022) | Acc: 0.957 | LR: 2.43e-05 | Elapsed: 4761.9s
+  Step 38000/100000 | Loss: 2.7891 (NCE: 2.7864, GP: 0.0026) | Acc: 0.959 | LR: 2.19e-05 | Elapsed: 4890.1s
+  Step 39000/100000 | Loss: 2.7882 (NCE: 2.7858, GP: 0.0024) | Acc: 0.965 | LR: 1.98e-05 | Elapsed: 5017.9s
+  Step 40000/100000 | Loss: 2.7880 (NCE: 2.7857, GP: 0.0023) | Acc: 0.939 | LR: 1.80e-05 | Elapsed: 5145.8s
+  Step 41000/100000 | Loss: 2.7895 (NCE: 2.7870, GP: 0.0024) | Acc: 0.939 | LR: 1.62e-05 | Elapsed: 5273.5s
+  Step 42000/100000 | Loss: 2.7880 (NCE: 2.7855, GP: 0.0025) | Acc: 0.961 | LR: 1.47e-05 | Elapsed: 5401.4s
+  Step 43000/100000 | Loss: 2.7886 (NCE: 2.7860, GP: 0.0026) | Acc: 0.965 | LR: 1.33e-05 | Elapsed: 5529.3s
+  Step 44000/100000 | Loss: 2.7908 (NCE: 2.7884, GP: 0.0025) | Acc: 0.969 | LR: 1.20e-05 | Elapsed: 5657.4s
+  Step 45000/100000 | Loss: 2.7913 (NCE: 2.7891, GP: 0.0022) | Acc: 0.951 | LR: 1.09e-05 | Elapsed: 5785.2s
+  Step 46000/100000 | Loss: 2.7890 (NCE: 2.7869, GP: 0.0022) | Acc: 0.959 | LR: 9.82e-06 | Elapsed: 5913.2s
+  Step 47000/100000 | Loss: 2.7868 (NCE: 2.7845, GP: 0.0022) | Acc: 0.947 | LR: 8.88e-06 | Elapsed: 6041.0s
+  Step 48000/100000 | Loss: 2.7892 (NCE: 2.7869, GP: 0.0023) | Acc: 0.957 | LR: 8.03e-06 | Elapsed: 6168.9s
+  Step 49000/100000 | Loss: 2.7914 (NCE: 2.7888, GP: 0.0026) | Acc: 0.957 | LR: 7.27e-06 | Elapsed: 6296.9s
+  Step 50000/100000 | Loss: 2.7897 (NCE: 2.7872, GP: 0.0025) | Acc: 0.965 | LR: 6.57e-06 | Elapsed: 6424.7s
+  Step 51000/100000 | Loss: 2.7900 (NCE: 2.7878, GP: 0.0022) | Acc: 0.941 | LR: 5.94e-06 | Elapsed: 6552.6s
+  Step 52000/100000 | Loss: 2.7877 (NCE: 2.7852, GP: 0.0025) | Acc: 0.963 | LR: 5.37e-06 | Elapsed: 6680.5s
+  Step 53000/100000 | Loss: 2.7897 (NCE: 2.7871, GP: 0.0026) | Acc: 0.965 | LR: 4.86e-06 | Elapsed: 6808.3s
+  Step 54000/100000 | Loss: 2.7881 (NCE: 2.7855, GP: 0.0027) | Acc: 0.957 | LR: 4.40e-06 | Elapsed: 6936.2s
+  Step 55000/100000 | Loss: 2.7901 (NCE: 2.7876, GP: 0.0025) | Acc: 0.961 | LR: 3.98e-06 | Elapsed: 7064.2s
+  Step 56000/100000 | Loss: 2.7897 (NCE: 2.7872, GP: 0.0026) | Acc: 0.955 | LR: 3.60e-06 | Elapsed: 7192.0s
+  Step 57000/100000 | Loss: 2.7889 (NCE: 2.7863, GP: 0.0026) | Acc: 0.969 | LR: 3.25e-06 | Elapsed: 7319.9s
+  Step 58000/100000 | Loss: 2.7894 (NCE: 2.7870, GP: 0.0024) | Acc: 0.936 | LR: 2.94e-06 | Elapsed: 7447.9s
+  Step 59000/100000 | Loss: 2.7874 (NCE: 2.7849, GP: 0.0025) | Acc: 0.951 | LR: 2.66e-06 | Elapsed: 7575.8s
+  Step 60000/100000 | Loss: 2.7874 (NCE: 2.7849, GP: 0.0025) | Acc: 0.965 | LR: 2.41e-06 | Elapsed: 7703.7s
+  Step 61000/100000 | Loss: 2.7903 (NCE: 2.7877, GP: 0.0025) | Acc: 0.951 | LR: 2.18e-06 | Elapsed: 7831.6s
+  Step 62000/100000 | Loss: 2.7879 (NCE: 2.7854, GP: 0.0025) | Acc: 0.953 | LR: 1.97e-06 | Elapsed: 7959.5s
+  Step 63000/100000 | Loss: 2.7876 (NCE: 2.7847, GP: 0.0028) | Acc: 0.959 | LR: 1.78e-06 | Elapsed: 8087.4s
+  Step 64000/100000 | Loss: 2.7878 (NCE: 2.7854, GP: 0.0024) | Acc: 0.965 | LR: 1.61e-06 | Elapsed: 8215.3s
+  Step 65000/100000 | Loss: 2.7889 (NCE: 2.7864, GP: 0.0025) | Acc: 0.947 | LR: 1.46e-06 | Elapsed: 8343.4s
+  Step 66000/100000 | Loss: 2.7875 (NCE: 2.7850, GP: 0.0026) | Acc: 0.961 | LR: 1.32e-06 | Elapsed: 8471.5s
+  Step 67000/100000 | Loss: 2.7892 (NCE: 2.7868, GP: 0.0024) | Acc: 0.965 | LR: 1.19e-06 | Elapsed: 8599.5s
+  Step 68000/100000 | Loss: 2.7897 (NCE: 2.7872, GP: 0.0025) | Acc: 0.953 | LR: 1.08e-06 | Elapsed: 8727.4s
+  Step 69000/100000 | Loss: 2.7886 (NCE: 2.7862, GP: 0.0024) | Acc: 0.949 | LR: 9.73e-07 | Elapsed: 8855.4s
+  Step 70000/100000 | Loss: 2.7889 (NCE: 2.7864, GP: 0.0025) | Acc: 0.959 | LR: 8.80e-07 | Elapsed: 8983.4s
+  Step 71000/100000 | Loss: 2.7879 (NCE: 2.7856, GP: 0.0023) | Acc: 0.953 | LR: 7.96e-07 | Elapsed: 9111.3s
+  Step 72000/100000 | Loss: 2.7883 (NCE: 2.7858, GP: 0.0025) | Acc: 0.965 | LR: 7.20e-07 | Elapsed: 9239.4s
+  Step 73000/100000 | Loss: 2.7899 (NCE: 2.7876, GP: 0.0023) | Acc: 0.961 | LR: 6.51e-07 | Elapsed: 9367.2s
+  Step 74000/100000 | Loss: 2.7888 (NCE: 2.7867, GP: 0.0021) | Acc: 0.961 | LR: 5.89e-07 | Elapsed: 9495.1s
+  Step 75000/100000 | Loss: 2.7880 (NCE: 2.7855, GP: 0.0025) | Acc: 0.959 | LR: 5.33e-07 | Elapsed: 9622.9s
+  Step 76000/100000 | Loss: 2.7869 (NCE: 2.7845, GP: 0.0024) | Acc: 0.971 | LR: 4.82e-07 | Elapsed: 9750.7s
+  Step 77000/100000 | Loss: 2.7887 (NCE: 2.7861, GP: 0.0026) | Acc: 0.961 | LR: 4.36e-07 | Elapsed: 9878.6s
+  Step 78000/100000 | Loss: 2.7879 (NCE: 2.7853, GP: 0.0027) | Acc: 0.932 | LR: 3.94e-07 | Elapsed: 10006.6s
+  Step 79000/100000 | Loss: 2.7895 (NCE: 2.7870, GP: 0.0025) | Acc: 0.963 | LR: 3.56e-07 | Elapsed: 10134.4s
+  Step 80000/100000 | Loss: 2.7893 (NCE: 2.7866, GP: 0.0027) | Acc: 0.967 | LR: 3.22e-07 | Elapsed: 10262.3s
+  Step 81000/100000 | Loss: 2.7897 (NCE: 2.7873, GP: 0.0024) | Acc: 0.959 | LR: 2.91e-07 | Elapsed: 10390.3s
+  Step 82000/100000 | Loss: 2.7861 (NCE: 2.7834, GP: 0.0027) | Acc: 0.967 | LR: 2.64e-07 | Elapsed: 10518.1s
+  Step 83000/100000 | Loss: 2.7887 (NCE: 2.7861, GP: 0.0026) | Acc: 0.975 | LR: 2.38e-07 | Elapsed: 10645.9s
+  Step 84000/100000 | Loss: 2.7905 (NCE: 2.7881, GP: 0.0024) | Acc: 0.969 | LR: 2.16e-07 | Elapsed: 10773.9s
+  Step 85000/100000 | Loss: 2.7871 (NCE: 2.7848, GP: 0.0024) | Acc: 0.977 | LR: 1.95e-07 | Elapsed: 10901.9s
+  Step 86000/100000 | Loss: 2.7902 (NCE: 2.7877, GP: 0.0025) | Acc: 0.949 | LR: 1.76e-07 | Elapsed: 11029.8s
+  Step 87000/100000 | Loss: 2.7867 (NCE: 2.7844, GP: 0.0023) | Acc: 0.965 | LR: 1.59e-07 | Elapsed: 11157.7s
+  Step 88000/100000 | Loss: 2.7842 (NCE: 2.7816, GP: 0.0026) | Acc: 0.943 | LR: 1.44e-07 | Elapsed: 11286.2s
+  Step 89000/100000 | Loss: 2.7883 (NCE: 2.7861, GP: 0.0022) | Acc: 0.965 | LR: 1.30e-07 | Elapsed: 11414.6s
+  Step 90000/100000 | Loss: 2.7856 (NCE: 2.7831, GP: 0.0025) | Acc: 0.941 | LR: 1.18e-07 | Elapsed: 11542.5s
+  Step 91000/100000 | Loss: 2.7858 (NCE: 2.7834, GP: 0.0024) | Acc: 0.963 | LR: 1.07e-07 | Elapsed: 11670.4s
+  Step 92000/100000 | Loss: 2.7879 (NCE: 2.7854, GP: 0.0024) | Acc: 0.951 | LR: 9.65e-08 | Elapsed: 11798.3s
+  Step 93000/100000 | Loss: 2.7882 (NCE: 2.7857, GP: 0.0024) | Acc: 0.959 | LR: 8.72e-08 | Elapsed: 11926.2s
+  Step 94000/100000 | Loss: 2.7844 (NCE: 2.7819, GP: 0.0025) | Acc: 0.975 | LR: 7.89e-08 | Elapsed: 12054.1s
+  Step 95000/100000 | Loss: 2.7895 (NCE: 2.7872, GP: 0.0023) | Acc: 0.959 | LR: 7.14e-08 | Elapsed: 12182.0s
+  Step 96000/100000 | Loss: 2.7848 (NCE: 2.7827, GP: 0.0022) | Acc: 0.945 | LR: 6.45e-08 | Elapsed: 12309.9s
+  Step 97000/100000 | Loss: 2.7896 (NCE: 2.7869, GP: 0.0027) | Acc: 0.969 | LR: 5.84e-08 | Elapsed: 12437.8s
+  Step 98000/100000 | Loss: 2.7883 (NCE: 2.7859, GP: 0.0024) | Acc: 0.953 | LR: 5.28e-08 | Elapsed: 12565.8s
+  Step 99000/100000 | Loss: 2.7886 (NCE: 2.7860, GP: 0.0026) | Acc: 0.957 | LR: 4.77e-08 | Elapsed: 12693.6s
+  Step 100000/100000 | Loss: 2.7884 (NCE: 2.7860, GP: 0.0024) | Acc: 0.957 | LR: 4.32e-08 | Elapsed: 12821.6s
+
+Training completed in 12821.6s (213.69 min)
+Energy model saved to checkpoints/ibc_dfo/particle/run_01_baseline_paper/q_estimator.pt
+Legacy-compatible model saved to checkpoints/ibc_dfo/particle/q_estimator.pt
+Training summary saved to checkpoints/ibc_dfo/particle/run_01_baseline_paper/train_summary.json
+Training ledger appended to results/ibc_dfo/particle/training_runs.jsonl
+[2026-03-25T20:40:25-07:00] === RUN 1 / 10: EVAL START ===
+Using device: cuda
+Running IBC Langevin MCMC inference on Particle environment
+Langevin config: 512 samples, 100 iterations, lr_init=0.1, lr_final=1e-05, decay_power=2.0, noise_scale=1.0
+Frame stack: 2
+Seeds: [0, 35, 42, 10, 135, 142]
+
+Loaded model (step 100000) with norm stats
+Loaded energy model from checkpoints/ibc_dfo/particle/run_01_baseline_paper/q_estimator.pt
+=====================================================================================
+  Seed |  Steps |   Reward | Success |  Dist G1 |  Dist G2
+-------------------------------------------------------------------------------------
+     0 |     50 |     0.00 |       N |   0.4119 |   0.0011
+    35 |     50 |     1.00 |       Y |   0.0103 |   0.0026
+    42 |     50 |     1.00 |       Y |   0.0024 |   0.0162
+    10 |     50 |     1.00 |       Y |   0.0057 |   0.0022
+   135 |     50 |     1.00 |       Y |   0.0130 |   0.0038
+   142 |     50 |     1.00 |       Y |   0.0019 |   0.0031
+=====================================================================================
+
+                                   GLOBAL SUMMARY                                    
+=====================================================================================
+  Seeds evaluated:         6
+  Avg reward:              0.8333 +/- 0.3727
+  Avg steps:               50.0
+  Success rate:            83.33%
+  Avg min dist to Goal 1:  0.0742
+  Avg min dist to Goal 2:  0.0048
+  Plots saved to:          plots/ibc_dfo/particle/
+=====================================================================================
+Evaluation summary saved to: results/ibc_dfo/particle/eval_summary_run_1.json
+Evaluation ledger appended to: results/ibc_dfo/particle/evaluation_runs.jsonl
+[2026-03-25T20:40:56-07:00] === RUN 1 / 10: UPDATE BEST ===
+Best so far -> run_id=1 | success_rate=0.8333 | avg_reward=0.8333 | std_reward=0.3727 | checkpoint=checkpoints/ibc_dfo/particle/run_01_baseline_paper/q_estimator.pt
+[2026-03-25T20:40:56-07:00] === RUN 2 / 10: TRAIN START ===
+2026-03-25 20:40:58.731095: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-03-25 20:40:59.197287: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Using device: cuda
+Training IBC (paper-faithful) on Particle environment
+Run: 2/10 (counter_examples_16)
+Steps: 100000, Batch: 512, LR: 0.001
+Counter-examples: 16 (Langevin, 100 iters)
+Architecture: MLP [256, 256]
+Grad penalty: L-inf, margin=1.0
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1774496462.587733  117833 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 3586 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 3060 Laptop GPU, pci bus id: 0000:01:00.0, compute capability: 8.6
+2026-03-25 20:41:02.766844: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+2026-03-25 20:41:03.819098: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-25 20:41:04.851662: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-25 20:41:06.863277: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-25 20:41:10.512436: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+Dataset size: 102000
+Act range: [0.000, 1.000]
+
+Starting training...
+  Step 1000/100000 | Loss: 2.7811 (NCE: 2.7762, GP: 0.0049) | Acc: 0.221 | LR: 9.04e-04 | Elapsed: 125.1s
+  Step 2000/100000 | Loss: 2.7955 (NCE: 2.7924, GP: 0.0031) | Acc: 0.326 | LR: 8.18e-04 | Elapsed: 253.0s
+  Step 3000/100000 | Loss: 2.8009 (NCE: 2.7979, GP: 0.0031) | Acc: 0.330 | LR: 7.40e-04 | Elapsed: 380.9s
+  Step 4000/100000 | Loss: 2.7932 (NCE: 2.7902, GP: 0.0030) | Acc: 0.344 | LR: 6.69e-04 | Elapsed: 509.2s
+  Step 5000/100000 | Loss: 2.7971 (NCE: 2.7941, GP: 0.0030) | Acc: 0.201 | LR: 6.05e-04 | Elapsed: 637.1s
+  Step 6000/100000 | Loss: 2.7939 (NCE: 2.7909, GP: 0.0031) | Acc: 0.410 | LR: 5.47e-04 | Elapsed: 765.0s
+  Step 7000/100000 | Loss: 2.7935 (NCE: 2.7910, GP: 0.0026) | Acc: 0.469 | LR: 4.95e-04 | Elapsed: 892.9s
+  Step 8000/100000 | Loss: 2.7939 (NCE: 2.7914, GP: 0.0025) | Acc: 0.430 | LR: 4.48e-04 | Elapsed: 1020.8s
+  Step 9000/100000 | Loss: 2.7925 (NCE: 2.7900, GP: 0.0025) | Acc: 0.582 | LR: 4.05e-04 | Elapsed: 1148.7s
+  Step 10000/100000 | Loss: 2.7944 (NCE: 2.7918, GP: 0.0026) | Acc: 0.643 | LR: 3.66e-04 | Elapsed: 1276.8s
+  Step 11000/100000 | Loss: 2.7898 (NCE: 2.7875, GP: 0.0022) | Acc: 0.625 | LR: 3.31e-04 | Elapsed: 1404.7s
+  Step 12000/100000 | Loss: 2.7880 (NCE: 2.7852, GP: 0.0028) | Acc: 0.652 | LR: 2.99e-04 | Elapsed: 1532.6s
+  Step 13000/100000 | Loss: 2.7930 (NCE: 2.7904, GP: 0.0026) | Acc: 0.541 | LR: 2.71e-04 | Elapsed: 1660.6s
+  Step 14000/100000 | Loss: 2.7886 (NCE: 2.7859, GP: 0.0027) | Acc: 0.812 | LR: 2.45e-04 | Elapsed: 1788.5s
+  Step 15000/100000 | Loss: 2.7946 (NCE: 2.7923, GP: 0.0023) | Acc: 0.752 | LR: 2.21e-04 | Elapsed: 1916.6s
+  Step 16000/100000 | Loss: 2.7946 (NCE: 2.7924, GP: 0.0023) | Acc: 0.844 | LR: 2.00e-04 | Elapsed: 2044.5s
+  Step 17000/100000 | Loss: 2.7924 (NCE: 2.7900, GP: 0.0024) | Acc: 0.705 | LR: 1.81e-04 | Elapsed: 2172.4s
+  Step 18000/100000 | Loss: 2.7887 (NCE: 2.7867, GP: 0.0020) | Acc: 0.873 | LR: 1.64e-04 | Elapsed: 2300.3s
+  Step 19000/100000 | Loss: 2.7935 (NCE: 2.7912, GP: 0.0023) | Acc: 0.852 | LR: 1.48e-04 | Elapsed: 2428.3s
+  Step 20000/100000 | Loss: 2.7914 (NCE: 2.7891, GP: 0.0023) | Acc: 0.865 | LR: 1.34e-04 | Elapsed: 2556.2s
+  Step 21000/100000 | Loss: 2.7920 (NCE: 2.7896, GP: 0.0024) | Acc: 0.922 | LR: 1.21e-04 | Elapsed: 2684.4s
+  Step 22000/100000 | Loss: 2.7935 (NCE: 2.7913, GP: 0.0022) | Acc: 0.895 | LR: 1.10e-04 | Elapsed: 2812.3s
+  Step 23000/100000 | Loss: 2.7948 (NCE: 2.7927, GP: 0.0022) | Acc: 0.822 | LR: 9.91e-05 | Elapsed: 2940.2s
+  Step 24000/100000 | Loss: 2.7945 (NCE: 2.7924, GP: 0.0021) | Acc: 0.889 | LR: 8.96e-05 | Elapsed: 3068.2s
+  Step 25000/100000 | Loss: 2.7922 (NCE: 2.7900, GP: 0.0021) | Acc: 0.803 | LR: 8.11e-05 | Elapsed: 3196.1s
+  Step 26000/100000 | Loss: 2.7907 (NCE: 2.7885, GP: 0.0021) | Acc: 0.910 | LR: 7.33e-05 | Elapsed: 3324.0s
+  Step 27000/100000 | Loss: 2.7920 (NCE: 2.7899, GP: 0.0021) | Acc: 0.955 | LR: 6.63e-05 | Elapsed: 3452.1s
+  Step 28000/100000 | Loss: 2.7933 (NCE: 2.7911, GP: 0.0022) | Acc: 0.943 | LR: 6.00e-05 | Elapsed: 3580.0s
+  Step 29000/100000 | Loss: 2.7908 (NCE: 2.7885, GP: 0.0023) | Acc: 0.951 | LR: 5.42e-05 | Elapsed: 3708.0s
+  Step 30000/100000 | Loss: 2.7938 (NCE: 2.7917, GP: 0.0021) | Acc: 0.945 | LR: 4.90e-05 | Elapsed: 3836.0s
+  Step 31000/100000 | Loss: 2.7902 (NCE: 2.7881, GP: 0.0021) | Acc: 0.961 | LR: 4.44e-05 | Elapsed: 3964.0s
+  Step 32000/100000 | Loss: 2.7946 (NCE: 2.7924, GP: 0.0022) | Acc: 0.961 | LR: 4.01e-05 | Elapsed: 4092.1s
+  Step 33000/100000 | Loss: 2.7954 (NCE: 2.7933, GP: 0.0021) | Acc: 0.949 | LR: 3.63e-05 | Elapsed: 4220.0s
+  Step 34000/100000 | Loss: 2.7937 (NCE: 2.7918, GP: 0.0020) | Acc: 0.941 | LR: 3.28e-05 | Elapsed: 4348.0s
+  Step 35000/100000 | Loss: 2.7921 (NCE: 2.7902, GP: 0.0019) | Acc: 0.969 | LR: 2.97e-05 | Elapsed: 4476.0s
+  Step 36000/100000 | Loss: 2.7925 (NCE: 2.7906, GP: 0.0019) | Acc: 0.936 | LR: 2.68e-05 | Elapsed: 4603.9s
+  Step 37000/100000 | Loss: 2.7919 (NCE: 2.7898, GP: 0.0021) | Acc: 0.949 | LR: 2.43e-05 | Elapsed: 4731.9s
+  Step 38000/100000 | Loss: 2.7918 (NCE: 2.7897, GP: 0.0021) | Acc: 0.963 | LR: 2.19e-05 | Elapsed: 4860.0s
+  Step 39000/100000 | Loss: 2.7936 (NCE: 2.7918, GP: 0.0018) | Acc: 0.963 | LR: 1.98e-05 | Elapsed: 4987.9s
+  Step 40000/100000 | Loss: 2.7930 (NCE: 2.7911, GP: 0.0019) | Acc: 0.961 | LR: 1.80e-05 | Elapsed: 5116.0s
+  Step 41000/100000 | Loss: 2.7932 (NCE: 2.7912, GP: 0.0021) | Acc: 0.963 | LR: 1.62e-05 | Elapsed: 5244.0s
+  Step 42000/100000 | Loss: 2.7962 (NCE: 2.7942, GP: 0.0020) | Acc: 0.947 | LR: 1.47e-05 | Elapsed: 5372.0s
+  Step 43000/100000 | Loss: 2.7906 (NCE: 2.7887, GP: 0.0018) | Acc: 0.963 | LR: 1.33e-05 | Elapsed: 5500.1s
+  Step 44000/100000 | Loss: 2.7932 (NCE: 2.7911, GP: 0.0021) | Acc: 0.953 | LR: 1.20e-05 | Elapsed: 5628.2s
+  Step 45000/100000 | Loss: 2.7948 (NCE: 2.7929, GP: 0.0019) | Acc: 0.963 | LR: 1.09e-05 | Elapsed: 5756.2s
+  Step 46000/100000 | Loss: 2.7911 (NCE: 2.7892, GP: 0.0019) | Acc: 0.977 | LR: 9.82e-06 | Elapsed: 5884.1s
+  Step 47000/100000 | Loss: 2.7915 (NCE: 2.7895, GP: 0.0020) | Acc: 0.951 | LR: 8.88e-06 | Elapsed: 6012.7s
+  Step 48000/100000 | Loss: 2.7919 (NCE: 2.7898, GP: 0.0021) | Acc: 0.965 | LR: 8.03e-06 | Elapsed: 6140.7s
+  Step 49000/100000 | Loss: 2.7909 (NCE: 2.7890, GP: 0.0019) | Acc: 0.980 | LR: 7.27e-06 | Elapsed: 6268.7s
+  Step 50000/100000 | Loss: 2.7950 (NCE: 2.7931, GP: 0.0020) | Acc: 0.949 | LR: 6.57e-06 | Elapsed: 6396.7s
+  Step 51000/100000 | Loss: 2.7943 (NCE: 2.7923, GP: 0.0020) | Acc: 0.951 | LR: 5.94e-06 | Elapsed: 6524.6s
+  Step 52000/100000 | Loss: 2.7925 (NCE: 2.7905, GP: 0.0020) | Acc: 0.953 | LR: 5.37e-06 | Elapsed: 6652.7s
+  Step 53000/100000 | Loss: 2.7911 (NCE: 2.7890, GP: 0.0021) | Acc: 0.961 | LR: 4.86e-06 | Elapsed: 6780.6s
+  Step 54000/100000 | Loss: 2.7956 (NCE: 2.7933, GP: 0.0023) | Acc: 0.967 | LR: 4.40e-06 | Elapsed: 6908.6s
+  Step 55000/100000 | Loss: 2.7937 (NCE: 2.7916, GP: 0.0021) | Acc: 0.963 | LR: 3.98e-06 | Elapsed: 7036.7s
+  Step 56000/100000 | Loss: 2.7918 (NCE: 2.7899, GP: 0.0019) | Acc: 0.965 | LR: 3.60e-06 | Elapsed: 7164.6s
+  Step 57000/100000 | Loss: 2.7940 (NCE: 2.7920, GP: 0.0020) | Acc: 0.947 | LR: 3.25e-06 | Elapsed: 7292.6s
+  Step 58000/100000 | Loss: 2.7904 (NCE: 2.7884, GP: 0.0020) | Acc: 0.959 | LR: 2.94e-06 | Elapsed: 7420.5s
+  Step 59000/100000 | Loss: 2.7926 (NCE: 2.7905, GP: 0.0021) | Acc: 0.971 | LR: 2.66e-06 | Elapsed: 7548.5s
+  Step 60000/100000 | Loss: 2.7933 (NCE: 2.7912, GP: 0.0021) | Acc: 0.973 | LR: 2.41e-06 | Elapsed: 7676.4s
+  Step 61000/100000 | Loss: 2.7925 (NCE: 2.7907, GP: 0.0018) | Acc: 0.955 | LR: 2.18e-06 | Elapsed: 7804.5s
+  Step 62000/100000 | Loss: 2.7891 (NCE: 2.7872, GP: 0.0019) | Acc: 0.939 | LR: 1.97e-06 | Elapsed: 7932.4s
+  Step 63000/100000 | Loss: 2.7937 (NCE: 2.7920, GP: 0.0018) | Acc: 0.955 | LR: 1.78e-06 | Elapsed: 8060.5s
+  Step 64000/100000 | Loss: 2.7926 (NCE: 2.7906, GP: 0.0019) | Acc: 0.967 | LR: 1.61e-06 | Elapsed: 8188.4s
+  Step 65000/100000 | Loss: 2.7926 (NCE: 2.7906, GP: 0.0019) | Acc: 0.953 | LR: 1.46e-06 | Elapsed: 8316.4s
+  Step 66000/100000 | Loss: 2.7926 (NCE: 2.7908, GP: 0.0018) | Acc: 0.973 | LR: 1.32e-06 | Elapsed: 8444.5s
+  Step 67000/100000 | Loss: 2.7945 (NCE: 2.7927, GP: 0.0018) | Acc: 0.971 | LR: 1.19e-06 | Elapsed: 8572.6s
+  Step 68000/100000 | Loss: 2.7902 (NCE: 2.7883, GP: 0.0020) | Acc: 0.963 | LR: 1.08e-06 | Elapsed: 8700.6s
+  Step 69000/100000 | Loss: 2.7945 (NCE: 2.7924, GP: 0.0021) | Acc: 0.951 | LR: 9.73e-07 | Elapsed: 8828.6s
+  Step 70000/100000 | Loss: 2.7952 (NCE: 2.7932, GP: 0.0020) | Acc: 0.971 | LR: 8.80e-07 | Elapsed: 8956.6s
+  Step 71000/100000 | Loss: 2.7937 (NCE: 2.7913, GP: 0.0024) | Acc: 0.965 | LR: 7.96e-07 | Elapsed: 9084.6s
+  Step 72000/100000 | Loss: 2.7947 (NCE: 2.7927, GP: 0.0020) | Acc: 0.963 | LR: 7.20e-07 | Elapsed: 9212.7s
+  Step 73000/100000 | Loss: 2.7937 (NCE: 2.7917, GP: 0.0020) | Acc: 0.953 | LR: 6.51e-07 | Elapsed: 9341.7s
+  Step 74000/100000 | Loss: 2.7919 (NCE: 2.7899, GP: 0.0019) | Acc: 0.951 | LR: 5.89e-07 | Elapsed: 9469.7s
+  Step 75000/100000 | Loss: 2.7938 (NCE: 2.7919, GP: 0.0019) | Acc: 0.965 | LR: 5.33e-07 | Elapsed: 9597.6s
+  Step 76000/100000 | Loss: 2.7930 (NCE: 2.7912, GP: 0.0018) | Acc: 0.959 | LR: 4.82e-07 | Elapsed: 9725.6s
+  Step 77000/100000 | Loss: 2.7918 (NCE: 2.7898, GP: 0.0019) | Acc: 0.963 | LR: 4.36e-07 | Elapsed: 9853.5s
+  Step 78000/100000 | Loss: 2.7927 (NCE: 2.7906, GP: 0.0022) | Acc: 0.955 | LR: 3.94e-07 | Elapsed: 9981.7s
+  Step 79000/100000 | Loss: 2.7928 (NCE: 2.7908, GP: 0.0021) | Acc: 0.953 | LR: 3.56e-07 | Elapsed: 10109.7s
+  Step 80000/100000 | Loss: 2.7934 (NCE: 2.7915, GP: 0.0018) | Acc: 0.953 | LR: 3.22e-07 | Elapsed: 10239.2s
+  Step 81000/100000 | Loss: 2.7918 (NCE: 2.7899, GP: 0.0019) | Acc: 0.953 | LR: 2.91e-07 | Elapsed: 10369.5s
+  Step 82000/100000 | Loss: 2.7937 (NCE: 2.7917, GP: 0.0020) | Acc: 0.955 | LR: 2.64e-07 | Elapsed: 10497.5s
+  Step 83000/100000 | Loss: 2.7896 (NCE: 2.7875, GP: 0.0021) | Acc: 0.953 | LR: 2.38e-07 | Elapsed: 10625.6s
+  Step 84000/100000 | Loss: 2.7917 (NCE: 2.7896, GP: 0.0020) | Acc: 0.959 | LR: 2.16e-07 | Elapsed: 10753.7s
+  Step 85000/100000 | Loss: 2.7941 (NCE: 2.7922, GP: 0.0019) | Acc: 0.936 | LR: 1.95e-07 | Elapsed: 10881.6s
+  Step 86000/100000 | Loss: 2.7933 (NCE: 2.7915, GP: 0.0018) | Acc: 0.949 | LR: 1.76e-07 | Elapsed: 11009.6s
+  Step 87000/100000 | Loss: 2.7937 (NCE: 2.7919, GP: 0.0019) | Acc: 0.955 | LR: 1.59e-07 | Elapsed: 11138.5s
+  Step 88000/100000 | Loss: 2.7925 (NCE: 2.7905, GP: 0.0020) | Acc: 0.953 | LR: 1.44e-07 | Elapsed: 11266.7s
+  Step 89000/100000 | Loss: 2.7952 (NCE: 2.7932, GP: 0.0020) | Acc: 0.936 | LR: 1.30e-07 | Elapsed: 11394.9s
+  Step 90000/100000 | Loss: 2.7912 (NCE: 2.7892, GP: 0.0019) | Acc: 0.955 | LR: 1.18e-07 | Elapsed: 11522.8s
+  Step 91000/100000 | Loss: 2.7925 (NCE: 2.7906, GP: 0.0019) | Acc: 0.947 | LR: 1.07e-07 | Elapsed: 11650.8s
+  Step 92000/100000 | Loss: 2.7920 (NCE: 2.7899, GP: 0.0021) | Acc: 0.969 | LR: 9.65e-08 | Elapsed: 11778.8s
+  Step 93000/100000 | Loss: 2.7952 (NCE: 2.7933, GP: 0.0019) | Acc: 0.967 | LR: 8.72e-08 | Elapsed: 11906.8s
+  Step 94000/100000 | Loss: 2.7897 (NCE: 2.7877, GP: 0.0020) | Acc: 0.965 | LR: 7.89e-08 | Elapsed: 12034.7s
+  Step 95000/100000 | Loss: 2.7949 (NCE: 2.7929, GP: 0.0020) | Acc: 0.973 | LR: 7.14e-08 | Elapsed: 12162.9s
+  Step 96000/100000 | Loss: 2.7920 (NCE: 2.7901, GP: 0.0019) | Acc: 0.961 | LR: 6.45e-08 | Elapsed: 12290.9s
+  Step 97000/100000 | Loss: 2.7943 (NCE: 2.7923, GP: 0.0020) | Acc: 0.951 | LR: 5.84e-08 | Elapsed: 12418.8s
+  Step 98000/100000 | Loss: 2.7928 (NCE: 2.7910, GP: 0.0018) | Acc: 0.957 | LR: 5.28e-08 | Elapsed: 12546.9s
+  Step 99000/100000 | Loss: 2.7912 (NCE: 2.7892, GP: 0.0020) | Acc: 0.959 | LR: 4.77e-08 | Elapsed: 12674.9s
+  Step 100000/100000 | Loss: 2.7940 (NCE: 2.7921, GP: 0.0019) | Acc: 0.951 | LR: 4.32e-08 | Elapsed: 12802.9s
+
+Training completed in 12802.9s (213.38 min)
+Energy model saved to checkpoints/ibc_dfo/particle/run_02_counter_examples_16/q_estimator.pt
+Legacy-compatible model saved to checkpoints/ibc_dfo/particle/q_estimator.pt
+Training summary saved to checkpoints/ibc_dfo/particle/run_02_counter_examples_16/train_summary.json
+Training ledger appended to results/ibc_dfo/particle/training_runs.jsonl
+[2026-03-26T00:14:39-07:00] === RUN 2 / 10: EVAL START ===
+Using device: cuda
+Running IBC Langevin MCMC inference on Particle environment
+Langevin config: 512 samples, 100 iterations, lr_init=0.1, lr_final=1e-05, decay_power=2.0, noise_scale=1.0
+Frame stack: 2
+Seeds: [0, 35, 42, 10, 135, 142]
+
+Loaded model (step 100000) with norm stats
+Loaded energy model from checkpoints/ibc_dfo/particle/run_02_counter_examples_16/q_estimator.pt
+=====================================================================================
+  Seed |  Steps |   Reward | Success |  Dist G1 |  Dist G2
+-------------------------------------------------------------------------------------
+     0 |     50 |     1.00 |       Y |   0.0041 |   0.0026
+    35 |     50 |     1.00 |       Y |   0.0057 |   0.0024
+    42 |     50 |     1.00 |       Y |   0.0022 |   0.0090
+    10 |     50 |     1.00 |       Y |   0.0057 |   0.0024
+   135 |     50 |     1.00 |       Y |   0.0040 |   0.0035
+   142 |     50 |     1.00 |       Y |   0.0018 |   0.0084
+=====================================================================================
+
+                                   GLOBAL SUMMARY                                    
+=====================================================================================
+  Seeds evaluated:         6
+  Avg reward:              1.0000 +/- 0.0000
+  Avg steps:               50.0
+  Success rate:            100.00%
+  Avg min dist to Goal 1:  0.0039
+  Avg min dist to Goal 2:  0.0047
+  Plots saved to:          plots/ibc_dfo/particle/
+=====================================================================================
+Evaluation summary saved to: results/ibc_dfo/particle/eval_summary_run_2.json
+Evaluation ledger appended to: results/ibc_dfo/particle/evaluation_runs.jsonl
+[2026-03-26T00:15:09-07:00] === RUN 2 / 10: UPDATE BEST ===
+Best so far -> run_id=2 | success_rate=1.0000 | avg_reward=1.0000 | std_reward=0.0000 | checkpoint=checkpoints/ibc_dfo/particle/run_02_counter_examples_16/q_estimator.pt
+[2026-03-26T00:15:09-07:00] === RUN 3 / 10: TRAIN START ===
+2026-03-26 00:15:11.592363: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-03-26 00:15:11.858368: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Using device: cuda
+Training IBC (paper-faithful) on Particle environment
+Run: 3/10 (counter_examples_32)
+Steps: 100000, Batch: 512, LR: 0.001
+Counter-examples: 32 (Langevin, 100 iters)
+Architecture: MLP [256, 256]
+Grad penalty: L-inf, margin=1.0
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1774509315.308886  158517 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 3586 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 3060 Laptop GPU, pci bus id: 0000:01:00.0, compute capability: 8.6
+2026-03-26 00:15:15.504901: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+2026-03-26 00:15:16.409532: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 00:15:17.357319: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 00:15:19.149173: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 00:15:22.758758: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+Dataset size: 102000
+Act range: [0.000, 1.000]
+
+Starting training...
+  Step 1000/100000 | Loss: 3.4409 (NCE: 3.4361, GP: 0.0047) | Acc: 0.076 | LR: 9.04e-04 | Elapsed: 222.3s
+  Step 2000/100000 | Loss: 3.4488 (NCE: 3.4453, GP: 0.0035) | Acc: 0.348 | LR: 8.18e-04 | Elapsed: 450.4s
+  Step 3000/100000 | Loss: 3.4547 (NCE: 3.4516, GP: 0.0032) | Acc: 0.061 | LR: 7.40e-04 | Elapsed: 678.4s
+  Step 4000/100000 | Loss: 3.4637 (NCE: 3.4606, GP: 0.0030) | Acc: 0.197 | LR: 6.69e-04 | Elapsed: 906.7s
+  Step 5000/100000 | Loss: 3.4544 (NCE: 3.4513, GP: 0.0031) | Acc: 0.201 | LR: 6.05e-04 | Elapsed: 1134.8s
+  Step 6000/100000 | Loss: 3.4501 (NCE: 3.4473, GP: 0.0028) | Acc: 0.391 | LR: 5.47e-04 | Elapsed: 1362.9s
+  Step 7000/100000 | Loss: 3.4522 (NCE: 3.4493, GP: 0.0029) | Acc: 0.203 | LR: 4.95e-04 | Elapsed: 1591.0s
+  Step 8000/100000 | Loss: 3.4486 (NCE: 3.4460, GP: 0.0026) | Acc: 0.312 | LR: 4.48e-04 | Elapsed: 1819.1s
+  Step 9000/100000 | Loss: 3.4479 (NCE: 3.4455, GP: 0.0025) | Acc: 0.549 | LR: 4.05e-04 | Elapsed: 2047.1s
+  Step 10000/100000 | Loss: 3.4531 (NCE: 3.4505, GP: 0.0026) | Acc: 0.424 | LR: 3.66e-04 | Elapsed: 2275.4s
+  Step 11000/100000 | Loss: 3.4539 (NCE: 3.4514, GP: 0.0025) | Acc: 0.418 | LR: 3.31e-04 | Elapsed: 2503.9s
+  Step 12000/100000 | Loss: 3.4541 (NCE: 3.4513, GP: 0.0028) | Acc: 0.328 | LR: 2.99e-04 | Elapsed: 2735.3s
+  Step 13000/100000 | Loss: 3.4517 (NCE: 3.4492, GP: 0.0025) | Acc: 0.312 | LR: 2.71e-04 | Elapsed: 2964.9s
+  Step 14000/100000 | Loss: 3.4490 (NCE: 3.4466, GP: 0.0023) | Acc: 0.621 | LR: 2.45e-04 | Elapsed: 3193.1s
+  Step 15000/100000 | Loss: 3.4513 (NCE: 3.4492, GP: 0.0022) | Acc: 0.551 | LR: 2.21e-04 | Elapsed: 3422.0s
+  Step 16000/100000 | Loss: 3.4511 (NCE: 3.4488, GP: 0.0023) | Acc: 0.756 | LR: 2.00e-04 | Elapsed: 3650.2s
+  Step 17000/100000 | Loss: 3.4494 (NCE: 3.4474, GP: 0.0020) | Acc: 0.482 | LR: 1.81e-04 | Elapsed: 3878.3s
+  Step 18000/100000 | Loss: 3.4516 (NCE: 3.4494, GP: 0.0022) | Acc: 0.678 | LR: 1.64e-04 | Elapsed: 4106.5s
+  Step 19000/100000 | Loss: 3.4539 (NCE: 3.4517, GP: 0.0022) | Acc: 0.635 | LR: 1.48e-04 | Elapsed: 4334.7s
+  Step 20000/100000 | Loss: 3.4486 (NCE: 3.4464, GP: 0.0022) | Acc: 0.752 | LR: 1.34e-04 | Elapsed: 4564.9s
+  Step 21000/100000 | Loss: 3.4539 (NCE: 3.4518, GP: 0.0021) | Acc: 0.617 | LR: 1.21e-04 | Elapsed: 4795.1s
+  Step 22000/100000 | Loss: 3.4507 (NCE: 3.4485, GP: 0.0022) | Acc: 0.723 | LR: 1.10e-04 | Elapsed: 5023.3s
+  Step 23000/100000 | Loss: 3.4482 (NCE: 3.4459, GP: 0.0023) | Acc: 0.826 | LR: 9.91e-05 | Elapsed: 5251.5s
+  Step 24000/100000 | Loss: 3.4527 (NCE: 3.4506, GP: 0.0021) | Acc: 0.785 | LR: 8.96e-05 | Elapsed: 5479.6s
+  Step 25000/100000 | Loss: 3.4492 (NCE: 3.4471, GP: 0.0021) | Acc: 0.840 | LR: 8.11e-05 | Elapsed: 5707.8s
+  Step 26000/100000 | Loss: 3.4536 (NCE: 3.4515, GP: 0.0021) | Acc: 0.859 | LR: 7.33e-05 | Elapsed: 5935.9s
+  Step 27000/100000 | Loss: 3.4522 (NCE: 3.4501, GP: 0.0020) | Acc: 0.893 | LR: 6.63e-05 | Elapsed: 6164.2s
+  Step 28000/100000 | Loss: 3.4504 (NCE: 3.4482, GP: 0.0023) | Acc: 0.859 | LR: 6.00e-05 | Elapsed: 6392.5s
+  Step 29000/100000 | Loss: 3.4506 (NCE: 3.4485, GP: 0.0021) | Acc: 0.895 | LR: 5.42e-05 | Elapsed: 6620.7s
+  Step 30000/100000 | Loss: 3.4515 (NCE: 3.4495, GP: 0.0020) | Acc: 0.930 | LR: 4.90e-05 | Elapsed: 6848.9s
+  Step 31000/100000 | Loss: 3.4502 (NCE: 3.4480, GP: 0.0022) | Acc: 0.928 | LR: 4.44e-05 | Elapsed: 7077.0s
+  Step 32000/100000 | Loss: 3.4508 (NCE: 3.4486, GP: 0.0022) | Acc: 0.961 | LR: 4.01e-05 | Elapsed: 7305.3s
+  Step 33000/100000 | Loss: 3.4564 (NCE: 3.4544, GP: 0.0021) | Acc: 0.924 | LR: 3.63e-05 | Elapsed: 7533.4s
+  Step 34000/100000 | Loss: 3.4512 (NCE: 3.4491, GP: 0.0021) | Acc: 0.945 | LR: 3.28e-05 | Elapsed: 7761.7s
+  Step 35000/100000 | Loss: 3.4531 (NCE: 3.4511, GP: 0.0019) | Acc: 0.938 | LR: 2.97e-05 | Elapsed: 7989.7s
+  Step 36000/100000 | Loss: 3.4506 (NCE: 3.4485, GP: 0.0021) | Acc: 0.955 | LR: 2.68e-05 | Elapsed: 8217.9s
+  Step 37000/100000 | Loss: 3.4493 (NCE: 3.4473, GP: 0.0020) | Acc: 0.967 | LR: 2.43e-05 | Elapsed: 8446.1s
+  Step 38000/100000 | Loss: 3.4501 (NCE: 3.4482, GP: 0.0019) | Acc: 0.949 | LR: 2.19e-05 | Elapsed: 8674.6s
+  Step 39000/100000 | Loss: 3.4535 (NCE: 3.4514, GP: 0.0021) | Acc: 0.945 | LR: 1.98e-05 | Elapsed: 8902.8s
+  Step 40000/100000 | Loss: 3.4546 (NCE: 3.4525, GP: 0.0021) | Acc: 0.939 | LR: 1.80e-05 | Elapsed: 9131.0s
+  Step 41000/100000 | Loss: 3.4534 (NCE: 3.4512, GP: 0.0022) | Acc: 0.945 | LR: 1.62e-05 | Elapsed: 9359.3s
+  Step 42000/100000 | Loss: 3.4518 (NCE: 3.4498, GP: 0.0020) | Acc: 0.959 | LR: 1.47e-05 | Elapsed: 9587.6s
+  Step 43000/100000 | Loss: 3.4506 (NCE: 3.4486, GP: 0.0019) | Acc: 0.951 | LR: 1.33e-05 | Elapsed: 9815.8s
+  Step 44000/100000 | Loss: 3.4534 (NCE: 3.4513, GP: 0.0020) | Acc: 0.961 | LR: 1.20e-05 | Elapsed: 10044.2s
+  Step 45000/100000 | Loss: 3.4569 (NCE: 3.4549, GP: 0.0020) | Acc: 0.924 | LR: 1.09e-05 | Elapsed: 10272.5s
+  Step 46000/100000 | Loss: 3.4543 (NCE: 3.4523, GP: 0.0020) | Acc: 0.945 | LR: 9.82e-06 | Elapsed: 10500.7s
+  Step 47000/100000 | Loss: 3.4544 (NCE: 3.4524, GP: 0.0020) | Acc: 0.943 | LR: 8.88e-06 | Elapsed: 10728.9s
+  Step 48000/100000 | Loss: 3.4534 (NCE: 3.4514, GP: 0.0021) | Acc: 0.965 | LR: 8.03e-06 | Elapsed: 10957.1s
+  Step 49000/100000 | Loss: 3.4486 (NCE: 3.4467, GP: 0.0019) | Acc: 0.947 | LR: 7.27e-06 | Elapsed: 11185.4s
+  Step 50000/100000 | Loss: 3.4506 (NCE: 3.4487, GP: 0.0019) | Acc: 0.977 | LR: 6.57e-06 | Elapsed: 11413.7s
+  Step 51000/100000 | Loss: 3.4529 (NCE: 3.4510, GP: 0.0019) | Acc: 0.949 | LR: 5.94e-06 | Elapsed: 11641.9s
+  Step 52000/100000 | Loss: 3.4506 (NCE: 3.4486, GP: 0.0020) | Acc: 0.973 | LR: 5.37e-06 | Elapsed: 11870.2s
+  Step 53000/100000 | Loss: 3.4522 (NCE: 3.4501, GP: 0.0021) | Acc: 0.967 | LR: 4.86e-06 | Elapsed: 12098.5s
+  Step 54000/100000 | Loss: 3.4489 (NCE: 3.4470, GP: 0.0018) | Acc: 0.973 | LR: 4.40e-06 | Elapsed: 12326.7s
+  Step 55000/100000 | Loss: 3.4502 (NCE: 3.4481, GP: 0.0021) | Acc: 0.961 | LR: 3.98e-06 | Elapsed: 12555.1s
+  Step 56000/100000 | Loss: 3.4546 (NCE: 3.4526, GP: 0.0020) | Acc: 0.943 | LR: 3.60e-06 | Elapsed: 12783.4s
+  Step 57000/100000 | Loss: 3.4540 (NCE: 3.4519, GP: 0.0021) | Acc: 0.957 | LR: 3.25e-06 | Elapsed: 13011.6s
+  Step 58000/100000 | Loss: 3.4543 (NCE: 3.4522, GP: 0.0021) | Acc: 0.953 | LR: 2.94e-06 | Elapsed: 13239.7s
+  Step 59000/100000 | Loss: 3.4546 (NCE: 3.4527, GP: 0.0018) | Acc: 0.971 | LR: 2.66e-06 | Elapsed: 13467.8s
+  Step 60000/100000 | Loss: 3.4530 (NCE: 3.4509, GP: 0.0020) | Acc: 0.953 | LR: 2.41e-06 | Elapsed: 13696.0s
+  Step 61000/100000 | Loss: 3.4507 (NCE: 3.4487, GP: 0.0020) | Acc: 0.957 | LR: 2.18e-06 | Elapsed: 13924.2s
+  Step 62000/100000 | Loss: 3.4535 (NCE: 3.4515, GP: 0.0020) | Acc: 0.957 | LR: 1.97e-06 | Elapsed: 14151.9s
+  Step 63000/100000 | Loss: 3.4556 (NCE: 3.4536, GP: 0.0020) | Acc: 0.953 | LR: 1.78e-06 | Elapsed: 14379.7s
+  Step 64000/100000 | Loss: 3.4499 (NCE: 3.4479, GP: 0.0020) | Acc: 0.959 | LR: 1.61e-06 | Elapsed: 14607.9s
+  Step 65000/100000 | Loss: 3.4514 (NCE: 3.4493, GP: 0.0021) | Acc: 0.967 | LR: 1.46e-06 | Elapsed: 14836.1s
+  Step 66000/100000 | Loss: 3.4515 (NCE: 3.4494, GP: 0.0022) | Acc: 0.967 | LR: 1.32e-06 | Elapsed: 15064.2s
+  Step 67000/100000 | Loss: 3.4532 (NCE: 3.4513, GP: 0.0019) | Acc: 0.965 | LR: 1.19e-06 | Elapsed: 15292.5s
+  Step 68000/100000 | Loss: 3.4523 (NCE: 3.4503, GP: 0.0020) | Acc: 0.951 | LR: 1.08e-06 | Elapsed: 15520.7s
+  Step 69000/100000 | Loss: 3.4536 (NCE: 3.4518, GP: 0.0018) | Acc: 0.949 | LR: 9.73e-07 | Elapsed: 15749.0s
+  Step 70000/100000 | Loss: 3.4529 (NCE: 3.4508, GP: 0.0021) | Acc: 0.949 | LR: 8.80e-07 | Elapsed: 15977.4s
+  Step 71000/100000 | Loss: 3.4524 (NCE: 3.4505, GP: 0.0019) | Acc: 0.957 | LR: 7.96e-07 | Elapsed: 16205.9s
+  Step 72000/100000 | Loss: 3.4538 (NCE: 3.4518, GP: 0.0021) | Acc: 0.941 | LR: 7.20e-07 | Elapsed: 16434.5s
+  Step 73000/100000 | Loss: 3.4533 (NCE: 3.4514, GP: 0.0019) | Acc: 0.951 | LR: 6.51e-07 | Elapsed: 16662.9s
+  Step 74000/100000 | Loss: 3.4543 (NCE: 3.4523, GP: 0.0020) | Acc: 0.973 | LR: 5.89e-07 | Elapsed: 16891.3s
+  Step 75000/100000 | Loss: 3.4518 (NCE: 3.4499, GP: 0.0020) | Acc: 0.955 | LR: 5.33e-07 | Elapsed: 17119.6s
+  Step 76000/100000 | Loss: 3.4524 (NCE: 3.4504, GP: 0.0021) | Acc: 0.961 | LR: 4.82e-07 | Elapsed: 17347.8s
+  Step 77000/100000 | Loss: 3.4509 (NCE: 3.4489, GP: 0.0020) | Acc: 0.975 | LR: 4.36e-07 | Elapsed: 17576.1s
+  Step 78000/100000 | Loss: 3.4503 (NCE: 3.4483, GP: 0.0020) | Acc: 0.961 | LR: 3.94e-07 | Elapsed: 17804.5s
+  Step 79000/100000 | Loss: 3.4531 (NCE: 3.4509, GP: 0.0022) | Acc: 0.957 | LR: 3.56e-07 | Elapsed: 18032.6s
+  Step 80000/100000 | Loss: 3.4523 (NCE: 3.4504, GP: 0.0019) | Acc: 0.959 | LR: 3.22e-07 | Elapsed: 18260.9s
+  Step 81000/100000 | Loss: 3.4530 (NCE: 3.4509, GP: 0.0021) | Acc: 0.957 | LR: 2.91e-07 | Elapsed: 18489.2s
+  Step 82000/100000 | Loss: 3.4539 (NCE: 3.4518, GP: 0.0021) | Acc: 0.959 | LR: 2.64e-07 | Elapsed: 18717.4s
+  Step 83000/100000 | Loss: 3.4486 (NCE: 3.4465, GP: 0.0021) | Acc: 0.963 | LR: 2.38e-07 | Elapsed: 18945.7s
+  Step 84000/100000 | Loss: 3.4509 (NCE: 3.4488, GP: 0.0021) | Acc: 0.947 | LR: 2.16e-07 | Elapsed: 19174.1s
+  Step 85000/100000 | Loss: 3.4534 (NCE: 3.4512, GP: 0.0022) | Acc: 0.969 | LR: 1.95e-07 | Elapsed: 19402.4s
+  Step 86000/100000 | Loss: 3.4507 (NCE: 3.4487, GP: 0.0020) | Acc: 0.963 | LR: 1.76e-07 | Elapsed: 19632.5s
+  Step 87000/100000 | Loss: 3.4522 (NCE: 3.4503, GP: 0.0019) | Acc: 0.959 | LR: 1.59e-07 | Elapsed: 19860.8s
+  Step 88000/100000 | Loss: 3.4515 (NCE: 3.4495, GP: 0.0020) | Acc: 0.951 | LR: 1.44e-07 | Elapsed: 20089.0s
+  Step 89000/100000 | Loss: 3.4540 (NCE: 3.4518, GP: 0.0022) | Acc: 0.945 | LR: 1.30e-07 | Elapsed: 20317.4s
+  Step 90000/100000 | Loss: 3.4532 (NCE: 3.4512, GP: 0.0020) | Acc: 0.959 | LR: 1.18e-07 | Elapsed: 20545.6s
+  Step 91000/100000 | Loss: 3.4512 (NCE: 3.4493, GP: 0.0019) | Acc: 0.969 | LR: 1.07e-07 | Elapsed: 20773.9s
+  Step 92000/100000 | Loss: 3.4537 (NCE: 3.4515, GP: 0.0022) | Acc: 0.967 | LR: 9.65e-08 | Elapsed: 21002.1s
+  Step 93000/100000 | Loss: 3.4516 (NCE: 3.4496, GP: 0.0019) | Acc: 0.961 | LR: 8.72e-08 | Elapsed: 21230.3s
+  Step 94000/100000 | Loss: 3.4545 (NCE: 3.4525, GP: 0.0020) | Acc: 0.951 | LR: 7.89e-08 | Elapsed: 21458.7s
+  Step 95000/100000 | Loss: 3.4532 (NCE: 3.4512, GP: 0.0020) | Acc: 0.955 | LR: 7.14e-08 | Elapsed: 21687.1s
+  Step 96000/100000 | Loss: 3.4547 (NCE: 3.4528, GP: 0.0020) | Acc: 0.945 | LR: 6.45e-08 | Elapsed: 21915.3s
+  Step 97000/100000 | Loss: 3.4545 (NCE: 3.4526, GP: 0.0019) | Acc: 0.959 | LR: 5.84e-08 | Elapsed: 22143.5s
+  Step 98000/100000 | Loss: 3.4520 (NCE: 3.4499, GP: 0.0021) | Acc: 0.959 | LR: 5.28e-08 | Elapsed: 22371.8s
+  Step 99000/100000 | Loss: 3.4528 (NCE: 3.4507, GP: 0.0021) | Acc: 0.963 | LR: 4.77e-08 | Elapsed: 22600.0s
+  Step 100000/100000 | Loss: 3.4539 (NCE: 3.4518, GP: 0.0022) | Acc: 0.965 | LR: 4.32e-08 | Elapsed: 22828.7s
+
+Training completed in 22828.7s (380.48 min)
+Energy model saved to checkpoints/ibc_dfo/particle/run_03_counter_examples_32/q_estimator.pt
+Legacy-compatible model saved to checkpoints/ibc_dfo/particle/q_estimator.pt
+Training summary saved to checkpoints/ibc_dfo/particle/run_03_counter_examples_32/train_summary.json
+Training ledger appended to results/ibc_dfo/particle/training_runs.jsonl
+[2026-03-26T06:35:58-07:00] === RUN 3 / 10: EVAL START ===
+Using device: cuda
+Running IBC Langevin MCMC inference on Particle environment
+Langevin config: 512 samples, 100 iterations, lr_init=0.1, lr_final=1e-05, decay_power=2.0, noise_scale=1.0
+Frame stack: 2
+Seeds: [0, 35, 42, 10, 135, 142]
+
+Loaded model (step 100000) with norm stats
+Loaded energy model from checkpoints/ibc_dfo/particle/run_03_counter_examples_32/q_estimator.pt
+=====================================================================================
+  Seed |  Steps |   Reward | Success |  Dist G1 |  Dist G2
+-------------------------------------------------------------------------------------
+     0 |     50 |     0.00 |       N |   0.4117 |   0.0011
+    35 |     50 |     1.00 |       Y |   0.0098 |   0.0027
+    42 |     50 |     0.00 |       N |   0.0024 |   0.1264
+    10 |     50 |     1.00 |       Y |   0.0010 |   0.0134
+   135 |     50 |     0.00 |       N |   0.0007 |   1.1447
+   142 |     50 |     1.00 |       Y |   0.0019 |   0.0087
+=====================================================================================
+
+                                   GLOBAL SUMMARY                                    
+=====================================================================================
+  Seeds evaluated:         6
+  Avg reward:              0.5000 +/- 0.5000
+  Avg steps:               50.0
+  Success rate:            50.00%
+  Avg min dist to Goal 1:  0.0712
+  Avg min dist to Goal 2:  0.2162
+  Plots saved to:          plots/ibc_dfo/particle/
+=====================================================================================
+Evaluation summary saved to: results/ibc_dfo/particle/eval_summary_run_3.json
+Evaluation ledger appended to: results/ibc_dfo/particle/evaluation_runs.jsonl
+[2026-03-26T06:36:28-07:00] === RUN 3 / 10: UPDATE BEST ===
+Best so far -> run_id=2 | success_rate=1.0000 | avg_reward=1.0000 | std_reward=0.0000 | checkpoint=checkpoints/ibc_dfo/particle/run_02_counter_examples_16/q_estimator.pt
+[2026-03-26T06:36:28-07:00] === RUN 4 / 10: TRAIN START ===
+2026-03-26 06:36:31.534043: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-03-26 06:36:31.820306: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Using device: cuda
+Training IBC (paper-faithful) on Particle environment
+Run: 4/10 (counter_examples_64)
+Steps: 100000, Batch: 512, LR: 0.001
+Counter-examples: 64 (Langevin, 100 iters)
+Architecture: MLP [256, 256]
+Grad penalty: L-inf, margin=1.0
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1774532195.070330  228830 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 3586 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 3060 Laptop GPU, pci bus id: 0000:01:00.0, compute capability: 8.6
+2026-03-26 06:36:35.412962: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+2026-03-26 06:36:36.412808: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 06:36:37.497043: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 06:36:39.304059: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 06:36:43.331715: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+Dataset size: 102000
+Act range: [0.000, 1.000]
+
+Starting training...
+  Step 1000/100000 | Loss: 4.1267 (NCE: 4.1216, GP: 0.0050) | Acc: 0.018 | LR: 9.04e-04 | Elapsed: 429.7s
+  Step 2000/100000 | Loss: 4.1404 (NCE: 4.1373, GP: 0.0030) | Acc: 0.078 | LR: 8.18e-04 | Elapsed: 862.9s
+  Step 3000/100000 | Loss: 4.1367 (NCE: 4.1340, GP: 0.0027) | Acc: 0.123 | LR: 7.40e-04 | Elapsed: 1296.6s
+  Step 4000/100000 | Loss: 4.1358 (NCE: 4.1329, GP: 0.0029) | Acc: 0.064 | LR: 6.69e-04 | Elapsed: 1731.6s
+  Step 5000/100000 | Loss: 4.1309 (NCE: 4.1279, GP: 0.0030) | Acc: 0.248 | LR: 6.05e-04 | Elapsed: 2165.9s
+  Step 6000/100000 | Loss: 4.1299 (NCE: 4.1268, GP: 0.0031) | Acc: 0.316 | LR: 5.47e-04 | Elapsed: 2601.1s
+  Step 7000/100000 | Loss: 4.1293 (NCE: 4.1264, GP: 0.0029) | Acc: 0.107 | LR: 4.95e-04 | Elapsed: 3035.4s
+  Step 8000/100000 | Loss: 4.1275 (NCE: 4.1246, GP: 0.0029) | Acc: 0.289 | LR: 4.48e-04 | Elapsed: 3470.6s
+  Step 9000/100000 | Loss: 4.1311 (NCE: 4.1282, GP: 0.0028) | Acc: 0.398 | LR: 4.05e-04 | Elapsed: 3907.5s
+  Step 10000/100000 | Loss: 4.1320 (NCE: 4.1294, GP: 0.0026) | Acc: 0.311 | LR: 3.66e-04 | Elapsed: 4343.2s
+  Step 11000/100000 | Loss: 4.1297 (NCE: 4.1270, GP: 0.0027) | Acc: 0.363 | LR: 3.31e-04 | Elapsed: 4780.1s
+  Step 12000/100000 | Loss: 4.1294 (NCE: 4.1268, GP: 0.0026) | Acc: 0.396 | LR: 2.99e-04 | Elapsed: 5215.8s
+  Step 13000/100000 | Loss: 4.1322 (NCE: 4.1295, GP: 0.0027) | Acc: 0.576 | LR: 2.71e-04 | Elapsed: 5655.2s
+  Step 14000/100000 | Loss: 4.1295 (NCE: 4.1271, GP: 0.0024) | Acc: 0.426 | LR: 2.45e-04 | Elapsed: 6088.3s
+  Step 15000/100000 | Loss: 4.1336 (NCE: 4.1307, GP: 0.0028) | Acc: 0.355 | LR: 2.21e-04 | Elapsed: 6524.5s
+  Step 16000/100000 | Loss: 4.1308 (NCE: 4.1283, GP: 0.0025) | Acc: 0.592 | LR: 2.00e-04 | Elapsed: 6959.8s
+  Step 17000/100000 | Loss: 4.1327 (NCE: 4.1304, GP: 0.0023) | Acc: 0.684 | LR: 1.81e-04 | Elapsed: 7394.6s
+  Step 18000/100000 | Loss: 4.1300 (NCE: 4.1273, GP: 0.0027) | Acc: 0.611 | LR: 1.64e-04 | Elapsed: 7829.2s
+  Step 19000/100000 | Loss: 4.1303 (NCE: 4.1276, GP: 0.0027) | Acc: 0.609 | LR: 1.48e-04 | Elapsed: 8263.6s
+  Step 20000/100000 | Loss: 4.1315 (NCE: 4.1289, GP: 0.0026) | Acc: 0.777 | LR: 1.34e-04 | Elapsed: 8692.8s
+  Step 21000/100000 | Loss: 4.1301 (NCE: 4.1276, GP: 0.0026) | Acc: 0.768 | LR: 1.21e-04 | Elapsed: 9121.9s
+  Step 22000/100000 | Loss: 4.1321 (NCE: 4.1296, GP: 0.0025) | Acc: 0.758 | LR: 1.10e-04 | Elapsed: 9551.0s
+  Step 23000/100000 | Loss: 4.1284 (NCE: 4.1258, GP: 0.0027) | Acc: 0.775 | LR: 9.91e-05 | Elapsed: 9980.3s
+  Step 24000/100000 | Loss: 4.1324 (NCE: 4.1298, GP: 0.0026) | Acc: 0.840 | LR: 8.96e-05 | Elapsed: 10411.6s
+  Step 25000/100000 | Loss: 4.1326 (NCE: 4.1300, GP: 0.0026) | Acc: 0.791 | LR: 8.11e-05 | Elapsed: 10854.7s
+  Step 26000/100000 | Loss: 4.1289 (NCE: 4.1262, GP: 0.0026) | Acc: 0.873 | LR: 7.33e-05 | Elapsed: 11286.1s
+  Step 27000/100000 | Loss: 4.1328 (NCE: 4.1303, GP: 0.0026) | Acc: 0.754 | LR: 6.63e-05 | Elapsed: 11718.3s
+  Step 28000/100000 | Loss: 4.1275 (NCE: 4.1250, GP: 0.0025) | Acc: 0.887 | LR: 6.00e-05 | Elapsed: 12147.2s
+  Step 29000/100000 | Loss: 4.1287 (NCE: 4.1262, GP: 0.0025) | Acc: 0.922 | LR: 5.42e-05 | Elapsed: 12576.2s
+  Step 30000/100000 | Loss: 4.1305 (NCE: 4.1279, GP: 0.0026) | Acc: 0.912 | LR: 4.90e-05 | Elapsed: 13005.1s
+  Step 31000/100000 | Loss: 4.1302 (NCE: 4.1278, GP: 0.0025) | Acc: 0.920 | LR: 4.44e-05 | Elapsed: 13436.0s
+  Step 32000/100000 | Loss: 4.1305 (NCE: 4.1282, GP: 0.0024) | Acc: 0.938 | LR: 4.01e-05 | Elapsed: 13865.7s
+  Step 33000/100000 | Loss: 4.1341 (NCE: 4.1315, GP: 0.0025) | Acc: 0.916 | LR: 3.63e-05 | Elapsed: 14297.6s
+  Step 34000/100000 | Loss: 4.1333 (NCE: 4.1306, GP: 0.0026) | Acc: 0.932 | LR: 3.28e-05 | Elapsed: 14729.6s
+  Step 35000/100000 | Loss: 4.1306 (NCE: 4.1281, GP: 0.0025) | Acc: 0.914 | LR: 2.97e-05 | Elapsed: 15161.9s
+  Step 36000/100000 | Loss: 4.1313 (NCE: 4.1287, GP: 0.0026) | Acc: 0.928 | LR: 2.68e-05 | Elapsed: 15595.9s
+  Step 37000/100000 | Loss: 4.1307 (NCE: 4.1282, GP: 0.0025) | Acc: 0.947 | LR: 2.43e-05 | Elapsed: 16031.6s
+  Step 38000/100000 | Loss: 4.1303 (NCE: 4.1279, GP: 0.0024) | Acc: 0.953 | LR: 2.19e-05 | Elapsed: 16469.6s
+  Step 39000/100000 | Loss: 4.1306 (NCE: 4.1281, GP: 0.0026) | Acc: 0.945 | LR: 1.98e-05 | Elapsed: 16905.4s
+  Step 40000/100000 | Loss: 4.1317 (NCE: 4.1294, GP: 0.0024) | Acc: 0.930 | LR: 1.80e-05 | Elapsed: 17342.9s
+  Step 41000/100000 | Loss: 4.1314 (NCE: 4.1288, GP: 0.0026) | Acc: 0.955 | LR: 1.62e-05 | Elapsed: 17780.2s
+  Step 42000/100000 | Loss: 4.1334 (NCE: 4.1309, GP: 0.0025) | Acc: 0.938 | LR: 1.47e-05 | Elapsed: 18230.1s
+  Step 43000/100000 | Loss: 4.1295 (NCE: 4.1270, GP: 0.0025) | Acc: 0.961 | LR: 1.33e-05 | Elapsed: 18685.6s
+  Step 44000/100000 | Loss: 4.1301 (NCE: 4.1276, GP: 0.0026) | Acc: 0.943 | LR: 1.20e-05 | Elapsed: 19129.0s
+  Step 45000/100000 | Loss: 4.1309 (NCE: 4.1284, GP: 0.0024) | Acc: 0.953 | LR: 1.09e-05 | Elapsed: 19570.7s
+  Step 46000/100000 | Loss: 4.1335 (NCE: 4.1309, GP: 0.0027) | Acc: 0.939 | LR: 9.82e-06 | Elapsed: 20012.2s
+  Step 47000/100000 | Loss: 4.1330 (NCE: 4.1304, GP: 0.0026) | Acc: 0.943 | LR: 8.88e-06 | Elapsed: 20453.8s
+  Step 48000/100000 | Loss: 4.1328 (NCE: 4.1304, GP: 0.0024) | Acc: 0.947 | LR: 8.03e-06 | Elapsed: 20895.5s
+  Step 49000/100000 | Loss: 4.1326 (NCE: 4.1302, GP: 0.0024) | Acc: 0.961 | LR: 7.27e-06 | Elapsed: 21360.2s
+  Step 50000/100000 | Loss: 4.1324 (NCE: 4.1299, GP: 0.0025) | Acc: 0.941 | LR: 6.57e-06 | Elapsed: 21801.4s
+  Step 51000/100000 | Loss: 4.1301 (NCE: 4.1276, GP: 0.0025) | Acc: 0.967 | LR: 5.94e-06 | Elapsed: 22245.4s
+  Step 52000/100000 | Loss: 4.1314 (NCE: 4.1289, GP: 0.0024) | Acc: 0.953 | LR: 5.37e-06 | Elapsed: 22689.0s
+  Step 53000/100000 | Loss: 4.1318 (NCE: 4.1294, GP: 0.0023) | Acc: 0.932 | LR: 4.86e-06 | Elapsed: 23157.9s
+  Step 54000/100000 | Loss: 4.1316 (NCE: 4.1293, GP: 0.0023) | Acc: 0.941 | LR: 4.40e-06 | Elapsed: 23657.6s
+  Step 55000/100000 | Loss: 4.1305 (NCE: 4.1281, GP: 0.0024) | Acc: 0.949 | LR: 3.98e-06 | Elapsed: 24149.2s
+  Step 56000/100000 | Loss: 4.1334 (NCE: 4.1310, GP: 0.0024) | Acc: 0.953 | LR: 3.60e-06 | Elapsed: 24633.6s
+  Step 57000/100000 | Loss: 4.1307 (NCE: 4.1281, GP: 0.0026) | Acc: 0.947 | LR: 3.25e-06 | Elapsed: 25104.5s
+  Step 58000/100000 | Loss: 4.1312 (NCE: 4.1288, GP: 0.0024) | Acc: 0.949 | LR: 2.94e-06 | Elapsed: 25567.6s
+  Step 59000/100000 | Loss: 4.1310 (NCE: 4.1285, GP: 0.0025) | Acc: 0.963 | LR: 2.66e-06 | Elapsed: 26019.3s
+  Step 60000/100000 | Loss: 4.1306 (NCE: 4.1282, GP: 0.0024) | Acc: 0.939 | LR: 2.41e-06 | Elapsed: 26468.2s
+  Step 61000/100000 | Loss: 4.1330 (NCE: 4.1303, GP: 0.0027) | Acc: 0.938 | LR: 2.18e-06 | Elapsed: 26923.0s
+  Step 62000/100000 | Loss: 4.1321 (NCE: 4.1297, GP: 0.0024) | Acc: 0.959 | LR: 1.97e-06 | Elapsed: 27375.0s
+  Step 63000/100000 | Loss: 4.1311 (NCE: 4.1286, GP: 0.0024) | Acc: 0.961 | LR: 1.78e-06 | Elapsed: 27827.7s
+  Step 64000/100000 | Loss: 4.1307 (NCE: 4.1284, GP: 0.0023) | Acc: 0.953 | LR: 1.61e-06 | Elapsed: 28277.3s
+  Step 65000/100000 | Loss: 4.1330 (NCE: 4.1305, GP: 0.0025) | Acc: 0.959 | LR: 1.46e-06 | Elapsed: 28731.1s
+  Step 66000/100000 | Loss: 4.1322 (NCE: 4.1298, GP: 0.0023) | Acc: 0.965 | LR: 1.32e-06 | Elapsed: 29185.2s
+  Step 67000/100000 | Loss: 4.1313 (NCE: 4.1287, GP: 0.0026) | Acc: 0.957 | LR: 1.19e-06 | Elapsed: 29634.9s
+  Step 68000/100000 | Loss: 4.1338 (NCE: 4.1313, GP: 0.0025) | Acc: 0.947 | LR: 1.08e-06 | Elapsed: 30092.9s
+  Step 69000/100000 | Loss: 4.1305 (NCE: 4.1280, GP: 0.0025) | Acc: 0.965 | LR: 9.73e-07 | Elapsed: 30542.1s
+  Step 70000/100000 | Loss: 4.1302 (NCE: 4.1278, GP: 0.0024) | Acc: 0.955 | LR: 8.80e-07 | Elapsed: 31001.8s
+  Step 71000/100000 | Loss: 4.1288 (NCE: 4.1264, GP: 0.0024) | Acc: 0.969 | LR: 7.96e-07 | Elapsed: 31488.8s
+  Step 72000/100000 | Loss: 4.1298 (NCE: 4.1271, GP: 0.0027) | Acc: 0.967 | LR: 7.20e-07 | Elapsed: 31973.0s
+  Step 73000/100000 | Loss: 4.1321 (NCE: 4.1296, GP: 0.0024) | Acc: 0.953 | LR: 6.51e-07 | Elapsed: 32446.4s
+  Step 74000/100000 | Loss: 4.1327 (NCE: 4.1301, GP: 0.0026) | Acc: 0.922 | LR: 5.89e-07 | Elapsed: 32910.3s
+  Step 75000/100000 | Loss: 4.1333 (NCE: 4.1309, GP: 0.0024) | Acc: 0.934 | LR: 5.33e-07 | Elapsed: 33366.9s
+  Step 76000/100000 | Loss: 4.1319 (NCE: 4.1295, GP: 0.0025) | Acc: 0.949 | LR: 4.82e-07 | Elapsed: 33823.0s
+  Step 77000/100000 | Loss: 4.1309 (NCE: 4.1286, GP: 0.0023) | Acc: 0.955 | LR: 4.36e-07 | Elapsed: 34279.5s
+  Step 78000/100000 | Loss: 4.1322 (NCE: 4.1295, GP: 0.0026) | Acc: 0.951 | LR: 3.94e-07 | Elapsed: 34737.9s
+  Step 79000/100000 | Loss: 4.1318 (NCE: 4.1294, GP: 0.0024) | Acc: 0.955 | LR: 3.56e-07 | Elapsed: 35195.9s
+  Step 80000/100000 | Loss: 4.1340 (NCE: 4.1315, GP: 0.0025) | Acc: 0.951 | LR: 3.22e-07 | Elapsed: 35658.8s
+  Step 81000/100000 | Loss: 4.1318 (NCE: 4.1294, GP: 0.0024) | Acc: 0.955 | LR: 2.91e-07 | Elapsed: 36132.5s
+  Step 82000/100000 | Loss: 4.1327 (NCE: 4.1301, GP: 0.0026) | Acc: 0.951 | LR: 2.64e-07 | Elapsed: 36601.6s
+  Step 83000/100000 | Loss: 4.1304 (NCE: 4.1280, GP: 0.0024) | Acc: 0.963 | LR: 2.38e-07 | Elapsed: 37070.1s
+  Step 84000/100000 | Loss: 4.1297 (NCE: 4.1271, GP: 0.0026) | Acc: 0.945 | LR: 2.16e-07 | Elapsed: 37539.2s
+  Step 85000/100000 | Loss: 4.1320 (NCE: 4.1295, GP: 0.0025) | Acc: 0.941 | LR: 1.95e-07 | Elapsed: 38005.1s
+  Step 86000/100000 | Loss: 4.1317 (NCE: 4.1292, GP: 0.0025) | Acc: 0.947 | LR: 1.76e-07 | Elapsed: 38471.1s
+  Step 87000/100000 | Loss: 4.1325 (NCE: 4.1301, GP: 0.0024) | Acc: 0.939 | LR: 1.59e-07 | Elapsed: 38936.4s
+  Step 88000/100000 | Loss: 4.1312 (NCE: 4.1289, GP: 0.0024) | Acc: 0.961 | LR: 1.44e-07 | Elapsed: 39423.9s
+  Step 89000/100000 | Loss: 4.1319 (NCE: 4.1294, GP: 0.0025) | Acc: 0.955 | LR: 1.30e-07 | Elapsed: 39914.8s
+  Step 90000/100000 | Loss: 4.1325 (NCE: 4.1298, GP: 0.0026) | Acc: 0.955 | LR: 1.18e-07 | Elapsed: 40380.0s
+  Step 91000/100000 | Loss: 4.1305 (NCE: 4.1281, GP: 0.0024) | Acc: 0.939 | LR: 1.07e-07 | Elapsed: 40841.4s
+  Step 92000/100000 | Loss: 4.1300 (NCE: 4.1277, GP: 0.0022) | Acc: 0.949 | LR: 9.65e-08 | Elapsed: 41305.4s
+  Step 93000/100000 | Loss: 4.1304 (NCE: 4.1280, GP: 0.0024) | Acc: 0.955 | LR: 8.72e-08 | Elapsed: 41903.8s
+  Step 94000/100000 | Loss: 4.1306 (NCE: 4.1282, GP: 0.0024) | Acc: 0.963 | LR: 7.89e-08 | Elapsed: 42414.7s
+  Step 95000/100000 | Loss: 4.1301 (NCE: 4.1276, GP: 0.0025) | Acc: 0.953 | LR: 7.14e-08 | Elapsed: 42915.9s
+  Step 96000/100000 | Loss: 4.1316 (NCE: 4.1290, GP: 0.0026) | Acc: 0.957 | LR: 6.45e-08 | Elapsed: 43399.4s
+  Step 97000/100000 | Loss: 4.1303 (NCE: 4.1280, GP: 0.0024) | Acc: 0.936 | LR: 5.84e-08 | Elapsed: 43873.2s
+  Step 98000/100000 | Loss: 4.1300 (NCE: 4.1274, GP: 0.0026) | Acc: 0.959 | LR: 5.28e-08 | Elapsed: 44390.3s
+  Step 99000/100000 | Loss: 4.1310 (NCE: 4.1285, GP: 0.0025) | Acc: 0.967 | LR: 4.77e-08 | Elapsed: 44868.7s
+  Step 100000/100000 | Loss: 4.1315 (NCE: 4.1290, GP: 0.0025) | Acc: 0.961 | LR: 4.32e-08 | Elapsed: 45330.8s
+
+Training completed in 45330.8s (755.51 min)
+Energy model saved to checkpoints/ibc_dfo/particle/run_04_counter_examples_64/q_estimator.pt
+Legacy-compatible model saved to checkpoints/ibc_dfo/particle/q_estimator.pt
+Training summary saved to checkpoints/ibc_dfo/particle/run_04_counter_examples_64/train_summary.json
+Training ledger appended to results/ibc_dfo/particle/training_runs.jsonl
+[2026-03-26T19:12:21-07:00] === RUN 4 / 10: EVAL START ===
+Using device: cuda
+Running IBC Langevin MCMC inference on Particle environment
+Langevin config: 512 samples, 100 iterations, lr_init=0.1, lr_final=1e-05, decay_power=2.0, noise_scale=1.0
+Frame stack: 2
+Seeds: [0, 35, 42, 10, 135, 142]
+
+Loaded model (step 100000) with norm stats
+Loaded energy model from checkpoints/ibc_dfo/particle/run_04_counter_examples_64/q_estimator.pt
+=====================================================================================
+  Seed |  Steps |   Reward | Success |  Dist G1 |  Dist G2
+-------------------------------------------------------------------------------------
+     0 |     50 |     1.00 |       Y |   0.0137 |   0.0025
+    35 |     50 |     1.00 |       Y |   0.0099 |   0.0026
+    42 |     50 |     1.00 |       Y |   0.0025 |   0.0036
+    10 |     50 |     1.00 |       Y |   0.0012 |   0.0022
+   135 |     50 |     1.00 |       Y |   0.0044 |   0.0039
+   142 |     50 |     1.00 |       Y |   0.0020 |   0.0087
+=====================================================================================
+
+                                   GLOBAL SUMMARY                                    
+=====================================================================================
+  Seeds evaluated:         6
+  Avg reward:              1.0000 +/- 0.0000
+  Avg steps:               50.0
+  Success rate:            100.00%
+  Avg min dist to Goal 1:  0.0056
+  Avg min dist to Goal 2:  0.0039
+  Plots saved to:          plots/ibc_dfo/particle/
+=====================================================================================
+Evaluation summary saved to: results/ibc_dfo/particle/eval_summary_run_4.json
+Evaluation ledger appended to: results/ibc_dfo/particle/evaluation_runs.jsonl
+[2026-03-26T19:12:53-07:00] === RUN 4 / 10: UPDATE BEST ===
+Best so far -> run_id=2 | success_rate=1.0000 | avg_reward=1.0000 | std_reward=0.0000 | checkpoint=checkpoints/ibc_dfo/particle/run_02_counter_examples_16/q_estimator.pt
+[2026-03-26T19:12:53-07:00] === RUN 5 / 10: TRAIN START ===
+2026-03-26 19:12:55.891856: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-03-26 19:12:56.190518: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Using device: cuda
+Training IBC (paper-faithful) on Particle environment
+Run: 5/10 (langevin_iterations_75)
+Steps: 100000, Batch: 512, LR: 0.001
+Counter-examples: 16 (Langevin, 75 iters)
+Architecture: MLP [256, 256]
+Grad penalty: L-inf, margin=1.0
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1774577579.724429  366770 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 3586 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 3060 Laptop GPU, pci bus id: 0000:01:00.0, compute capability: 8.6
+2026-03-26 19:12:59.900274: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+2026-03-26 19:13:00.814098: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 19:13:01.752838: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 19:13:03.596869: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 19:13:07.376733: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+Dataset size: 102000
+Act range: [0.000, 1.000]
+
+Starting training...
+  Step 1000/100000 | Loss: 2.7302 (NCE: 2.7200, GP: 0.0102) | Acc: 0.369 | LR: 9.04e-04 | Elapsed: 98.0s
+  Step 2000/100000 | Loss: 2.7399 (NCE: 2.7324, GP: 0.0075) | Acc: 0.398 | LR: 8.18e-04 | Elapsed: 200.0s
+  Step 3000/100000 | Loss: 2.7411 (NCE: 2.7343, GP: 0.0068) | Acc: 0.633 | LR: 7.40e-04 | Elapsed: 304.7s
+  Step 4000/100000 | Loss: 2.7407 (NCE: 2.7345, GP: 0.0062) | Acc: 0.506 | LR: 6.69e-04 | Elapsed: 408.6s
+  Step 5000/100000 | Loss: 2.7468 (NCE: 2.7407, GP: 0.0061) | Acc: 0.553 | LR: 6.05e-04 | Elapsed: 514.2s
+  Step 6000/100000 | Loss: 2.7418 (NCE: 2.7370, GP: 0.0048) | Acc: 0.420 | LR: 5.47e-04 | Elapsed: 618.7s
+  Step 7000/100000 | Loss: 2.7477 (NCE: 2.7432, GP: 0.0046) | Acc: 0.760 | LR: 4.95e-04 | Elapsed: 724.3s
+  Step 8000/100000 | Loss: 2.7465 (NCE: 2.7422, GP: 0.0043) | Acc: 0.637 | LR: 4.48e-04 | Elapsed: 829.1s
+  Step 9000/100000 | Loss: 2.7514 (NCE: 2.7474, GP: 0.0040) | Acc: 0.588 | LR: 4.05e-04 | Elapsed: 932.7s
+  Step 10000/100000 | Loss: 2.7522 (NCE: 2.7482, GP: 0.0040) | Acc: 0.576 | LR: 3.66e-04 | Elapsed: 1037.3s
+  Step 11000/100000 | Loss: 2.7515 (NCE: 2.7484, GP: 0.0031) | Acc: 0.717 | LR: 3.31e-04 | Elapsed: 1144.4s
+  Step 12000/100000 | Loss: 2.7527 (NCE: 2.7496, GP: 0.0031) | Acc: 0.865 | LR: 2.99e-04 | Elapsed: 1252.2s
+  Step 13000/100000 | Loss: 2.7571 (NCE: 2.7545, GP: 0.0026) | Acc: 0.500 | LR: 2.71e-04 | Elapsed: 1354.2s
+  Step 14000/100000 | Loss: 2.7606 (NCE: 2.7583, GP: 0.0022) | Acc: 0.400 | LR: 2.45e-04 | Elapsed: 1459.3s
+  Step 15000/100000 | Loss: 2.7550 (NCE: 2.7530, GP: 0.0020) | Acc: 0.746 | LR: 2.21e-04 | Elapsed: 1561.1s
+  Step 16000/100000 | Loss: 2.7601 (NCE: 2.7583, GP: 0.0018) | Acc: 0.539 | LR: 2.00e-04 | Elapsed: 1664.4s
+  Step 17000/100000 | Loss: 2.7581 (NCE: 2.7563, GP: 0.0018) | Acc: 0.732 | LR: 1.81e-04 | Elapsed: 1768.8s
+  Step 18000/100000 | Loss: 2.7612 (NCE: 2.7596, GP: 0.0016) | Acc: 0.781 | LR: 1.64e-04 | Elapsed: 1872.9s
+  Step 19000/100000 | Loss: 2.7630 (NCE: 2.7613, GP: 0.0016) | Acc: 0.699 | LR: 1.48e-04 | Elapsed: 1975.7s
+  Step 20000/100000 | Loss: 2.7595 (NCE: 2.7580, GP: 0.0015) | Acc: 0.842 | LR: 1.34e-04 | Elapsed: 2078.4s
+  Step 21000/100000 | Loss: 2.7627 (NCE: 2.7613, GP: 0.0015) | Acc: 0.768 | LR: 1.21e-04 | Elapsed: 2182.1s
+  Step 22000/100000 | Loss: 2.7667 (NCE: 2.7653, GP: 0.0014) | Acc: 0.910 | LR: 1.10e-04 | Elapsed: 2285.7s
+  Step 23000/100000 | Loss: 2.7642 (NCE: 2.7629, GP: 0.0013) | Acc: 0.840 | LR: 9.91e-05 | Elapsed: 2387.3s
+  Step 24000/100000 | Loss: 2.7628 (NCE: 2.7615, GP: 0.0014) | Acc: 0.855 | LR: 8.96e-05 | Elapsed: 2491.7s
+  Step 25000/100000 | Loss: 2.7613 (NCE: 2.7599, GP: 0.0014) | Acc: 0.891 | LR: 8.11e-05 | Elapsed: 2594.9s
+  Step 26000/100000 | Loss: 2.7673 (NCE: 2.7661, GP: 0.0012) | Acc: 0.818 | LR: 7.33e-05 | Elapsed: 2699.3s
+  Step 27000/100000 | Loss: 2.7697 (NCE: 2.7685, GP: 0.0012) | Acc: 0.912 | LR: 6.63e-05 | Elapsed: 2802.5s
+  Step 28000/100000 | Loss: 2.7683 (NCE: 2.7671, GP: 0.0012) | Acc: 0.902 | LR: 6.00e-05 | Elapsed: 2907.1s
+  Step 29000/100000 | Loss: 2.7649 (NCE: 2.7637, GP: 0.0011) | Acc: 0.883 | LR: 5.42e-05 | Elapsed: 3010.7s
+  Step 30000/100000 | Loss: 2.7660 (NCE: 2.7649, GP: 0.0011) | Acc: 0.934 | LR: 4.90e-05 | Elapsed: 3113.6s
+  Step 31000/100000 | Loss: 2.7597 (NCE: 2.7584, GP: 0.0013) | Acc: 0.936 | LR: 4.44e-05 | Elapsed: 3216.5s
+  Step 32000/100000 | Loss: 2.7618 (NCE: 2.7607, GP: 0.0011) | Acc: 0.945 | LR: 4.01e-05 | Elapsed: 3318.9s
+  Step 33000/100000 | Loss: 2.7646 (NCE: 2.7635, GP: 0.0011) | Acc: 0.939 | LR: 3.63e-05 | Elapsed: 3421.9s
+  Step 34000/100000 | Loss: 2.7676 (NCE: 2.7665, GP: 0.0011) | Acc: 0.926 | LR: 3.28e-05 | Elapsed: 3524.4s
+  Step 35000/100000 | Loss: 2.7652 (NCE: 2.7641, GP: 0.0011) | Acc: 0.955 | LR: 2.97e-05 | Elapsed: 3629.1s
+  Step 36000/100000 | Loss: 2.7633 (NCE: 2.7622, GP: 0.0011) | Acc: 0.945 | LR: 2.68e-05 | Elapsed: 3731.4s
+  Step 37000/100000 | Loss: 2.7654 (NCE: 2.7643, GP: 0.0011) | Acc: 0.953 | LR: 2.43e-05 | Elapsed: 3835.4s
+  Step 38000/100000 | Loss: 2.7674 (NCE: 2.7663, GP: 0.0011) | Acc: 0.945 | LR: 2.19e-05 | Elapsed: 3939.9s
+  Step 39000/100000 | Loss: 2.7667 (NCE: 2.7657, GP: 0.0011) | Acc: 0.943 | LR: 1.98e-05 | Elapsed: 4043.6s
+  Step 40000/100000 | Loss: 2.7608 (NCE: 2.7597, GP: 0.0011) | Acc: 0.945 | LR: 1.80e-05 | Elapsed: 4158.0s
+  Step 41000/100000 | Loss: 2.7654 (NCE: 2.7643, GP: 0.0011) | Acc: 0.959 | LR: 1.62e-05 | Elapsed: 4262.9s
+  Step 42000/100000 | Loss: 2.7653 (NCE: 2.7643, GP: 0.0010) | Acc: 0.957 | LR: 1.47e-05 | Elapsed: 4367.1s
+  Step 43000/100000 | Loss: 2.7645 (NCE: 2.7635, GP: 0.0011) | Acc: 0.971 | LR: 1.33e-05 | Elapsed: 4470.8s
+  Step 44000/100000 | Loss: 2.7637 (NCE: 2.7627, GP: 0.0011) | Acc: 0.971 | LR: 1.20e-05 | Elapsed: 4574.7s
+  Step 45000/100000 | Loss: 2.7665 (NCE: 2.7654, GP: 0.0010) | Acc: 0.965 | LR: 1.09e-05 | Elapsed: 4677.2s
+  Step 46000/100000 | Loss: 2.7639 (NCE: 2.7628, GP: 0.0011) | Acc: 0.969 | LR: 9.82e-06 | Elapsed: 4781.3s
+  Step 47000/100000 | Loss: 2.7659 (NCE: 2.7649, GP: 0.0010) | Acc: 0.959 | LR: 8.88e-06 | Elapsed: 4883.7s
+  Step 48000/100000 | Loss: 2.7627 (NCE: 2.7616, GP: 0.0011) | Acc: 0.969 | LR: 8.03e-06 | Elapsed: 4984.3s
+  Step 49000/100000 | Loss: 2.7639 (NCE: 2.7628, GP: 0.0011) | Acc: 0.953 | LR: 7.27e-06 | Elapsed: 5086.6s
+  Step 50000/100000 | Loss: 2.7639 (NCE: 2.7628, GP: 0.0011) | Acc: 0.939 | LR: 6.57e-06 | Elapsed: 5191.2s
+  Step 51000/100000 | Loss: 2.7625 (NCE: 2.7615, GP: 0.0011) | Acc: 0.953 | LR: 5.94e-06 | Elapsed: 5294.9s
+  Step 52000/100000 | Loss: 2.7640 (NCE: 2.7629, GP: 0.0011) | Acc: 0.949 | LR: 5.37e-06 | Elapsed: 5398.4s
+  Step 53000/100000 | Loss: 2.7655 (NCE: 2.7645, GP: 0.0010) | Acc: 0.945 | LR: 4.86e-06 | Elapsed: 5501.0s
+  Step 54000/100000 | Loss: 2.7643 (NCE: 2.7632, GP: 0.0011) | Acc: 0.945 | LR: 4.40e-06 | Elapsed: 5603.7s
+  Step 55000/100000 | Loss: 2.7632 (NCE: 2.7621, GP: 0.0011) | Acc: 0.949 | LR: 3.98e-06 | Elapsed: 5706.6s
+  Step 56000/100000 | Loss: 2.7666 (NCE: 2.7656, GP: 0.0011) | Acc: 0.945 | LR: 3.60e-06 | Elapsed: 5811.2s
+  Step 57000/100000 | Loss: 2.7642 (NCE: 2.7632, GP: 0.0011) | Acc: 0.961 | LR: 3.25e-06 | Elapsed: 5913.7s
+  Step 58000/100000 | Loss: 2.7648 (NCE: 2.7637, GP: 0.0011) | Acc: 0.961 | LR: 2.94e-06 | Elapsed: 6015.4s
+  Step 59000/100000 | Loss: 2.7630 (NCE: 2.7619, GP: 0.0011) | Acc: 0.961 | LR: 2.66e-06 | Elapsed: 6118.2s
+  Step 60000/100000 | Loss: 2.7610 (NCE: 2.7599, GP: 0.0010) | Acc: 0.961 | LR: 2.41e-06 | Elapsed: 6220.9s
+  Step 61000/100000 | Loss: 2.7658 (NCE: 2.7647, GP: 0.0011) | Acc: 0.961 | LR: 2.18e-06 | Elapsed: 6323.6s
+  Step 62000/100000 | Loss: 2.7653 (NCE: 2.7642, GP: 0.0010) | Acc: 0.947 | LR: 1.97e-06 | Elapsed: 6425.6s

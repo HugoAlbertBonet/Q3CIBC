@@ -1,0 +1,1 @@
+Best so far -> run_id=2 | success_rate=1.0000 | avg_reward=1.0000 | std_reward=0.0000 | checkpoint=checkpoints/ibc_dfo/particle/run_02_counter_examples_16/q_estimator.pt

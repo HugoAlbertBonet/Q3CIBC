@@ -16,6 +16,7 @@ import wandb
 from utils.models import ControlPointGenerator, QEstimator
 from utils.loss import lossInfoNCE, lossMSE, lossSeparation, lossEntropyKDE
 from utils.normalizations import ObservationNormalizer
+from utils.sampling import sample_langevin
 
 # Load config
 config_path = Path(__file__).parent / "config_json" / "config.json"
@@ -38,6 +39,10 @@ learning_rate = env_training.get("learning_rate", training_shared.get("learning_
 separation_weight = training_shared.get("separation_weight", 0.1)
 mse_weight = training_shared.get("mse_weight", 1.0)
 info_nce_weight = training_shared.get("info_nce_weight", 1.0)
+generator_infonce_weight = env_training.get(
+    "generator_infonce_weight",
+    training_shared.get("generator_infonce_weight", 0.05),
+)
 
 MODEL_SAVE_DIR = training_shared.get("model_save_dir", "checkpoints")
 log_interval = training_shared.get("log_interval", 1000)
@@ -49,11 +54,53 @@ top_k_control_points = env_training.get(
     "top_k_control_points",
     training_shared.get("top_k_control_points", num_counter_examples),
 )
+
+langevin_config = env_model.get("langevin_config", {})
+langevin_num_iterations = langevin_config.get("num_iterations", 50)
+langevin_lr_init = langevin_config.get("lr_init", 0.1)
+langevin_lr_final = langevin_config.get("lr_final", 1e-5)
+langevin_decay_power = langevin_config.get("polynomial_decay_power", 2.0)
+langevin_delta_clip = langevin_config.get("delta_action_clip", 0.1)
+langevin_noise_scale = langevin_config.get("noise_scale", 1.0)
 # Separation loss epsilon: must be << action-space diameter so overlapping control
 # points are strongly repelled.  Default 1.0 is too large for particle's [0,1]^2.
 separation_epsilon = env_training.get("separation_epsilon", training_shared.get("separation_epsilon", 1.0))
 separation_loss_type = env_training.get("separation_loss", training_shared.get("separation_loss", "separation"))
 entropy_bandwidth = env_training.get("entropy_bandwidth", training_shared.get("entropy_bandwidth", 0.1))
+
+# S1: Separate LR for estimator (defaults to same as generator)
+estimator_learning_rate = env_training.get(
+    "estimator_learning_rate",
+    training_shared.get("estimator_learning_rate", learning_rate),
+)
+
+# S2: Scheduler type — "cosine" (default) or "cosine_warm_restarts"
+scheduler_type = env_training.get(
+    "scheduler_type",
+    training_shared.get("scheduler_type", "cosine"),
+)
+cosine_t0 = env_training.get(
+    "cosine_t0",
+    training_shared.get("cosine_t0", 50000),
+)
+
+# S4: InfoNCE logit clamp — lower values keep gradients flowing
+infonce_logit_clamp = env_training.get(
+    "infonce_logit_clamp",
+    training_shared.get("infonce_logit_clamp", 50.0),
+)
+
+# S6: Spectral norm on estimator
+use_spectral_norm = env_model.get(
+    "use_spectral_norm",
+    training_shared.get("use_spectral_norm", False),
+)
+
+# S7: Override cosine T_max (defaults to training_steps)
+cosine_t_max = env_training.get(
+    "cosine_t_max",
+    training_shared.get("cosine_t_max", None),
+)
 
 # Model parameters
 control_points = env_model.get("control_points", 50)
@@ -101,8 +148,13 @@ def main():
     print(f"Active environment: {active_env}")
     print(f"Training steps: {training_steps}")
     print(f"Batch size: {batch_size}")
-    print(f"Learning rate: {learning_rate}")
+    print(f"Learning rate (generator): {learning_rate}")
+    print(f"Learning rate (estimator): {estimator_learning_rate}")
+    print(f"Scheduler: {scheduler_type}")
+    print(f"InfoNCE logit clamp: {infonce_logit_clamp}")
+    print(f"Spectral norm (estimator): {use_spectral_norm}")
     print(f"Top-k control points as counter examples: {top_k_control_points}")
+    print(f"Langevin counter examples (from counter_examples): {num_counter_examples}")
     print(f"Frame stack: {frame_stack}")
     
     # Initialize Weights & Biases
@@ -147,20 +199,30 @@ def main():
     
     estimator = QEstimator(
         state_dim=dataset.state_shape,
-        action_dim=dataset.action_shape, 
-        hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
+        action_dim=dataset.action_shape,
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)],
+        use_spectral_norm=use_spectral_norm,
     ).to(device)
     
     optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
-    optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=learning_rate)
-    
-    # Cosine Annealing Learning Rate Schedules
-    scheduler_generator = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer_generator, T_max=training_steps, eta_min=1e-6
-    )
-    scheduler_estimator = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer_estimator, T_max=training_steps, eta_min=1e-6
-    )
+    optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=estimator_learning_rate)
+
+    # Learning Rate Schedules
+    effective_t_max = cosine_t_max if cosine_t_max is not None else training_steps
+    if scheduler_type == "cosine_warm_restarts":
+        scheduler_generator = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer_generator, T_0=cosine_t0, eta_min=1e-6
+        )
+        scheduler_estimator = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer_estimator, T_0=cosine_t0, eta_min=1e-6
+        )
+    else:
+        scheduler_generator = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer_generator, T_max=effective_t_max, eta_min=1e-6
+        )
+        scheduler_estimator = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer_estimator, T_max=effective_t_max, eta_min=1e-6
+        )
     
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
@@ -174,7 +236,7 @@ def main():
     )
     
     # Number of generated control points used as counter examples.
-    k_counter_examples = max(1, min(top_k_control_points, control_points))
+    k_cp_counter_examples = max(1, min(top_k_control_points, control_points))
     
     # Training timing
     start_time = time.time()
@@ -212,30 +274,74 @@ def main():
             with torch.no_grad():
                 states_for_cp = states.unsqueeze(1).expand(-1, predicted_actions_detached.shape[1], -1)
                 cp_q_values = estimator(states_for_cp, predicted_actions_detached).squeeze(-1)
-                topk_idx = torch.topk(cp_q_values, k=k_counter_examples, dim=1).indices
+                topk_idx = torch.topk(cp_q_values, k=k_cp_counter_examples, dim=1).indices
 
             gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, predicted_actions_detached.shape[2])
-            counter_samples = torch.gather(predicted_actions_detached, dim=1, index=gather_idx)
+            cp_counter_samples = torch.gather(predicted_actions_detached, dim=1, index=gather_idx)
+
+            # Optional Langevin counter-examples generated directly from counter_examples.
+            if num_counter_examples > 0:
+                action_min = torch.full((dataset.action_shape,), action_bounds[0], device=device)
+                action_max = torch.full((dataset.action_shape,), action_bounds[1], device=device)
+
+                # Freeze estimator params during Langevin MCMC; gradients are only for actions.
+                for p in estimator.parameters():
+                    p.requires_grad_(False)
+
+                def _energy_fn(obs_expanded, actions_batch):
+                    return estimator(obs_expanded, actions_batch).squeeze(-1)
+
+                langevin_samples = sample_langevin(
+                    energy_function=_energy_fn,
+                    observations=states,
+                    num_samples=num_counter_examples,
+                    action_min=action_min,
+                    action_max=action_max,
+                    num_iterations=langevin_num_iterations,
+                    lr_init=langevin_lr_init,
+                    lr_final=langevin_lr_final,
+                    polynomial_decay_power=langevin_decay_power,
+                    delta_action_clip=langevin_delta_clip,
+                    noise_scale=langevin_noise_scale,
+                    device=device,
+                )
+
+                for p in estimator.parameters():
+                    p.requires_grad_(True)
+
+                counter_samples = torch.cat([cp_counter_samples, langevin_samples.detach()], dim=1)
+            else:
+                counter_samples = cp_counter_samples
+
+            total_counter_examples = counter_samples.shape[1]
             
             # Concatenate expert action (index 0) with counter-examples
             all_actions = torch.cat([actions.unsqueeze(1), counter_samples], dim=1)
-            states_expanded = states.unsqueeze(1).expand(-1, 1 + k_counter_examples, -1)
+            states_expanded = states.unsqueeze(1).expand(-1, 1 + total_counter_examples, -1)
             
             # Direct energy evaluation for InfoNCE
             energies = estimator(states_expanded, all_actions).squeeze(-1)
             
             # InfoNCE loss: expert action should have the highest Q value (lowest energy equivalent)
-            loss_estimator = lossInfoNCE(energies)
+            loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
 
             # Generator receives InfoNCE with opposite sign.
             # Rebuild counter samples from non-detached control points so gradients reach generator,
             # while freezing estimator parameters so this branch updates only the generator.
-            counter_samples_for_generator = torch.gather(predicted_actions, dim=1, index=gather_idx)
+            cp_counter_samples_for_generator = torch.gather(predicted_actions, dim=1, index=gather_idx)
+            if num_counter_examples > 0:
+                counter_samples_for_generator = torch.cat(
+                    [cp_counter_samples_for_generator, langevin_samples.detach()],
+                    dim=1,
+                )
+            else:
+                counter_samples_for_generator = cp_counter_samples_for_generator
+
             all_actions_for_generator = torch.cat([actions.unsqueeze(1), counter_samples_for_generator], dim=1)
             for param in estimator.parameters():
                 param.requires_grad_(False)
             energies_for_generator = estimator(states_expanded, all_actions_for_generator).squeeze(-1)
-            loss_infonce_generator = lossInfoNCE(energies_for_generator)
+            loss_infonce_generator = lossInfoNCE(energies_for_generator, logit_clamp=infonce_logit_clamp)
             for param in estimator.parameters():
                 param.requires_grad_(True)
             
@@ -252,7 +358,7 @@ def main():
             optimizer_generator.zero_grad()
             
             loss_estimator_total = info_nce_weight * loss_estimator
-            loss_generator_total = loss_generator - 0.05 * loss_infonce_generator
+            loss_generator_total = loss_generator - generator_infonce_weight * loss_infonce_generator
             total_loss = loss_generator_total + loss_estimator_total
             total_loss.backward()
             

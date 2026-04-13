@@ -1,0 +1,62 @@
+[
+  {
+    "checkpoint": "run_01_baseline",
+    "inference": "default",
+    "success_rate": 0.8,
+    "time_s": 793.4049761295319
+  },
+  {
+    "checkpoint": "run_02_CE16",
+    "inference": "default",
+    "success_rate": 0.68,
+    "time_s": 329.41805148124695
+  },
+  {
+    "checkpoint": "run_03_CE32",
+    "inference": "default",
+    "success_rate": 0.68,
+    "time_s": 324.20146322250366
+  },
+  {
+    "checkpoint": "run_04_CE64",
+    "inference": "default",
+    "success_rate": 0.72,
+    "time_s": 325.5306439399719
+  },
+  {
+    "checkpoint": "run_01_baseline",
+    "inference": "samples_1024",
+    "success_rate": 0.8,
+    "time_s": 640.219377040863
+  },
+  {
+    "checkpoint": "run_01_baseline",
+    "inference": "samples_2048",
+    "success_rate": 0.78,
+    "time_s": 1143.8855283260345
+  },
+  {
+    "checkpoint": "run_01_baseline",
+    "inference": "iters_200",
+    "success_rate": 0.72,
+    "time_s": 612.7703602313995
+  },
+  {
+    "checkpoint": "run_01_baseline",
+    "inference": "low_noise_0.5",
+    "success_rate": 0.74,
+    "time_s": 314.04337549209595
+  },
+  {
+    "checkpoint": "run_01_baseline",
+    "inference": "low_noise_0.1",
+    "success_rate": 0.82,
+    "time_s": 315.5795874595642
+  },
+  {
+    "checkpoint": "run_01_baseline",
+    "inference": "combo_1024_i200_n0.5",
+    "success_rate": 0.82,
+    "time_s": 1126.192055463791
+  }
+]

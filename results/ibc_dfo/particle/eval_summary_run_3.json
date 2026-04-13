@@ -1,0 +1,88 @@
+{
+  "timestamp_utc": "2026-03-26T13:36:28.407434+00:00",
+  "run_id": "3",
+  "checkpoint_path": "checkpoints/ibc_dfo/particle/run_03_counter_examples_32/q_estimator.pt",
+  "seeds": [
+    0,
+    35,
+    42,
+    10,
+    135,
+    142
+  ],
+  "num_seeds": 6,
+  "inference_hparams": {
+    "num_samples": 512,
+    "num_iterations": 100,
+    "lr_init": 0.1,
+    "lr_final": 1e-05,
+    "decay_power": 2.0,
+    "delta_action_clip": 0.1,
+    "noise_scale": 1.0,
+    "uniform_boundary_buffer": 0.05
+  },
+  "global_metrics": {
+    "avg_reward": 0.5,
+    "std_reward": 0.5,
+    "avg_steps": 50.0,
+    "success_rate": 0.5,
+    "avg_min_dist_goal_1": 0.07124798744916916,
+    "avg_min_dist_goal_2": 0.216169536113739
+  },
+  "per_seed": [
+    {
+      "seed": 0,
+      "steps": 50,
+      "reward": 0.0,
+      "success": false,
+      "min_dist_goal_1": 0.4116770327091217,
+      "min_dist_goal_2": 0.0011356266913935542,
+      "plot_path": "plots/ibc_dfo/particle/path_seed_0.png"
+    },
+    {
+      "seed": 35,
+      "steps": 50,
+      "reward": 1.0,
+      "success": true,
+      "min_dist_goal_1": 0.009824639186263084,
+      "min_dist_goal_2": 0.0026502504479140043,
+      "plot_path": "plots/ibc_dfo/particle/path_seed_35.png"
+    },
+    {
+      "seed": 42,
+      "steps": 50,
+      "reward": 0.0,
+      "success": false,
+      "min_dist_goal_1": 0.0023721368052065372,
+      "min_dist_goal_2": 0.12639380991458893,
+      "plot_path": "plots/ibc_dfo/particle/path_seed_42.png"
+    },
+    {
+      "seed": 10,
+      "steps": 50,
+      "reward": 1.0,
+      "success": true,
+      "min_dist_goal_1": 0.0010163033148273826,
+      "min_dist_goal_2": 0.013443179428577423,
+      "plot_path": "plots/ibc_dfo/particle/path_seed_10.png"
+    },
+    {
+      "seed": 135,
+      "steps": 50,
+      "reward": 0.0,
+      "success": false,
+      "min_dist_goal_1": 0.0007403083727695048,
+      "min_dist_goal_2": 1.1446915864944458,
+      "plot_path": "plots/ibc_dfo/particle/path_seed_135.png"
+    },
+    {
+      "seed": 142,
+      "steps": 50,
+      "reward": 1.0,
+      "success": true,
+      "min_dist_goal_1": 0.0018575163558125496,
+      "min_dist_goal_2": 0.008702792227268219,
+      "plot_path": "plots/ibc_dfo/particle/path_seed_142.png"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+[2026-03-26T21:08:45-07:00] Starting single rerun for run_id=2
+2026-03-26 21:08:46.594088: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2026-03-26 21:08:46.656013: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Using device: cuda
+Training IBC (paper-faithful) on Particle environment
+Run: 2/10 (counter_examples_16)
+Steps: 100000, Batch: 512, LR: 0.001
+Counter-examples: 16 (Langevin, 100 iters)
+Architecture: MLP [256, 256]
+Grad penalty: L-inf, margin=1.0
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1774584529.818244    2253 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 3586 MB memory:  -> device: 0, name: NVIDIA GeForce RTX 3060 Laptop GPU, pci bus id: 0000:01:00.0, compute capability: 8.6
+2026-03-26 21:08:49.946132: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+2026-03-26 21:08:50.750358: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 21:08:51.659254: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 21:08:53.348841: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+2026-03-26 21:08:56.799296: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+Dataset size: 102000
+Act range: [0.000, 1.000]
+
+Starting training...
+  Step 1000/100000 | Loss: 2.7885 (NCE: 2.7837, GP: 0.0048) | Acc: 0.178 | LR: 9.04e-04 | Elapsed: 116.5s
+  Step 2000/100000 | Loss: 2.7904 (NCE: 2.7865, GP: 0.0039) | Acc: 0.277 | LR: 8.18e-04 | Elapsed: 244.7s
+  Step 3000/100000 | Loss: 2.7967 (NCE: 2.7933, GP: 0.0034) | Acc: 0.473 | LR: 7.40e-04 | Elapsed: 377.1s
+  Step 4000/100000 | Loss: 2.7970 (NCE: 2.7937, GP: 0.0033) | Acc: 0.465 | LR: 6.69e-04 | Elapsed: 518.3s
+  Step 5000/100000 | Loss: 2.7988 (NCE: 2.7961, GP: 0.0027) | Acc: 0.434 | LR: 6.05e-04 | Elapsed: 659.7s

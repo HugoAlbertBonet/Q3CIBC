@@ -1,0 +1,5 @@
+rank_by_original,trial_id,original_success_rate,reval_success_rate_q3cibc,reval_success_rate_dfo_trial21,num_seeds_used,q3c_checkpoint_dir,dfo_checkpoint
+1,52,1.0,0.88,0.0,50,/home/halbertb/Q3CIBC/checkpoints/hpsearch/trial_052,/home/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/trial_021/q_estimator.pt
+2,54,1.0,0.84,0.0,50,/home/halbertb/Q3CIBC/checkpoints/hpsearch/trial_054,/home/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/trial_021/q_estimator.pt
+3,32,0.9,0.9,0.0,50,/home/halbertb/Q3CIBC/checkpoints/hpsearch/trial_032,/home/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/trial_021/q_estimator.pt
+4,33,0.9,0.9,0.0,50,/home/halbertb/Q3CIBC/checkpoints/hpsearch/trial_033,/home/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/trial_021/q_estimator.pt

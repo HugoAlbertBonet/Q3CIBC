@@ -1,0 +1,40 @@
+{
+  "baseline_sr": 0.82,
+  "experiments": [
+    {
+      "run_id": 5,
+      "name": "temp_0p1_quick",
+      "success_rate": 0.4,
+      "train_time": 7210.366483926773,
+      "eval_time": 286.9986743927002
+    },
+    {
+      "run_id": 6,
+      "name": "temp_0p5_quick",
+      "success_rate": 0.94,
+      "train_time": 7230.765064239502,
+      "eval_time": 309.82595801353455
+    },
+    {
+      "run_id": 7,
+      "name": "lr3e4_quick",
+      "success_rate": 0.74,
+      "train_time": 7492.787218809128,
+      "eval_time": 320.00424790382385
+    },
+    {
+      "run_id": 8,
+      "name": "ce8_quick",
+      "success_rate": 0.9,
+      "train_time": 3753.0653715133667,
+      "eval_time": 266.4057078361511
+    },
+    {
+      "run_id": 9,
+      "name": "baseline_langevin50_quick",
+      "success_rate": 0.74,
+      "train_time": 6785.015097856522,
+      "eval_time": 254.75386595726013
+    }
+  ]
+}
