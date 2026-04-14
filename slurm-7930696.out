@@ -252,3 +252,6 @@ Params: {
 
   Result: success_rate=98.00%, eval_time=161.1s
   Logged to /home1/halbertb/Q3CIBC/results/hyperparam_search/ibc_dfo_particle/trials.jsonl
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-13T22:06:02.009] error: *** STEP 7930696.0 ON d14-06 CANCELLED AT 2026-04-13T22:06:02 DUE TO TIME LIMIT ***
+[2026-04-13T22:06:02.009] error: *** JOB 7930696 ON d14-06 CANCELLED AT 2026-04-13T22:06:02 DUE TO TIME LIMIT ***
