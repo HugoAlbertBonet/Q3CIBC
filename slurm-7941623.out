@@ -297,3 +297,6 @@ Parameters:
   Evaluating...
 
   Result: success_rate=54.00%, avg_reward=0.560
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-14T14:01:28.966] error: *** STEP 7941623.0 ON d14-16 CANCELLED AT 2026-04-14T14:01:28 DUE to SIGNAL Terminated ***
+[2026-04-14T14:01:28.966] error: *** JOB 7941623 ON d14-16 CANCELLED AT 2026-04-14T14:01:28 DUE to SIGNAL Terminated ***

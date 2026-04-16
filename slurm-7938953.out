@@ -125,3 +125,6 @@ Parameters:
   | 
 
   Training FAILED after 93s
+[2026-04-14T14:01:40.555] error: *** STEP 7938953.0 ON e21-01 CANCELLED AT 2026-04-14T14:01:40 DUE to SIGNAL Terminated ***
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-14T14:01:40.555] error: *** JOB 7938953 ON e21-01 CANCELLED AT 2026-04-14T14:01:40 DUE to SIGNAL Terminated ***

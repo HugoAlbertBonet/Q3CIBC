@@ -1,0 +1,113 @@
+==========================================
+SLURM_JOB_ID = 7989094
+SLURM_JOB_NODELIST = d13-05
+TMPDIR = /tmp/SLURM_7989094
+==========================================
+Detected tunable params in combinedv2_cpascounter_training.py:
+  - control_points  (search space: [20, 30, 50, 75, 100])
+  - learning_rate  (search space: [0.0001, 0.0003, 0.0005, 0.001, 0.002, 0.005])
+  - batch_size  (search space: [128, 256, 512])
+  - counter_examples  (search space: [8, 16, 32, 64])
+  - top_k_control_points  (search space: [10, 20, 50, 70])
+  - separation_weight  (search space: [0.01, 0.05, 0.1, 0.2])
+  - mse_weight  (search space: [1.0, 3.0, 5.0, 10.0])
+  - info_nce_weight  (search space: [0.5, 1.0, 2.0])
+  - generator_infonce_weight  (search space: [0.01, 0.05, 0.1, 0.2])
+  - training_steps  (search space: [50000, 100000, 200000])
+  - separation_loss  (search space: ['separation', 'entropy'])
+  - entropy_bandwidth  (search space: [0.05, 0.1, 0.2])
+  - num_hidden_layers  (search space: [2, 4, 8])
+  - num_neurons  (search space: [128, 256, 512])
+  - estimator_learning_rate  (search space: [0.0001, 0.0003, 0.0005, 0.001])
+  - scheduler_type  (search space: ['cosine', 'cosine_warm_restarts'])
+  - cosine_t0  (search space: [25000, 50000, 100000])
+  - infonce_logit_clamp  (search space: [10.0, 20.0, 30.0, 50.0])
+  - use_spectral_norm  (search space: [True, False])
+  - cosine_t_max  (search space: [100000, 150000, 200000])
+
+Baseline (current config):
+  control_points = 20
+  learning_rate = 0.001
+  batch_size = 512
+  counter_examples = 8
+  top_k_control_points = 15
+  separation_weight = 0.1
+  mse_weight = 20.0
+  info_nce_weight = 1.0
+  generator_infonce_weight = 0.05
+  training_steps = 100000
+  separation_loss = entropy
+  entropy_bandwidth = 0.1
+  num_hidden_layers = 2
+  num_neurons = 256
+
+
+================================================================================
+TRIAL 43 — combinedv2_cpascounter_training.py
+================================================================================
+Parameters:
+{
+  "control_points": 30,
+  "learning_rate": 0.001,
+  "batch_size": 512,
+  "counter_examples": 32,
+  "top_k_control_points": 30,
+  "separation_weight": 0.1,
+  "mse_weight": 20.0,
+  "info_nce_weight": 1.0,
+  "generator_infonce_weight": 0.05,
+  "training_steps": 300000,
+  "separation_loss": "entropy",
+  "entropy_bandwidth": 0.1,
+  "num_hidden_layers": 2,
+  "num_neurons": 256,
+  "infonce_logit_clamp": 20.0
+}
+
+  Training (300000 steps)...
+  | Using device: cuda
+  | Active environment: particle
+  | Training steps: 300000
+  | Batch size: 512
+  | Learning rate (generator): 0.001
+  | Learning rate (estimator): 0.001
+  | Scheduler: cosine
+  | InfoNCE logit clamp: 20.0
+  | Spectral norm (estimator): False
+  | Top-k control points as counter examples: 30
+  | Langevin counter examples (from counter_examples): 32
+  | Frame stack: 2
+  | Loading particle dataset...
+  | 2026-04-15 16:06:38.233516: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+  | To enable the following instructions: AVX2 AVX512F FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+  | WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+  | I0000 00:00:1776294409.019354 3902568 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 31134 MB memory:  -> device: 0, name: Tesla V100-PCIE-32GB, pci bus id: 0000:3b:00.0, compute capability: 7.0
+  | 2026-04-15 16:06:49.357527: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+  | 2026-04-15 16:06:50.625351: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | 2026-04-15 16:06:51.796514: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | 2026-04-15 16:06:54.195499: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | 2026-04-15 16:06:59.062328: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | Dataset size: 102000
+  | Particle dataset episodes: 2000 | Avg samples/episode: 51.00
+  | Step 1000/300000 | Total: 0.6848 (MSE: 0.1695, Sep: -0.3338, EST: 0.8938, GEN_INF_ONCE(-): 0.8938, Acc: 0.813) | LR: 1.00e-03 | 126.6s
+  | Step 2000/300000 | Total: 0.1623 (MSE: 0.1778, Sep: -0.3352, EST: 0.3366, GEN_INF_ONCE(-): 0.3366, Acc: 0.973) | LR: 1.00e-03 | 250.4s
+  | Step 3000/300000 | Total: -0.0044 (MSE: 0.1528, Sep: -0.3353, EST: 0.1874, GEN_INF_ONCE(-): 0.1874, Acc: 1.000) | LR: 1.00e-03 | 374.0s
+  | Step 4000/300000 | Total: 0.0114 (MSE: 0.1472, Sep: -0.3352, EST: 0.2100, GEN_INF_ONCE(-): 0.2100, Acc: 0.946) | LR: 1.00e-03 | 497.4s
+  | Step 5000/300000 | Total: -0.0319 (MSE: 0.1455, Sep: -0.3346, EST: 0.1655, GEN_INF_ONCE(-): 0.1655, Acc: 0.973) | LR: 9.99e-04 | 620.3s
+  | Step 6000/300000 | Total: -0.0852 (MSE: 0.1433, Sep: -0.3389, EST: 0.1162, GEN_INF_ONCE(-): 0.1162, Acc: 0.973) | LR: 9.99e-04 | 743.5s
+  | Step 7000/300000 | Total: 0.0156 (MSE: 0.1282, Sep: -0.3395, EST: 0.2388, GEN_INF_ONCE(-): 0.2388, Acc: 0.938) | LR: 9.99e-04 | 867.4s
+  | Step 8000/300000 | Total: -0.1344 (MSE: 0.1356, Sep: -0.3393, EST: 0.0730, GEN_INF_ONCE(-): 0.0730, Acc: 0.991) | LR: 9.98e-04 | 990.7s
+  | Step 9000/300000 | Total: -0.1570 (MSE: 0.1323, Sep: -0.3395, EST: 0.0528, GEN_INF_ONCE(-): 0.0528, Acc: 1.000) | LR: 9.98e-04 | 1114.2s
+  | Step 10000/300000 | Total: -0.1523 (MSE: 0.1349, Sep: -0.3395, EST: 0.0551, GEN_INF_ONCE(-): 0.0551, Acc: 1.000) | LR: 9.97e-04 | 1238.0s
+  | Step 11000/300000 | Total: -0.1748 (MSE: 0.1285, Sep: -0.3393, EST: 0.0379, GEN_INF_ONCE(-): 0.0379, Acc: 0.991) | LR: 9.97e-04 | 1362.1s
+  | Step 12000/300000 | Total: -0.2032 (MSE: 0.1099, Sep: -0.3396, EST: 0.0279, GEN_INF_ONCE(-): 0.0279, Acc: 1.000) | LR: 9.96e-04 | 1485.4s
+  | Step 13000/300000 | Total: -0.1522 (MSE: 0.1083, Sep: -0.3396, EST: 0.0833, GEN_INF_ONCE(-): 0.0833, Acc: 0.964) | LR: 9.95e-04 | 1609.1s
+  | Step 14000/300000 | Total: -0.1718 (MSE: 0.1153, Sep: -0.3393, EST: 0.0549, GEN_INF_ONCE(-): 0.0549, Acc: 0.991) | LR: 9.95e-04 | 1732.0s
+  | Step 15000/300000 | Total: -0.2007 (MSE: 0.1157, Sep: -0.3396, EST: 0.0244, GEN_INF_ONCE(-): 0.0244, Acc: 1.000) | LR: 9.94e-04 | 1856.2s
+  | Step 16000/300000 | Total: -0.2266 (MSE: 0.1015, Sep: -0.3395, EST: 0.0119, GEN_INF_ONCE(-): 0.0119, Acc: 1.000) | LR: 9.93e-04 | 1978.9s
+  | Step 17000/300000 | Total: -0.1545 (MSE: 0.1105, Sep: -0.3397, EST: 0.0786, GEN_INF_ONCE(-): 0.0786, Acc: 0.955) | LR: 9.92e-04 | 2102.2s
+  | Step 18000/300000 | Total: 0.1256 (MSE: 0.1160, Sep: -0.3395, EST: 0.3675, GEN_INF_ONCE(-): 0.3675, Acc: 0.813) | LR: 9.91e-04 | 2226.2s
+  | Step 19000/300000 | Total: -0.1037 (MSE: 0.1053, Sep: -0.3396, EST: 0.1375, GEN_INF_ONCE(-): 0.1375, Acc: 0.938) | LR: 9.90e-04 | 2349.0s
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-15T16:47:51.490] error: *** STEP 7989094.0 ON d13-05 CANCELLED AT 2026-04-15T16:47:51 DUE to SIGNAL Terminated ***
+[2026-04-15T16:47:51.490] error: *** JOB 7989094 ON d13-05 CANCELLED AT 2026-04-15T16:47:51 DUE to SIGNAL Terminated ***

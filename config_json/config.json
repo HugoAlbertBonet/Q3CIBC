@@ -45,24 +45,25 @@
                 1
             ],
             "training": {
-                "training_steps": 100000,
+                "training_steps": 300000,
                 "learning_rate": 0.001,
                 "batch_size": 512,
                 "sampling_method": "langevin",
-                "counter_examples": 8,
+                "counter_examples": 32,
                 "separation_loss": "entropy",
                 "separation_epsilon": 0.05,
                 "entropy_bandwidth": 0.1,
                 "gradient_penalty_margin": 1.0,
                 "gradient_penalty_weight": 1.0,
-                "top_k_control_points": 15,
+                "top_k_control_points": 30,
                 "wirefit_top_k_control_points": 20,
                 "wirefit_distribution_weight": 1.0,
                 "wirefit_distribution_temperature": 1.0,
-                "wirefit_smoothing_param": 0.1
+                "wirefit_smoothing_param": 0.1,
+                "infonce_logit_clamp": 20.0
             },
             "model": {
-                "control_points": 20,
+                "control_points": 30,
                 "num_hidden_layers": 2,
                 "num_neurons": 256,
                 "langevin_config": {
@@ -139,7 +140,7 @@
         "lr_decay_interval": 100,
         "log_interval": 1000,
         "save_interval": 5000,
-        "model_save_dir": "/home/halbertb/Q3CIBC/checkpoints/_q3c_eval_tmp"
+        "model_save_dir": "/home1/halbertb/Q3CIBC/checkpoints/hpsearch/trial_043"
     },
     "simulation": {
         "default_checkpoint": "checkpoints/control_point_generator.pt",
