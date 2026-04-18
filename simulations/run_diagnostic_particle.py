@@ -151,9 +151,15 @@ class DiagnosticParticleSimulation(ParticleSimulation):
         with torch.no_grad():
             control_points = self.control_point_generator(normalized_tensor)  # (1, N, action_dim)
             obs_expanded = normalized_tensor.unsqueeze(1).expand(-1, control_points.shape[1], -1)
-            q_values = self.q_estimator(obs_expanded, control_points).squeeze(-1)  # (1, N)
 
-            best_idx = q_values.argmax(dim=1)  # (1,)
+            if self._act_min_t is not None:
+                cp_for_q = (control_points - self._act_min_t) / self._act_rng_t
+            else:
+                cp_for_q = control_points
+
+            q_values = self.q_estimator(obs_expanded, cp_for_q).squeeze(-1)  # (1, N)
+
+            best_idx = q_values.argmin(dim=1) if self.energy_model else q_values.argmax(dim=1)
             action = control_points[0, best_idx[0], :].cpu().numpy()
             q_range = (q_values.min().item(), q_values.max().item())
 
@@ -188,6 +194,7 @@ def generate_diagnostic_plots(
     show_langevin_trajectories: bool = True,
     show_langevin_final_positions: bool = True,
     goal_distance_threshold: float = 0.05,
+    energy_model: bool = False,
 ):
     """Generate comprehensive diagnostic plots from logged step data."""
     output_path = Path(output_dir)
@@ -599,8 +606,12 @@ def generate_diagnostic_plots(
 
                 traj_np = None
                 if show_langevin_trajectories or show_langevin_final_positions:
-                    def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
-                        return -q_model(obs_batch, act_batch).squeeze(-1)
+                    if energy_model:
+                        def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
+                            return q_model(obs_batch, act_batch).squeeze(-1)
+                    else:
+                        def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
+                            return -q_model(obs_batch, act_batch).squeeze(-1)
 
                     _, traj_steps = sample_langevin(
                         energy_function=energy_fn,
@@ -903,6 +914,7 @@ def main():
 
     checkpoint_dir = os.path.dirname(args.checkpoint)
     q_estimator_path = os.path.join(checkpoint_dir, "q_estimator.pt")
+    norm_stats_path = os.path.join(checkpoint_dir, "norm_stats.pt")
 
     if not os.path.exists(args.checkpoint):
         print(f"Error: Checkpoint not found at '{args.checkpoint}'")
@@ -910,6 +922,15 @@ def main():
     if not os.path.exists(q_estimator_path):
         print(f"Error: Q-estimator not found at '{q_estimator_path}'")
         sys.exit(1)
+
+    # Presence of norm_stats.pt = checkpoint was trained by ibc_with_cps_training.py
+    # (energy convention + normalized actions).
+    norm_stats = None
+    energy_model = False
+    if os.path.exists(norm_stats_path):
+        norm_stats = torch.load(norm_stats_path, weights_only=False)
+        energy_model = True
+        print(f"Detected norm_stats.pt -> energy convention (argmin) + action normalization")
 
     # Load models
     print(f"Loading models from {checkpoint_dir}...")
@@ -932,6 +953,8 @@ def main():
             max_episode_steps=max_steps,
             render_mode=render_mode,
             frame_stack=FRAME_STACK,
+            energy_model=energy_model,
+            norm_stats=norm_stats,
         )
 
         print(f"\nRunning episode with seed {seed}...")
@@ -961,6 +984,7 @@ def main():
             show_langevin_trajectories=show_langevin_trajectories,
             show_langevin_final_positions=show_langevin_final_positions,
             goal_distance_threshold=float(env_config.get("goal_distance", 0.05)),
+            energy_model=energy_model,
         )
 
         sim.close()

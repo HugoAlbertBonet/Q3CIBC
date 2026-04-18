@@ -363,6 +363,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
     cp_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
     q_path = os.path.join(checkpoint_dir, "q_estimator.pt")
+    norm_stats_path = os.path.join(checkpoint_dir, "norm_stats.pt")
 
     if not os.path.exists(cp_path) or not os.path.exists(q_path):
         return {
@@ -370,6 +371,13 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             "avg_reward": 0.0,
             "error": f"Checkpoints not found in {checkpoint_dir}",
         }
+
+    # Presence of norm_stats.pt = ibc_with_cps convention (energy + normalized actions).
+    norm_stats = None
+    energy_model = False
+    if os.path.exists(norm_stats_path):
+        norm_stats = torch.load(norm_stats_path, weights_only=False)
+        energy_model = True
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -404,6 +412,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         max_episode_steps=max_episode_steps,
         render_mode=None,
         frame_stack=frame_stack,
+        energy_model=energy_model,
+        norm_stats=norm_stats,
     )
 
     all_results = []

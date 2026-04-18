@@ -27,16 +27,17 @@ class ParticleSimulation(BaseSimulation):
         render_mode: str | None = None,
         frame_stack: int = 1,
         save_gif_dir: str | None = None,
+        energy_model: bool = False,
+        norm_stats: dict | None = None,
     ) -> None:
         """Initialize the Particle simulation.
-        
+
         Args:
-            control_point_generator: The trained policy model.
-            q_estimator: The trained Q-value estimator.
-            n_dim: Dimensionality of the particle environment.
-            device: The device to run computations on.
-            max_episode_steps: Maximum steps per episode.
-            render_mode: Render mode (None, 'human', 'rgb_array').
+            energy_model: If True the estimator outputs energies (low = expert)
+                and select_action uses argmin. Default False (Q-value, argmax).
+            norm_stats: Optional {"act_min","act_max"} arrays. When provided,
+                control points are normalized to [0,1] before the estimator
+                call (matches estimator training distribution for ibc_with_cps).
         """
         super().__init__(
             env_id="Particle-v0",
@@ -51,6 +52,17 @@ class ParticleSimulation(BaseSimulation):
         self.render_mode = render_mode
         self.save_gif_dir = save_gif_dir
         self._episode_counter = 0
+        self.energy_model = energy_model
+        if norm_stats is not None:
+            act_min = np.asarray(norm_stats["act_min"], dtype=np.float32)
+            act_max = np.asarray(norm_stats["act_max"], dtype=np.float32)
+            rng = act_max - act_min
+            rng = np.where(rng == 0, np.ones_like(rng), rng)
+            self._act_min_t = torch.from_numpy(act_min).to(device)
+            self._act_rng_t = torch.from_numpy(rng).to(device)
+        else:
+            self._act_min_t = None
+            self._act_rng_t = None
 
     def create_env(self) -> ParticleEnv:
         """Create the Particle gymnasium environment."""
@@ -71,15 +83,20 @@ class ParticleSimulation(BaseSimulation):
         
         with torch.no_grad():
             control_points = self.control_point_generator(obs_tensor)  # (1, N, action_dim)
-            
+
             # Expand state to match control points
             obs_expanded = obs_tensor.unsqueeze(1).expand(-1, control_points.shape[1], -1)
-            
-            # Get Q-values for all control points
-            q_values = self.q_estimator(obs_expanded, control_points).squeeze(-1)
-            
-            # Select control point with maximum Q-value
-            best_idx = q_values.argmax(dim=1)
+
+            # Optionally normalize control points into the estimator's training space
+            if self._act_min_t is not None:
+                cp_for_q = (control_points - self._act_min_t) / self._act_rng_t
+            else:
+                cp_for_q = control_points
+
+            q_values = self.q_estimator(obs_expanded, cp_for_q).squeeze(-1)
+
+            # Energy model: low = expert (argmin); Q-value model: high = expert (argmax)
+            best_idx = q_values.argmin(dim=1) if self.energy_model else q_values.argmax(dim=1)
             action = control_points[0, best_idx[0], :].cpu().numpy()
             q_range = (q_values.min().item(), q_values.max().item())
         
