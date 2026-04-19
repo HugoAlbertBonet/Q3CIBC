@@ -1,0 +1,302 @@
+==========================================
+SLURM_JOB_ID = 8160244
+SLURM_JOB_NODELIST = d13-03
+TMPDIR = /tmp/SLURM_8160244
+==========================================
+Detected tunable params in combinedv2_cpascounter_training.py:
+  - control_points  (search space: [20, 30, 50, 75, 100])
+  - learning_rate  (search space: [0.0001, 0.0003, 0.0005, 0.001, 0.002, 0.005])
+  - batch_size  (search space: [128, 256, 512])
+  - counter_examples  (search space: [8, 16, 32, 64])
+  - top_k_control_points  (search space: [10, 20, 50, 70])
+  - separation_weight  (search space: [0.01, 0.05, 0.1, 0.2])
+  - mse_weight  (search space: [1.0, 3.0, 5.0, 10.0])
+  - info_nce_weight  (search space: [0.5, 1.0, 2.0])
+  - generator_infonce_weight  (search space: [0.01, 0.05, 0.1, 0.2])
+  - training_steps  (search space: [50000, 100000, 200000])
+  - separation_loss  (search space: ['separation', 'entropy'])
+  - entropy_bandwidth  (search space: [0.05, 0.1, 0.2])
+  - num_hidden_layers  (search space: [2, 4, 8])
+  - num_neurons  (search space: [128, 256, 512])
+  - estimator_learning_rate  (search space: [0.0001, 0.0003, 0.0005, 0.001])
+  - scheduler_type  (search space: ['cosine', 'cosine_warm_restarts'])
+  - cosine_t0  (search space: [25000, 50000, 100000])
+  - infonce_logit_clamp  (search space: [10.0, 20.0, 30.0, 50.0])
+  - use_spectral_norm  (search space: [True, False])
+  - cosine_t_max  (search space: [100000, 150000, 200000])
+
+Baseline (current config):
+  control_points = 30
+  learning_rate = 0.0005
+  batch_size = 256
+  counter_examples = 0
+  top_k_control_points = 30
+  separation_weight = 0.01
+  mse_weight = 30.0
+  info_nce_weight = 1.0
+  generator_infonce_weight = 0.05
+  training_steps = 150000
+  separation_loss = entropy
+  entropy_bandwidth = 0.1
+  num_hidden_layers = 2
+  num_neurons = 256
+  scheduler_type = cosine
+  infonce_logit_clamp = 20.0
+
+
+================================================================================
+TRIAL 52 — combinedv2_cpascounter_training.py
+================================================================================
+Parameters:
+{
+  "control_points": 30,
+  "learning_rate": 0.001,
+  "batch_size": 512,
+  "counter_examples": 0,
+  "top_k_control_points": 30,
+  "separation_weight": 0.1,
+  "mse_weight": 20.0,
+  "info_nce_weight": 1.0,
+  "generator_infonce_weight": 0.05,
+  "training_steps": 200000,
+  "separation_loss": "entropy",
+  "entropy_bandwidth": 0.1,
+  "num_hidden_layers": 2,
+  "num_neurons": 512,
+  "scheduler_type": "cosine",
+  "infonce_logit_clamp": 20.0
+}
+
+  Training (200000 steps)...
+  | Using device: cuda
+  | Active environment: particle
+  | Training steps: 200000
+  | Batch size: 512
+  | Learning rate (generator): 0.001
+  | Learning rate (estimator): 0.001
+  | Scheduler: cosine
+  | InfoNCE logit clamp: 20.0
+  | Spectral norm (estimator): False
+  | Top-k control points as counter examples: 30
+  | Langevin counter examples (from counter_examples): 0
+  | Frame stack: 2
+  | Loading particle dataset...
+  | 2026-04-18 12:38:58.072199: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+  | To enable the following instructions: AVX2 AVX512F FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+  | WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+  | I0000 00:00:1776541146.116860 1927300 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 31134 MB memory:  -> device: 0, name: Tesla V100-PCIE-32GB, pci bus id: 0000:d8:00.0, compute capability: 7.0
+  | 2026-04-18 12:39:06.945067: I tensorflow/core/kernels/data/tf_record_dataset_op.cc:390] TFRecordDataset `buffer_size` is unspecified, default to 262144
+  | 2026-04-18 12:39:08.139322: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | 2026-04-18 12:39:09.359405: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | 2026-04-18 12:39:11.790861: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | 2026-04-18 12:39:16.610661: I tensorflow/core/framework/local_rendezvous.cc:407] Local rendezvous is aborting with status: OUT_OF_RANGE: End of sequence
+  | Dataset size: 102000
+  | Particle dataset episodes: 2000 | Avg samples/episode: 51.00
+  | Step 1000/200000 | Total: 1.0610 (MSE: 0.1633, Sep: -0.3302, EST: 1.2925, GEN_INF_ONCE(-): 1.2925, Acc: 0.705) | LR: 1.00e-03 | 15.9s
+  | Step 2000/200000 | Total: 0.5118 (MSE: 0.1132, Sep: -0.3347, EST: 0.7719, GEN_INF_ONCE(-): 0.7719, Acc: 0.786) | LR: 1.00e-03 | 29.9s
+  | Step 3000/200000 | Total: 0.4248 (MSE: 0.0986, Sep: -0.3371, EST: 0.6983, GEN_INF_ONCE(-): 0.6983, Acc: 0.688) | LR: 9.99e-04 | 43.9s
+  | Step 4000/200000 | Total: 0.1354 (MSE: 0.0621, Sep: -0.3378, EST: 0.4328, GEN_INF_ONCE(-): 0.4328, Acc: 0.893) | LR: 9.99e-04 | 58.1s
+  | Step 5000/200000 | Total: 0.4885 (MSE: 0.0622, Sep: -0.3387, EST: 0.8053, GEN_INF_ONCE(-): 0.8053, Acc: 0.616) | LR: 9.98e-04 | 72.5s
+  | Step 6000/200000 | Total: 0.4225 (MSE: 0.0698, Sep: -0.3387, EST: 0.7278, GEN_INF_ONCE(-): 0.7278, Acc: 0.714) | LR: 9.98e-04 | 86.9s
+  | Step 7000/200000 | Total: 0.2540 (MSE: 0.0283, Sep: -0.3394, EST: 0.5948, GEN_INF_ONCE(-): 0.5948, Acc: 0.777) | LR: 9.97e-04 | 101.8s
+  | Step 8000/200000 | Total: 0.4701 (MSE: 0.0232, Sep: -0.3399, EST: 0.8282, GEN_INF_ONCE(-): 0.8282, Acc: 0.518) | LR: 9.96e-04 | 116.2s
+  | Step 9000/200000 | Total: 0.3482 (MSE: 0.0308, Sep: -0.3401, EST: 0.6921, GEN_INF_ONCE(-): 0.6921, Acc: 0.643) | LR: 9.95e-04 | 130.7s
+  | Step 10000/200000 | Total: 0.2862 (MSE: 0.0393, Sep: -0.3393, EST: 0.6171, GEN_INF_ONCE(-): 0.6171, Acc: 0.732) | LR: 9.94e-04 | 145.1s
+  | Step 11000/200000 | Total: 0.3308 (MSE: 0.0217, Sep: -0.3399, EST: 0.6832, GEN_INF_ONCE(-): 0.6832, Acc: 0.589) | LR: 9.93e-04 | 159.3s
+  | Step 12000/200000 | Total: 0.4759 (MSE: 0.0195, Sep: -0.3400, EST: 0.8383, GEN_INF_ONCE(-): 0.8383, Acc: 0.491) | LR: 9.91e-04 | 173.4s
+  | Step 13000/200000 | Total: 0.7007 (MSE: 0.0191, Sep: -0.3400, EST: 1.0754, GEN_INF_ONCE(-): 1.0754, Acc: 0.214) | LR: 9.90e-04 | 187.9s
+  | Step 14000/200000 | Total: 0.1023 (MSE: 0.0233, Sep: -0.3395, EST: 0.4405, GEN_INF_ONCE(-): 0.4405, Acc: 0.955) | LR: 9.88e-04 | 201.9s
+  | Step 15000/200000 | Total: 0.4546 (MSE: 0.0257, Sep: -0.3399, EST: 0.8093, GEN_INF_ONCE(-): 0.8093, Acc: 0.527) | LR: 9.86e-04 | 216.0s
+  | Step 16000/200000 | Total: 0.6568 (MSE: 0.0320, Sep: -0.3397, EST: 1.0153, GEN_INF_ONCE(-): 1.0153, Acc: 0.295) | LR: 9.84e-04 | 230.0s
+  | Step 17000/200000 | Total: 0.5235 (MSE: 0.0290, Sep: -0.3395, EST: 0.8779, GEN_INF_ONCE(-): 0.8779, Acc: 0.518) | LR: 9.82e-04 | 244.1s
+  | Step 18000/200000 | Total: 0.9479 (MSE: 0.0576, Sep: -0.3392, EST: 1.2942, GEN_INF_ONCE(-): 1.2942, Acc: 0.071) | LR: 9.80e-04 | 258.2s
+  | Step 19000/200000 | Total: 0.5246 (MSE: 0.0164, Sep: -0.3389, EST: 0.8917, GEN_INF_ONCE(-): 0.8917, Acc: 0.616) | LR: 9.78e-04 | 272.4s
+  | Step 20000/200000 | Total: 0.3796 (MSE: 0.0241, Sep: -0.3397, EST: 0.7318, GEN_INF_ONCE(-): 0.7318, Acc: 0.625) | LR: 9.76e-04 | 286.2s
+  | Step 21000/200000 | Total: 0.4312 (MSE: 0.0224, Sep: -0.3374, EST: 0.7855, GEN_INF_ONCE(-): 0.7855, Acc: 0.634) | LR: 9.73e-04 | 300.0s
+  | Step 22000/200000 | Total: 0.8248 (MSE: 0.0324, Sep: -0.3377, EST: 1.1895, GEN_INF_ONCE(-): 1.1895, Acc: 0.268) | LR: 9.70e-04 | 313.9s
+  | Step 23000/200000 | Total: 0.5237 (MSE: 0.0276, Sep: -0.3392, EST: 0.8792, GEN_INF_ONCE(-): 0.8792, Acc: 0.384) | LR: 9.68e-04 | 327.7s
+  | Step 24000/200000 | Total: 0.5329 (MSE: 0.0755, Sep: -0.3381, EST: 0.8374, GEN_INF_ONCE(-): 0.8374, Acc: 0.589) | LR: 9.65e-04 | 341.5s
+  | Step 25000/200000 | Total: 0.3331 (MSE: 0.0405, Sep: -0.3387, EST: 0.6646, GEN_INF_ONCE(-): 0.6646, Acc: 0.679) | LR: 9.62e-04 | 355.9s
+  | Step 26000/200000 | Total: 0.9342 (MSE: 0.0267, Sep: -0.3372, EST: 1.3102, GEN_INF_ONCE(-): 1.3102, Acc: 0.107) | LR: 9.59e-04 | 370.0s
+  | Step 27000/200000 | Total: 0.4593 (MSE: 0.0237, Sep: -0.3373, EST: 0.8137, GEN_INF_ONCE(-): 0.8137, Acc: 0.580) | LR: 9.56e-04 | 384.0s
+  | Step 28000/200000 | Total: 0.3352 (MSE: 0.0088, Sep: -0.3379, EST: 0.6992, GEN_INF_ONCE(-): 0.6992, Acc: 0.643) | LR: 9.52e-04 | 398.0s
+  | Step 29000/200000 | Total: 1.1316 (MSE: 0.0300, Sep: -0.3383, EST: 1.5157, GEN_INF_ONCE(-): 1.5157, Acc: 0.250) | LR: 9.49e-04 | 411.9s
+  | Step 30000/200000 | Total: 0.3879 (MSE: 0.0210, Sep: -0.3389, EST: 0.7429, GEN_INF_ONCE(-): 0.7429, Acc: 0.393) | LR: 9.46e-04 | 425.9s
+  | Step 31000/200000 | Total: 0.5711 (MSE: 0.0148, Sep: -0.3385, EST: 0.9419, GEN_INF_ONCE(-): 0.9419, Acc: 0.321) | LR: 9.42e-04 | 440.4s
+  | Step 32000/200000 | Total: 0.4918 (MSE: 0.0170, Sep: -0.3359, EST: 0.8533, GEN_INF_ONCE(-): 0.8533, Acc: 0.634) | LR: 9.38e-04 | 454.3s
+  | Step 33000/200000 | Total: 0.4997 (MSE: 0.0150, Sep: -0.3355, EST: 0.8633, GEN_INF_ONCE(-): 0.8633, Acc: 0.473) | LR: 9.34e-04 | 468.3s
+  | Step 34000/200000 | Total: 0.5707 (MSE: 0.0187, Sep: -0.3377, EST: 0.9366, GEN_INF_ONCE(-): 0.9366, Acc: 0.286) | LR: 9.30e-04 | 482.3s
+  | Step 35000/200000 | Total: 0.6975 (MSE: 0.0341, Sep: -0.3357, EST: 1.0517, GEN_INF_ONCE(-): 1.0517, Acc: 0.223) | LR: 9.26e-04 | 496.3s
+  | Step 36000/200000 | Total: 0.5739 (MSE: 0.0389, Sep: -0.3378, EST: 0.9187, GEN_INF_ONCE(-): 0.9187, Acc: 0.545) | LR: 9.22e-04 | 510.4s
+  | Step 37000/200000 | Total: 0.5807 (MSE: 0.0216, Sep: -0.3384, EST: 0.9448, GEN_INF_ONCE(-): 0.9448, Acc: 0.250) | LR: 9.18e-04 | 524.8s
+  | Step 38000/200000 | Total: 0.7030 (MSE: 0.0259, Sep: -0.3361, EST: 1.0666, GEN_INF_ONCE(-): 1.0666, Acc: 0.455) | LR: 9.14e-04 | 539.2s
+  | Step 39000/200000 | Total: 0.5394 (MSE: 0.0291, Sep: -0.3348, EST: 0.8896, GEN_INF_ONCE(-): 0.8896, Acc: 0.420) | LR: 9.09e-04 | 553.2s
+  | Step 40000/200000 | Total: 0.5189 (MSE: 0.0203, Sep: -0.3343, EST: 0.8766, GEN_INF_ONCE(-): 0.8766, Acc: 0.473) | LR: 9.05e-04 | 567.3s
+  | Step 41000/200000 | Total: 0.3861 (MSE: 0.0177, Sep: -0.3361, EST: 0.7415, GEN_INF_ONCE(-): 0.7415, Acc: 0.643) | LR: 9.00e-04 | 581.4s
+  | Step 42000/200000 | Total: 0.3748 (MSE: 0.0136, Sep: -0.3374, EST: 0.7354, GEN_INF_ONCE(-): 0.7354, Acc: 0.527) | LR: 8.95e-04 | 595.4s
+  | Step 43000/200000 | Total: 0.3280 (MSE: 0.0271, Sep: -0.3361, EST: 0.6705, GEN_INF_ONCE(-): 0.6705, Acc: 0.589) | LR: 8.90e-04 | 609.9s
+  | Step 44000/200000 | Total: 0.8606 (MSE: 0.0202, Sep: -0.3350, EST: 1.2372, GEN_INF_ONCE(-): 1.2372, Acc: 0.223) | LR: 8.85e-04 | 624.0s
+  | Step 45000/200000 | Total: 0.5982 (MSE: 0.0248, Sep: -0.3373, EST: 0.9586, GEN_INF_ONCE(-): 0.9586, Acc: 0.330) | LR: 8.80e-04 | 638.0s
+  | Step 46000/200000 | Total: 1.1652 (MSE: 0.0260, Sep: -0.3342, EST: 1.5509, GEN_INF_ONCE(-): 1.5509, Acc: 0.089) | LR: 8.75e-04 | 652.1s
+  | Step 47000/200000 | Total: 1.3082 (MSE: 0.0277, Sep: -0.3375, EST: 1.7032, GEN_INF_ONCE(-): 1.7032, Acc: 0.196) | LR: 8.70e-04 | 666.1s
+  | Step 48000/200000 | Total: 0.7597 (MSE: 0.0284, Sep: -0.3376, EST: 1.1252, GEN_INF_ONCE(-): 1.1252, Acc: 0.312) | LR: 8.65e-04 | 680.2s
+  | Step 49000/200000 | Total: 0.7271 (MSE: 0.0257, Sep: -0.3348, EST: 1.0908, GEN_INF_ONCE(-): 1.0908, Acc: 0.446) | LR: 8.59e-04 | 694.7s
+  | Step 50000/200000 | Total: 0.2281 (MSE: 0.0236, Sep: -0.3363, EST: 0.5693, GEN_INF_ONCE(-): 0.5693, Acc: 0.580) | LR: 8.54e-04 | 708.7s
+  | Step 51000/200000 | Total: 0.5961 (MSE: 0.0140, Sep: -0.3346, EST: 0.9649, GEN_INF_ONCE(-): 0.9649, Acc: 0.375) | LR: 8.48e-04 | 722.8s
+  | Step 52000/200000 | Total: 0.4270 (MSE: 0.0224, Sep: -0.3374, EST: 0.7811, GEN_INF_ONCE(-): 0.7811, Acc: 0.491) | LR: 8.42e-04 | 736.6s
+  | Step 53000/200000 | Total: 0.4634 (MSE: 0.0206, Sep: -0.3352, EST: 0.8190, GEN_INF_ONCE(-): 0.8190, Acc: 0.598) | LR: 8.37e-04 | 750.4s
+  | Step 54000/200000 | Total: 0.4030 (MSE: 0.0162, Sep: -0.3377, EST: 0.7627, GEN_INF_ONCE(-): 0.7627, Acc: 0.554) | LR: 8.31e-04 | 764.2s
+  | Step 55000/200000 | Total: 0.9195 (MSE: 0.0213, Sep: -0.3366, EST: 1.2998, GEN_INF_ONCE(-): 1.2998, Acc: 0.321) | LR: 8.25e-04 | 778.5s
+  | Step 56000/200000 | Total: 0.4698 (MSE: 0.0253, Sep: -0.3374, EST: 0.8230, GEN_INF_ONCE(-): 0.8230, Acc: 0.527) | LR: 8.19e-04 | 792.5s
+  | Step 57000/200000 | Total: 0.4124 (MSE: 0.0119, Sep: -0.3377, EST: 0.7771, GEN_INF_ONCE(-): 0.7771, Acc: 0.616) | LR: 8.13e-04 | 806.5s
+  | Step 58000/200000 | Total: 0.5418 (MSE: 0.0244, Sep: -0.3369, EST: 0.8992, GEN_INF_ONCE(-): 0.8992, Acc: 0.375) | LR: 8.07e-04 | 820.6s
+  | Step 59000/200000 | Total: 0.2213 (MSE: 0.0229, Sep: -0.3375, EST: 0.5641, GEN_INF_ONCE(-): 0.5641, Acc: 0.473) | LR: 8.00e-04 | 834.6s
+  | Step 60000/200000 | Total: 0.5453 (MSE: 0.0085, Sep: -0.3377, EST: 0.9205, GEN_INF_ONCE(-): 0.9205, Acc: 0.259) | LR: 7.94e-04 | 848.6s
+  | Step 61000/200000 | Total: 0.6433 (MSE: 0.0067, Sep: -0.3339, EST: 1.0217, GEN_INF_ONCE(-): 1.0217, Acc: 0.330) | LR: 7.88e-04 | 863.1s
+  | Step 62000/200000 | Total: 0.4144 (MSE: 0.0220, Sep: -0.3374, EST: 0.7682, GEN_INF_ONCE(-): 0.7682, Acc: 0.625) | LR: 7.81e-04 | 877.1s
+  | Step 63000/200000 | Total: 0.4794 (MSE: 0.0142, Sep: -0.3361, EST: 0.8435, GEN_INF_ONCE(-): 0.8435, Acc: 0.491) | LR: 7.75e-04 | 891.2s
+  | Step 64000/200000 | Total: 0.8277 (MSE: 0.0139, Sep: -0.3325, EST: 1.2067, GEN_INF_ONCE(-): 1.2067, Acc: 0.214) | LR: 7.68e-04 | 905.2s
+  | Step 65000/200000 | Total: 0.6192 (MSE: 0.0137, Sep: -0.3337, EST: 0.9887, GEN_INF_ONCE(-): 0.9887, Acc: 0.393) | LR: 7.61e-04 | 919.2s
+  | Step 66000/200000 | Total: 0.9596 (MSE: 0.0513, Sep: -0.3386, EST: 1.3126, GEN_INF_ONCE(-): 1.3126, Acc: 0.188) | LR: 7.55e-04 | 933.2s
+  | Step 67000/200000 | Total: 0.5862 (MSE: 0.0060, Sep: -0.3304, EST: 0.9586, GEN_INF_ONCE(-): 0.9586, Acc: 0.589) | LR: 7.48e-04 | 947.7s
+  | Step 68000/200000 | Total: 0.7047 (MSE: 0.0133, Sep: -0.3364, EST: 1.0820, GEN_INF_ONCE(-): 1.0820, Acc: 0.304) | LR: 7.41e-04 | 961.7s
+  | Step 69000/200000 | Total: 0.4488 (MSE: 0.0175, Sep: -0.3370, EST: 0.8087, GEN_INF_ONCE(-): 0.8087, Acc: 0.491) | LR: 7.34e-04 | 975.7s
+  | Step 70000/200000 | Total: 0.3457 (MSE: 0.0213, Sep: -0.3375, EST: 0.6967, GEN_INF_ONCE(-): 0.6967, Acc: 0.509) | LR: 7.27e-04 | 989.7s
+  | Step 71000/200000 | Total: 0.4516 (MSE: 0.0094, Sep: -0.3391, EST: 0.8225, GEN_INF_ONCE(-): 0.8225, Acc: 0.402) | LR: 7.20e-04 | 1003.8s
+  | Step 72000/200000 | Total: 0.4066 (MSE: 0.0120, Sep: -0.3378, EST: 0.7709, GEN_INF_ONCE(-): 0.7709, Acc: 0.357) | LR: 7.13e-04 | 1017.8s
+  | Step 73000/200000 | Total: 0.3389 (MSE: 0.0412, Sep: -0.3348, EST: 0.6658, GEN_INF_ONCE(-): 0.6658, Acc: 0.527) | LR: 7.06e-04 | 1032.3s
+  | Step 74000/200000 | Total: 2.0313 (MSE: 0.0538, Sep: -0.3365, EST: 2.4358, GEN_INF_ONCE(-): 2.4358, Acc: 0.143) | LR: 6.99e-04 | 1046.4s
+  | Step 75000/200000 | Total: 0.5543 (MSE: 0.0059, Sep: -0.3356, EST: 0.9306, GEN_INF_ONCE(-): 0.9306, Acc: 0.330) | LR: 6.92e-04 | 1060.2s
+  | Step 76000/200000 | Total: 0.2853 (MSE: 0.0146, Sep: -0.3355, EST: 0.6381, GEN_INF_ONCE(-): 0.6381, Acc: 0.804) | LR: 6.84e-04 | 1073.9s
+  | Step 77000/200000 | Total: 0.3922 (MSE: 0.0115, Sep: -0.3367, EST: 0.7551, GEN_INF_ONCE(-): 0.7551, Acc: 0.518) | LR: 6.77e-04 | 1087.6s
+  | Step 78000/200000 | Total: 0.6749 (MSE: 0.0060, Sep: -0.3353, EST: 1.0570, GEN_INF_ONCE(-): 1.0570, Acc: 0.205) | LR: 6.70e-04 | 1101.2s
+  | Step 79000/200000 | Total: 0.3894 (MSE: 0.0050, Sep: -0.3395, EST: 0.7619, GEN_INF_ONCE(-): 0.7619, Acc: 0.259) | LR: 6.62e-04 | 1115.5s
+  | Step 80000/200000 | Total: 0.5926 (MSE: 0.0067, Sep: -0.3387, EST: 0.9732, GEN_INF_ONCE(-): 0.9732, Acc: 0.116) | LR: 6.55e-04 | 1129.1s
+  | Step 81000/200000 | Total: 0.3750 (MSE: 0.0039, Sep: -0.3393, EST: 0.7477, GEN_INF_ONCE(-): 0.7477, Acc: 0.348) | LR: 6.47e-04 | 1142.8s
+  | Step 82000/200000 | Total: 0.4852 (MSE: 0.0073, Sep: -0.3364, EST: 0.8572, GEN_INF_ONCE(-): 0.8572, Acc: 0.277) | LR: 6.40e-04 | 1156.5s
+  | Step 83000/200000 | Total: 0.4058 (MSE: 0.0069, Sep: -0.3394, EST: 0.7772, GEN_INF_ONCE(-): 0.7772, Acc: 0.357) | LR: 6.32e-04 | 1170.1s
+  | Step 84000/200000 | Total: 0.3706 (MSE: 0.0056, Sep: -0.3389, EST: 0.7409, GEN_INF_ONCE(-): 0.7409, Acc: 0.375) | LR: 6.25e-04 | 1183.8s
+  | Step 85000/200000 | Total: 0.3714 (MSE: 0.0027, Sep: -0.3389, EST: 0.7448, GEN_INF_ONCE(-): 0.7448, Acc: 0.384) | LR: 6.17e-04 | 1197.7s
+  | Step 86000/200000 | Total: 0.5924 (MSE: 0.0051, Sep: -0.3368, EST: 0.9727, GEN_INF_ONCE(-): 0.9727, Acc: 0.080) | LR: 6.09e-04 | 1211.4s
+  | Step 87000/200000 | Total: 0.5435 (MSE: 0.0108, Sep: -0.3385, EST: 0.9170, GEN_INF_ONCE(-): 0.9170, Acc: 0.107) | LR: 6.02e-04 | 1225.0s
+  | Step 88000/200000 | Total: 0.4020 (MSE: 0.0052, Sep: -0.3376, EST: 0.7731, GEN_INF_ONCE(-): 0.7731, Acc: 0.321) | LR: 5.94e-04 | 1238.7s
+  | Step 89000/200000 | Total: 0.4198 (MSE: 0.0036, Sep: -0.3383, EST: 0.7942, GEN_INF_ONCE(-): 0.7942, Acc: 0.286) | LR: 5.86e-04 | 1252.3s
+  | Step 90000/200000 | Total: 0.3907 (MSE: 0.0022, Sep: -0.3385, EST: 0.7653, GEN_INF_ONCE(-): 0.7653, Acc: 0.179) | LR: 5.79e-04 | 1266.0s
+  | Step 91000/200000 | Total: 0.3827 (MSE: 0.0023, Sep: -0.3395, EST: 0.7578, GEN_INF_ONCE(-): 0.7578, Acc: 0.312) | LR: 5.71e-04 | 1280.0s
+  | Step 92000/200000 | Total: 0.3555 (MSE: 0.0017, Sep: -0.3396, EST: 0.7299, GEN_INF_ONCE(-): 0.7299, Acc: 0.339) | LR: 5.63e-04 | 1293.6s
+  | Step 93000/200000 | Total: 0.3757 (MSE: 0.0020, Sep: -0.3391, EST: 0.7503, GEN_INF_ONCE(-): 0.7503, Acc: 0.491) | LR: 5.55e-04 | 1307.2s
+  | Step 94000/200000 | Total: 0.3986 (MSE: 0.0022, Sep: -0.3389, EST: 0.7740, GEN_INF_ONCE(-): 0.7740, Acc: 0.286) | LR: 5.48e-04 | 1320.9s
+  | Step 95000/200000 | Total: 0.4475 (MSE: 0.0031, Sep: -0.3385, EST: 0.8242, GEN_INF_ONCE(-): 0.8242, Acc: 0.214) | LR: 5.40e-04 | 1334.5s
+  | Step 96000/200000 | Total: 0.4478 (MSE: 0.0024, Sep: -0.3380, EST: 0.8247, GEN_INF_ONCE(-): 0.8247, Acc: 0.259) | LR: 5.32e-04 | 1348.1s
+  | Step 97000/200000 | Total: 0.4010 (MSE: 0.0020, Sep: -0.3381, EST: 0.7759, GEN_INF_ONCE(-): 0.7759, Acc: 0.312) | LR: 5.24e-04 | 1362.0s
+  | Step 98000/200000 | Total: 0.4228 (MSE: 0.0024, Sep: -0.3379, EST: 0.7983, GEN_INF_ONCE(-): 0.7983, Acc: 0.170) | LR: 5.16e-04 | 1375.6s
+  | Step 99000/200000 | Total: 0.4568 (MSE: 0.0024, Sep: -0.3372, EST: 0.8332, GEN_INF_ONCE(-): 0.8332, Acc: 0.304) | LR: 5.08e-04 | 1389.3s
+  | Step 100000/200000 | Total: 0.4353 (MSE: 0.0025, Sep: -0.3373, EST: 0.8106, GEN_INF_ONCE(-): 0.8106, Acc: 0.304) | LR: 5.00e-04 | 1402.9s
+  | Step 101000/200000 | Total: 0.4694 (MSE: 0.0025, Sep: -0.3372, EST: 0.8464, GEN_INF_ONCE(-): 0.8464, Acc: 0.170) | LR: 4.93e-04 | 1416.6s
+  | Step 102000/200000 | Total: 0.5179 (MSE: 0.0027, Sep: -0.3374, EST: 0.8974, GEN_INF_ONCE(-): 0.8974, Acc: 0.116) | LR: 4.85e-04 | 1430.2s
+  | Step 103000/200000 | Total: 0.5001 (MSE: 0.0028, Sep: -0.3373, EST: 0.8784, GEN_INF_ONCE(-): 0.8784, Acc: 0.429) | LR: 4.77e-04 | 1444.1s
+  | Step 104000/200000 | Total: 0.5327 (MSE: 0.0036, Sep: -0.3368, EST: 0.9115, GEN_INF_ONCE(-): 0.9115, Acc: 0.223) | LR: 4.69e-04 | 1457.8s
+  | Step 105000/200000 | Total: 0.4989 (MSE: 0.0033, Sep: -0.3364, EST: 0.8758, GEN_INF_ONCE(-): 0.8758, Acc: 0.545) | LR: 4.61e-04 | 1471.4s
+  | Step 106000/200000 | Total: 0.3626 (MSE: 0.0037, Sep: -0.3366, EST: 0.7321, GEN_INF_ONCE(-): 0.7321, Acc: 0.643) | LR: 4.53e-04 | 1485.0s
+  | Step 107000/200000 | Total: 0.4701 (MSE: 0.0024, Sep: -0.3362, EST: 0.8462, GEN_INF_ONCE(-): 0.8462, Acc: 0.455) | LR: 4.46e-04 | 1498.7s
+  | Step 108000/200000 | Total: 0.4398 (MSE: 0.0024, Sep: -0.3364, EST: 0.8145, GEN_INF_ONCE(-): 0.8145, Acc: 0.598) | LR: 4.38e-04 | 1512.4s
+  | Step 109000/200000 | Total: 0.4453 (MSE: 0.0024, Sep: -0.3363, EST: 0.8202, GEN_INF_ONCE(-): 0.8202, Acc: 0.473) | LR: 4.30e-04 | 1526.3s
+  | Step 110000/200000 | Total: 0.4535 (MSE: 0.0022, Sep: -0.3357, EST: 0.8284, GEN_INF_ONCE(-): 0.8284, Acc: 0.571) | LR: 4.22e-04 | 1539.9s
+  | Step 111000/200000 | Total: 0.5263 (MSE: 0.0024, Sep: -0.3360, EST: 0.9051, GEN_INF_ONCE(-): 0.9051, Acc: 0.438) | LR: 4.15e-04 | 1553.6s
+  | Step 112000/200000 | Total: 0.5566 (MSE: 0.0027, Sep: -0.3366, EST: 0.9374, GEN_INF_ONCE(-): 0.9374, Acc: 0.268) | LR: 4.07e-04 | 1567.2s
+  | Step 113000/200000 | Total: 0.4789 (MSE: 0.0035, Sep: -0.3355, EST: 0.8537, GEN_INF_ONCE(-): 0.8537, Acc: 0.464) | LR: 3.99e-04 | 1580.9s
+  | Step 114000/200000 | Total: 0.5604 (MSE: 0.0033, Sep: -0.3346, EST: 0.9386, GEN_INF_ONCE(-): 0.9386, Acc: 0.232) | LR: 3.92e-04 | 1594.5s
+  | Step 115000/200000 | Total: 0.4173 (MSE: 0.0028, Sep: -0.3355, EST: 0.7895, GEN_INF_ONCE(-): 0.7895, Acc: 0.527) | LR: 3.84e-04 | 1608.5s
+  | Step 116000/200000 | Total: 0.5103 (MSE: 0.0033, Sep: -0.3354, EST: 0.8868, GEN_INF_ONCE(-): 0.8868, Acc: 0.446) | LR: 3.76e-04 | 1622.2s
+  | Step 117000/200000 | Total: 0.4325 (MSE: 0.0050, Sep: -0.3350, EST: 0.8026, GEN_INF_ONCE(-): 0.8026, Acc: 0.473) | LR: 3.69e-04 | 1635.8s
+  | Step 118000/200000 | Total: 0.5195 (MSE: 0.0028, Sep: -0.3347, EST: 0.8962, GEN_INF_ONCE(-): 0.8962, Acc: 0.429) | LR: 3.61e-04 | 1649.5s
+  | Step 119000/200000 | Total: 0.4703 (MSE: 0.0032, Sep: -0.3360, EST: 0.8453, GEN_INF_ONCE(-): 0.8453, Acc: 0.304) | LR: 3.54e-04 | 1663.1s
+  | Step 120000/200000 | Total: 0.5431 (MSE: 0.0024, Sep: -0.3362, EST: 0.9231, GEN_INF_ONCE(-): 0.9231, Acc: 0.232) | LR: 3.46e-04 | 1676.7s
+  | Step 121000/200000 | Total: 0.4476 (MSE: 0.0026, Sep: -0.3353, EST: 0.8214, GEN_INF_ONCE(-): 0.8214, Acc: 0.518) | LR: 3.39e-04 | 1690.7s
+  | Step 122000/200000 | Total: 0.4514 (MSE: 0.0025, Sep: -0.3351, EST: 0.8253, GEN_INF_ONCE(-): 0.8253, Acc: 0.562) | LR: 3.31e-04 | 1704.3s
+  | Step 123000/200000 | Total: 0.4887 (MSE: 0.0025, Sep: -0.3348, EST: 0.8642, GEN_INF_ONCE(-): 0.8642, Acc: 0.464) | LR: 3.24e-04 | 1717.9s
+  | Step 124000/200000 | Total: 0.6110 (MSE: 0.0032, Sep: -0.3347, EST: 0.9921, GEN_INF_ONCE(-): 0.9921, Acc: 0.286) | LR: 3.17e-04 | 1731.6s
+  | Step 125000/200000 | Total: 0.5323 (MSE: 0.0033, Sep: -0.3349, EST: 0.9094, GEN_INF_ONCE(-): 0.9094, Acc: 0.232) | LR: 3.09e-04 | 1745.2s
+  | Step 126000/200000 | Total: 0.4599 (MSE: 0.0048, Sep: -0.3351, EST: 0.8318, GEN_INF_ONCE(-): 0.8318, Acc: 0.402) | LR: 3.02e-04 | 1758.9s
+  | Step 127000/200000 | Total: 0.5156 (MSE: 0.0018, Sep: -0.3348, EST: 0.8933, GEN_INF_ONCE(-): 0.8933, Acc: 0.464) | LR: 2.95e-04 | 1772.8s
+  | Step 128000/200000 | Total: 0.4218 (MSE: 0.0026, Sep: -0.3348, EST: 0.7937, GEN_INF_ONCE(-): 0.7937, Acc: 0.571) | LR: 2.88e-04 | 1786.5s
+  | Step 129000/200000 | Total: 0.3779 (MSE: 0.0037, Sep: -0.3342, EST: 0.7457, GEN_INF_ONCE(-): 0.7457, Acc: 0.429) | LR: 2.81e-04 | 1800.2s
+  | Step 130000/200000 | Total: 0.5611 (MSE: 0.0027, Sep: -0.3353, EST: 0.9406, GEN_INF_ONCE(-): 0.9406, Acc: 0.366) | LR: 2.74e-04 | 1813.8s
+  | Step 131000/200000 | Total: 0.4518 (MSE: 0.0021, Sep: -0.3357, EST: 0.8267, GEN_INF_ONCE(-): 0.8267, Acc: 0.438) | LR: 2.67e-04 | 1827.5s
+  | Step 132000/200000 | Total: 0.3960 (MSE: 0.0024, Sep: -0.3356, EST: 0.7675, GEN_INF_ONCE(-): 0.7675, Acc: 0.518) | LR: 2.60e-04 | 1841.1s
+  | Step 133000/200000 | Total: 0.4083 (MSE: 0.0016, Sep: -0.3354, EST: 0.7811, GEN_INF_ONCE(-): 0.7811, Acc: 0.536) | LR: 2.53e-04 | 1855.1s
+  | Step 134000/200000 | Total: 0.6233 (MSE: 0.0033, Sep: -0.3350, EST: 1.0052, GEN_INF_ONCE(-): 1.0052, Acc: 0.295) | LR: 2.46e-04 | 1868.7s
+  | Step 135000/200000 | Total: 0.4219 (MSE: 0.0016, Sep: -0.3350, EST: 0.7951, GEN_INF_ONCE(-): 0.7951, Acc: 0.571) | LR: 2.40e-04 | 1882.3s
+  | Step 136000/200000 | Total: 0.5139 (MSE: 0.0032, Sep: -0.3352, EST: 0.8904, GEN_INF_ONCE(-): 0.8904, Acc: 0.277) | LR: 2.33e-04 | 1896.0s
+  | Step 137000/200000 | Total: 0.2951 (MSE: 0.0042, Sep: -0.3348, EST: 0.6586, GEN_INF_ONCE(-): 0.6586, Acc: 0.446) | LR: 2.26e-04 | 1909.7s
+  | Step 138000/200000 | Total: 0.3844 (MSE: 0.0022, Sep: -0.3349, EST: 0.7549, GEN_INF_ONCE(-): 0.7549, Acc: 0.527) | LR: 2.20e-04 | 1923.3s
+  | Step 139000/200000 | Total: 0.4481 (MSE: 0.0025, Sep: -0.3350, EST: 0.8217, GEN_INF_ONCE(-): 0.8217, Acc: 0.393) | LR: 2.13e-04 | 1937.2s
+  | Step 140000/200000 | Total: 0.4193 (MSE: 0.0029, Sep: -0.3349, EST: 0.7909, GEN_INF_ONCE(-): 0.7909, Acc: 0.545) | LR: 2.07e-04 | 1950.9s
+  | Step 141000/200000 | Total: 0.4889 (MSE: 0.0023, Sep: -0.3346, EST: 0.8643, GEN_INF_ONCE(-): 0.8643, Acc: 0.375) | LR: 2.01e-04 | 1964.5s
+  | Step 142000/200000 | Total: 0.4321 (MSE: 0.0022, Sep: -0.3349, EST: 0.8052, GEN_INF_ONCE(-): 0.8052, Acc: 0.438) | LR: 1.94e-04 | 1978.2s
+  | Step 143000/200000 | Total: 0.6096 (MSE: 0.0025, Sep: -0.3352, EST: 0.9920, GEN_INF_ONCE(-): 0.9920, Acc: 0.295) | LR: 1.88e-04 | 1991.8s
+  | Step 144000/200000 | Total: 0.4295 (MSE: 0.0033, Sep: -0.3346, EST: 0.8009, GEN_INF_ONCE(-): 0.8009, Acc: 0.446) | LR: 1.82e-04 | 2005.4s
+  | Step 145000/200000 | Total: 0.4230 (MSE: 0.0021, Sep: -0.3351, EST: 0.7959, GEN_INF_ONCE(-): 0.7959, Acc: 0.545) | LR: 1.76e-04 | 2019.4s
+  | Step 146000/200000 | Total: 0.4056 (MSE: 0.0020, Sep: -0.3355, EST: 0.7780, GEN_INF_ONCE(-): 0.7780, Acc: 0.429) | LR: 1.70e-04 | 2033.0s
+  | Step 147000/200000 | Total: 0.3342 (MSE: 0.0018, Sep: -0.3354, EST: 0.7029, GEN_INF_ONCE(-): 0.7029, Acc: 0.562) | LR: 1.64e-04 | 2046.7s
+  | Step 148000/200000 | Total: 0.3789 (MSE: 0.0027, Sep: -0.3354, EST: 0.7490, GEN_INF_ONCE(-): 0.7490, Acc: 0.491) | LR: 1.59e-04 | 2060.3s
+  | Step 149000/200000 | Total: 0.3808 (MSE: 0.0021, Sep: -0.3347, EST: 0.7510, GEN_INF_ONCE(-): 0.7510, Acc: 0.482) | LR: 1.53e-04 | 2073.9s
+  | Step 150000/200000 | Total: 0.5303 (MSE: 0.0018, Sep: -0.3349, EST: 0.9089, GEN_INF_ONCE(-): 0.9089, Acc: 0.500) | LR: 1.47e-04 | 2087.6s
+  | Step 151000/200000 | Total: 0.5044 (MSE: 0.0018, Sep: -0.3351, EST: 0.8818, GEN_INF_ONCE(-): 0.8818, Acc: 0.482) | LR: 1.42e-04 | 2101.6s
+  | Step 152000/200000 | Total: 0.6848 (MSE: 0.0016, Sep: -0.3345, EST: 1.0713, GEN_INF_ONCE(-): 1.0713, Acc: 0.277) | LR: 1.36e-04 | 2115.2s
+  | Step 153000/200000 | Total: 0.4454 (MSE: 0.0020, Sep: -0.3347, EST: 0.8190, GEN_INF_ONCE(-): 0.8190, Acc: 0.402) | LR: 1.31e-04 | 2128.8s
+  | Step 154000/200000 | Total: 0.4269 (MSE: 0.0018, Sep: -0.3350, EST: 0.8001, GEN_INF_ONCE(-): 0.8001, Acc: 0.527) | LR: 1.26e-04 | 2142.5s
+  | Step 155000/200000 | Total: 0.4324 (MSE: 0.0019, Sep: -0.3350, EST: 0.8058, GEN_INF_ONCE(-): 0.8058, Acc: 0.464) | LR: 1.21e-04 | 2156.1s
+  | Step 156000/200000 | Total: 0.4510 (MSE: 0.0011, Sep: -0.3342, EST: 0.8254, GEN_INF_ONCE(-): 0.8254, Acc: 0.500) | LR: 1.16e-04 | 2169.8s
+  | Step 157000/200000 | Total: 0.4207 (MSE: 0.0014, Sep: -0.3348, EST: 0.7938, GEN_INF_ONCE(-): 0.7938, Acc: 0.634) | LR: 1.11e-04 | 2183.8s
+  | Step 158000/200000 | Total: 0.4406 (MSE: 0.0013, Sep: -0.3347, EST: 0.8147, GEN_INF_ONCE(-): 0.8147, Acc: 0.518) | LR: 1.06e-04 | 2197.4s
+  | Step 159000/200000 | Total: 0.4335 (MSE: 0.0014, Sep: -0.3347, EST: 0.8071, GEN_INF_ONCE(-): 0.8071, Acc: 0.509) | LR: 1.01e-04 | 2211.1s
+  | Step 160000/200000 | Total: 0.5200 (MSE: 0.0018, Sep: -0.3351, EST: 0.8982, GEN_INF_ONCE(-): 0.8982, Acc: 0.277) | LR: 9.64e-05 | 2224.7s
+  | Step 161000/200000 | Total: 0.4117 (MSE: 0.0011, Sep: -0.3347, EST: 0.7844, GEN_INF_ONCE(-): 0.7844, Acc: 0.518) | LR: 9.18e-05 | 2238.5s
+  | Step 162000/200000 | Total: 0.4717 (MSE: 0.0007, Sep: -0.3347, EST: 0.8482, GEN_INF_ONCE(-): 0.8482, Acc: 0.562) | LR: 8.74e-05 | 2252.1s
+  | Step 163000/200000 | Total: 0.4218 (MSE: 0.0007, Sep: -0.3347, EST: 0.7955, GEN_INF_ONCE(-): 0.7955, Acc: 0.607) | LR: 8.30e-05 | 2266.1s
+  | Step 164000/200000 | Total: 0.4262 (MSE: 0.0010, Sep: -0.3348, EST: 0.8000, GEN_INF_ONCE(-): 0.8000, Acc: 0.554) | LR: 7.88e-05 | 2279.7s
+  | Step 165000/200000 | Total: 0.5121 (MSE: 0.0010, Sep: -0.3343, EST: 0.8899, GEN_INF_ONCE(-): 0.8899, Acc: 0.446) | LR: 7.46e-05 | 2293.4s
+  | Step 166000/200000 | Total: 0.4813 (MSE: 0.0009, Sep: -0.3341, EST: 0.8574, GEN_INF_ONCE(-): 0.8574, Acc: 0.554) | LR: 7.06e-05 | 2307.1s
+  | Step 167000/200000 | Total: 0.4320 (MSE: 0.0021, Sep: -0.3342, EST: 0.8045, GEN_INF_ONCE(-): 0.8045, Acc: 0.446) | LR: 6.66e-05 | 2320.7s
+  | Step 168000/200000 | Total: 0.3505 (MSE: 0.0008, Sep: -0.3346, EST: 0.7204, GEN_INF_ONCE(-): 0.7204, Acc: 0.634) | LR: 6.28e-05 | 2334.4s
+  | Step 169000/200000 | Total: 0.4863 (MSE: 0.0007, Sep: -0.3347, EST: 0.8635, GEN_INF_ONCE(-): 0.8635, Acc: 0.455) | LR: 5.91e-05 | 2348.3s
+  | Step 170000/200000 | Total: 0.4050 (MSE: 0.0012, Sep: -0.3345, EST: 0.7771, GEN_INF_ONCE(-): 0.7771, Acc: 0.429) | LR: 5.54e-05 | 2362.0s
+  | Step 171000/200000 | Total: 0.4085 (MSE: 0.0006, Sep: -0.3348, EST: 0.7818, GEN_INF_ONCE(-): 0.7818, Acc: 0.562) | LR: 5.19e-05 | 2375.7s
+  | Step 172000/200000 | Total: 0.4564 (MSE: 0.0007, Sep: -0.3347, EST: 0.8321, GEN_INF_ONCE(-): 0.8321, Acc: 0.554) | LR: 4.85e-05 | 2389.3s
+  | Step 173000/200000 | Total: 0.2984 (MSE: 0.0011, Sep: -0.3349, EST: 0.6654, GEN_INF_ONCE(-): 0.6654, Acc: 0.562) | LR: 4.53e-05 | 2403.0s
+  | Step 174000/200000 | Total: 0.4755 (MSE: 0.0006, Sep: -0.3343, EST: 0.8518, GEN_INF_ONCE(-): 0.8518, Acc: 0.562) | LR: 4.21e-05 | 2416.6s
+  | Step 175000/200000 | Total: 0.3478 (MSE: 0.0008, Sep: -0.3346, EST: 0.7175, GEN_INF_ONCE(-): 0.7175, Acc: 0.518) | LR: 3.90e-05 | 2430.6s
+  | Step 176000/200000 | Total: 0.4528 (MSE: 0.0006, Sep: -0.3348, EST: 0.8284, GEN_INF_ONCE(-): 0.8284, Acc: 0.589) | LR: 3.61e-05 | 2444.3s
+  | Step 177000/200000 | Total: 0.3501 (MSE: 0.0009, Sep: -0.3341, EST: 0.7192, GEN_INF_ONCE(-): 0.7192, Acc: 0.527) | LR: 3.32e-05 | 2458.0s
+  | Step 178000/200000 | Total: 0.5174 (MSE: 0.0007, Sep: -0.3345, EST: 0.8960, GEN_INF_ONCE(-): 0.8960, Acc: 0.438) | LR: 3.05e-05 | 2471.6s
+  | Step 179000/200000 | Total: 0.6613 (MSE: 0.0005, Sep: -0.3344, EST: 1.0476, GEN_INF_ONCE(-): 1.0476, Acc: 0.286) | LR: 2.79e-05 | 2485.2s
+  | Step 180000/200000 | Total: 0.5371 (MSE: 0.0006, Sep: -0.3346, EST: 0.9171, GEN_INF_ONCE(-): 0.9171, Acc: 0.420) | LR: 2.54e-05 | 2498.9s
+  | Step 181000/200000 | Total: 0.3375 (MSE: 0.0007, Sep: -0.3344, EST: 0.7066, GEN_INF_ONCE(-): 0.7066, Acc: 0.500) | LR: 2.31e-05 | 2512.9s
+  | Step 182000/200000 | Total: 0.5268 (MSE: 0.0006, Sep: -0.3350, EST: 0.9066, GEN_INF_ONCE(-): 0.9066, Acc: 0.411) | LR: 2.08e-05 | 2526.5s
+  | Step 183000/200000 | Total: 0.4129 (MSE: 0.0006, Sep: -0.3348, EST: 0.7865, GEN_INF_ONCE(-): 0.7865, Acc: 0.634) | LR: 1.87e-05 | 2540.2s
+  | Step 184000/200000 | Total: 0.4965 (MSE: 0.0004, Sep: -0.3353, EST: 0.8751, GEN_INF_ONCE(-): 0.8751, Acc: 0.429) | LR: 1.67e-05 | 2553.8s
+  | Step 185000/200000 | Total: 0.5432 (MSE: 0.0004, Sep: -0.3345, EST: 0.9235, GEN_INF_ONCE(-): 0.9235, Acc: 0.464) | LR: 1.48e-05 | 2567.5s
+  | Step 186000/200000 | Total: 0.5177 (MSE: 0.0005, Sep: -0.3346, EST: 0.8966, GEN_INF_ONCE(-): 0.8966, Acc: 0.536) | LR: 1.30e-05 | 2581.2s
+  | Step 187000/200000 | Total: 0.5008 (MSE: 0.0005, Sep: -0.3347, EST: 0.8790, GEN_INF_ONCE(-): 0.8790, Acc: 0.571) | LR: 1.14e-05 | 2595.1s
+  | Step 188000/200000 | Total: 0.5362 (MSE: 0.0004, Sep: -0.3340, EST: 0.9155, GEN_INF_ONCE(-): 0.9155, Acc: 0.527) | LR: 9.85e-06 | 2608.8s
+  | Step 189000/200000 | Total: 0.5085 (MSE: 0.0004, Sep: -0.3346, EST: 0.8871, GEN_INF_ONCE(-): 0.8871, Acc: 0.571) | LR: 8.44e-06 | 2622.4s
+  | Step 190000/200000 | Total: 0.5575 (MSE: 0.0004, Sep: -0.3339, EST: 0.9379, GEN_INF_ONCE(-): 0.9379, Acc: 0.429) | LR: 7.15e-06 | 2636.1s
+  | Step 191000/200000 | Total: 0.5146 (MSE: 0.0004, Sep: -0.3344, EST: 0.8933, GEN_INF_ONCE(-): 0.8933, Acc: 0.589) | LR: 5.98e-06 | 2649.8s
+  | Step 192000/200000 | Total: 0.5162 (MSE: 0.0005, Sep: -0.3346, EST: 0.8950, GEN_INF_ONCE(-): 0.8950, Acc: 0.634) | LR: 4.94e-06 | 2663.4s
+  | Step 193000/200000 | Total: 0.5597 (MSE: 0.0004, Sep: -0.3341, EST: 0.9403, GEN_INF_ONCE(-): 0.9403, Acc: 0.554) | LR: 4.02e-06 | 2677.3s
+  | Step 194000/200000 | Total: 0.5508 (MSE: 0.0004, Sep: -0.3345, EST: 0.9315, GEN_INF_ONCE(-): 0.9315, Acc: 0.366) | LR: 3.22e-06 | 2691.0s
+  | Step 195000/200000 | Total: 0.4888 (MSE: 0.0003, Sep: -0.3355, EST: 0.8674, GEN_INF_ONCE(-): 0.8674, Acc: 0.482) | LR: 2.54e-06 | 2704.6s
+  | Step 196000/200000 | Total: 0.5878 (MSE: 0.0004, Sep: -0.3337, EST: 0.9696, GEN_INF_ONCE(-): 0.9696, Acc: 0.321) | LR: 1.99e-06 | 2718.3s
+  | Step 197000/200000 | Total: 0.5535 (MSE: 0.0004, Sep: -0.3343, EST: 0.9342, GEN_INF_ONCE(-): 0.9342, Acc: 0.438) | LR: 1.55e-06 | 2732.0s
+  | Step 198000/200000 | Total: 0.5443 (MSE: 0.0005, Sep: -0.3348, EST: 0.9248, GEN_INF_ONCE(-): 0.9248, Acc: 0.500) | LR: 1.25e-06 | 2745.6s
+  | Step 199000/200000 | Total: 0.5161 (MSE: 0.0004, Sep: -0.3353, EST: 0.8957, GEN_INF_ONCE(-): 0.8957, Acc: 0.500) | LR: 1.06e-06 | 2759.6s
+  | Step 200000/200000 | Total: 0.5619 (MSE: 0.0004, Sep: -0.3347, EST: 0.9435, GEN_INF_ONCE(-): 0.9435, Acc: 0.384) | LR: 1.00e-06 | 2773.2s
+  | 
+  | Training completed in 2773.3s (46.22 min)
+  | Models saved to /home1/halbertb/Q3CIBC/checkpoints/hpsearch/trial_052/
+
+  Training completed in 2810s
+  Evaluating...
+
+  Result: success_rate=0.00%, avg_reward=0.000
