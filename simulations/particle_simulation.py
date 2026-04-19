@@ -27,14 +27,11 @@ class ParticleSimulation(BaseSimulation):
         render_mode: str | None = None,
         frame_stack: int = 1,
         save_gif_dir: str | None = None,
-        energy_model: bool = False,
         norm_stats: dict | None = None,
     ) -> None:
         """Initialize the Particle simulation.
 
         Args:
-            energy_model: If True the estimator outputs energies (low = expert)
-                and select_action uses argmin. Default False (Q-value, argmax).
             norm_stats: Optional {"act_min","act_max"} arrays. When provided,
                 control points are normalized to [0,1] before the estimator
                 call (matches estimator training distribution for ibc_with_cps).
@@ -52,7 +49,6 @@ class ParticleSimulation(BaseSimulation):
         self.render_mode = render_mode
         self.save_gif_dir = save_gif_dir
         self._episode_counter = 0
-        self.energy_model = energy_model
         if norm_stats is not None:
             act_min = np.asarray(norm_stats["act_min"], dtype=np.float32)
             act_max = np.asarray(norm_stats["act_max"], dtype=np.float32)
@@ -95,8 +91,7 @@ class ParticleSimulation(BaseSimulation):
 
             q_values = self.q_estimator(obs_expanded, cp_for_q).squeeze(-1)
 
-            # Energy model: low = expert (argmin); Q-value model: high = expert (argmax)
-            best_idx = q_values.argmin(dim=1) if self.energy_model else q_values.argmax(dim=1)
+            best_idx = q_values.argmax(dim=1)
             action = control_points[0, best_idx[0], :].cpu().numpy()
             q_range = (q_values.min().item(), q_values.max().item())
         

@@ -159,7 +159,7 @@ class DiagnosticParticleSimulation(ParticleSimulation):
 
             q_values = self.q_estimator(obs_expanded, cp_for_q).squeeze(-1)  # (1, N)
 
-            best_idx = q_values.argmin(dim=1) if self.energy_model else q_values.argmax(dim=1)
+            best_idx = q_values.argmax(dim=1)
             action = control_points[0, best_idx[0], :].cpu().numpy()
             q_range = (q_values.min().item(), q_values.max().item())
 
@@ -194,7 +194,6 @@ def generate_diagnostic_plots(
     show_langevin_trajectories: bool = True,
     show_langevin_final_positions: bool = True,
     goal_distance_threshold: float = 0.05,
-    energy_model: bool = False,
 ):
     """Generate comprehensive diagnostic plots from logged step data."""
     output_path = Path(output_dir)
@@ -606,12 +605,11 @@ def generate_diagnostic_plots(
 
                 traj_np = None
                 if show_langevin_trajectories or show_langevin_final_positions:
-                    if energy_model:
-                        def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
-                            return q_model(obs_batch, act_batch).squeeze(-1)
-                    else:
-                        def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
-                            return -q_model(obs_batch, act_batch).squeeze(-1)
+                    # Q-value convention: sample_langevin descends its energy
+                    # argument, so negate Q to make Langevin ascend Q (find
+                    # hard negatives — actions the model rates highly).
+                    def energy_fn(obs_batch: torch.Tensor, act_batch: torch.Tensor) -> torch.Tensor:
+                        return -q_model(obs_batch, act_batch).squeeze(-1)
 
                     _, traj_steps = sample_langevin(
                         energy_function=energy_fn,
@@ -924,13 +922,11 @@ def main():
         sys.exit(1)
 
     # Presence of norm_stats.pt = checkpoint was trained by ibc_with_cps_training.py
-    # (energy convention + normalized actions).
+    # (actions normalized to [0,1] before the Q estimator sees them).
     norm_stats = None
-    energy_model = False
     if os.path.exists(norm_stats_path):
         norm_stats = torch.load(norm_stats_path, weights_only=False)
-        energy_model = True
-        print(f"Detected norm_stats.pt -> energy convention (argmin) + action normalization")
+        print(f"Detected norm_stats.pt -> applying action normalization for Q estimator")
 
     # Load models
     print(f"Loading models from {checkpoint_dir}...")
@@ -953,7 +949,6 @@ def main():
             max_episode_steps=max_steps,
             render_mode=render_mode,
             frame_stack=FRAME_STACK,
-            energy_model=energy_model,
             norm_stats=norm_stats,
         )
 
@@ -984,7 +979,6 @@ def main():
             show_langevin_trajectories=show_langevin_trajectories,
             show_langevin_final_positions=show_langevin_final_positions,
             goal_distance_threshold=float(env_config.get("goal_distance", 0.05)),
-            energy_model=energy_model,
         )
 
         sim.close()

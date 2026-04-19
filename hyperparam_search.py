@@ -372,12 +372,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             "error": f"Checkpoints not found in {checkpoint_dir}",
         }
 
-    # Presence of norm_stats.pt = ibc_with_cps convention (energy + normalized actions).
+    # Presence of norm_stats.pt = ibc_with_cps (actions normalized to [0,1]
+    # before the Q estimator sees them).
     norm_stats = None
-    energy_model = False
     if os.path.exists(norm_stats_path):
         norm_stats = torch.load(norm_stats_path, weights_only=False)
-        energy_model = True
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -412,7 +411,6 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         max_episode_steps=max_episode_steps,
         render_mode=None,
         frame_stack=frame_stack,
-        energy_model=energy_model,
         norm_stats=norm_stats,
     )
 

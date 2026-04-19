@@ -145,11 +145,12 @@ def normalize_actions(actions, act_min, act_max, device):
     return (actions - act_min_t) / rng_t
 
 
-def langevin_counter_examples(energy_model, obs_norm, device):
+def langevin_counter_examples(q_model, obs_norm, device):
     """Generate hard negative actions via Langevin MCMC in normalized space.
 
-    Matches the paper's langevin_step: gradient descent on energy + noise,
-    with polynomial learning rate schedule and delta clipping.
+    Q-value convention (high = expert): Langevin ASCENDS the Q function to
+    find actions the model currently rates highly that are NOT the expert —
+    exactly the hard negatives InfoNCE needs to push down.
     Operates entirely in normalized action space [0, 1] (with small buffer).
     """
     B = obs_norm.shape[0]
@@ -166,7 +167,7 @@ def langevin_counter_examples(energy_model, obs_norm, device):
 
     obs_expanded = obs_norm.unsqueeze(1).expand(-1, NUM_COUNTER_EXAMPLES, -1)
 
-    for p in energy_model.parameters():
+    for p in q_model.parameters():
         p.requires_grad_(False)
 
     for k in range(LANGEVIN_TRAIN_ITERATIONS):
@@ -178,18 +179,19 @@ def langevin_counter_examples(energy_model, obs_norm, device):
         )
 
         actions = actions.detach().requires_grad_(True)
-        energies = energy_model(obs_expanded, actions).squeeze(-1)
-        grad = torch.autograd.grad(energies.sum(), actions)[0]
+        q_vals = q_model(obs_expanded, actions).squeeze(-1)
+        grad = torch.autograd.grad(q_vals.sum(), actions)[0]
         grad = grad.detach()
 
         noise = torch.randn_like(actions) * LANGEVIN_NOISE_SCALE
         delta = stepsize * (0.5 * grad + noise)
         delta = torch.clamp(delta, -delta_clip, delta_clip)
 
-        actions = (actions.detach() - delta).detach()
+        # Ascend Q to find hard negatives (regions model thinks are expert-like).
+        actions = (actions.detach() + delta).detach()
         actions = torch.clamp(actions, act_min, act_max)
 
-    for p in energy_model.parameters():
+    for p in q_model.parameters():
         p.requires_grad_(True)
 
     return actions.detach()
@@ -251,6 +253,12 @@ def main():
         f"Act range: [{norm_stats['act_min'].min():.3f}, "
         f"{norm_stats['act_max'].max():.3f}]"
     )
+
+    # Pre-compute normalization tensors for generator CP normalization
+    act_min_t = torch.from_numpy(norm_stats["act_min"]).float().to(device)
+    act_range_np = norm_stats["act_max"] - norm_stats["act_min"]
+    act_range_np = np.where(act_range_np == 0, np.ones_like(act_range_np), act_range_np)
+    act_rng_t = torch.from_numpy(act_range_np.astype(np.float32)).to(device)
 
     # ─── Create models ────────────────────────────────────────────────────
     control_point_generator = ControlPointGenerator(
@@ -345,36 +353,42 @@ def main():
             loss_generator = loss_mse + loss_sep
 
             # ============================================================
-            # Estimator loss: InfoNCE + gradient penalty (paper-faithful)
-            # Uses Langevin MCMC counter-examples in normalized action space
+            # Estimator loss: InfoNCE (Q-value convention) + gradient penalty
+            # Counter-examples: generator control points (detached) + Langevin
+            # hard-negatives. Expert at index 0 (matches lossInfoNCE convention).
             # ============================================================
-            counter_actions = langevin_counter_examples(
+            # Normalize generator control points into estimator's training space
+            cp_norm = (predicted_actions.detach() - act_min_t) / act_rng_t
+
+            langevin_counter = langevin_counter_examples(
                 estimator, states_norm, device
-            )  # (B, N, action_dim) in normalized space
+            )  # (B, N_lang, action_dim) in normalized space
 
-            # Expert action last (paper convention)
+            counter_actions = torch.cat([cp_norm, langevin_counter], dim=1)
+            n_counter = counter_actions.shape[1]
+
+            # Expert at index 0 (Q-value convention; matches utils.loss.lossInfoNCE)
             all_actions = torch.cat(
-                [counter_actions, actions_norm.unsqueeze(1)], dim=1
-            )  # (B, N+1, action_dim)
+                [actions_norm.unsqueeze(1), counter_actions], dim=1
+            )  # (B, 1+N, action_dim)
 
-            n_counter = NUM_COUNTER_EXAMPLES
-            states_expanded = states_norm.unsqueeze(1).expand(-1, n_counter + 1, -1)
+            states_expanded = states_norm.unsqueeze(1).expand(-1, 1 + n_counter, -1)
 
-            energies = estimator(states_expanded, all_actions).squeeze(-1)
+            q_values = estimator(states_expanded, all_actions).squeeze(-1)
 
-            # InfoNCE: expert at LAST index
-            logits = -energies / SOFTMAX_TEMPERATURE
+            # InfoNCE: expert (index 0) should have the HIGHEST Q-value
+            logits = q_values / SOFTMAX_TEMPERATURE
             log_probs = logits - torch.logsumexp(logits, dim=1, keepdim=True)
-            loss_infonce = -log_probs[:, -1].mean()
+            loss_infonce = -log_probs[:, 0].mean()
 
             # Gradient penalty on ALL combined actions (L-inf norm, margin)
-            gp_actions = all_actions.detach().reshape(B * (n_counter + 1), -1)
+            gp_actions = all_actions.detach().reshape(B * (1 + n_counter), -1)
             gp_actions = gp_actions.requires_grad_(True)
-            gp_states = states_expanded.detach().reshape(B * (n_counter + 1), -1)
+            gp_states = states_expanded.detach().reshape(B * (1 + n_counter), -1)
 
-            gp_energies = estimator(gp_states, gp_actions)
+            gp_q = estimator(gp_states, gp_actions)
             grad_gp = torch.autograd.grad(
-                gp_energies.sum(), gp_actions, create_graph=True
+                gp_q.sum(), gp_actions, create_graph=True
             )[0]
 
             grad_norms = grad_gp.abs().max(dim=-1).values
@@ -416,8 +430,8 @@ def main():
                 gen_lr = scheduler_generator.get_last_lr()[0]
 
                 with torch.no_grad():
-                    best_idx = logits.argmax(dim=1)
-                    accuracy = (best_idx == n_counter).float().mean().item()
+                    best_idx = q_values.argmax(dim=1)
+                    accuracy = (best_idx == 0).float().mean().item()
 
                 elapsed = time.time() - start_time
                 print(
