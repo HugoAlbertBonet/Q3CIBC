@@ -381,10 +381,17 @@ def main():
             log_probs = logits - torch.logsumexp(logits, dim=1, keepdim=True)
             loss_infonce = -log_probs[:, 0].mean()
 
-            # Gradient penalty on ALL combined actions (L-inf norm, margin)
-            gp_actions = all_actions.detach().reshape(B * (1 + n_counter), -1)
-            gp_actions = gp_actions.requires_grad_(True)
-            gp_states = states_expanded.detach().reshape(B * (1 + n_counter), -1)
+            # Gradient penalty on expert + Langevin hard-negatives only
+            # (generator CPs are detached anyway; skipping them keeps the GP
+            # paper-faithful and avoids OOM from the 2nd-order graph.)
+            gp_all = torch.cat(
+                [actions_norm.unsqueeze(1), langevin_counter], dim=1
+            )
+            n_gp = gp_all.shape[1]
+            gp_actions = gp_all.detach().reshape(B * n_gp, -1).requires_grad_(True)
+            gp_states = (
+                states_norm.unsqueeze(1).expand(-1, n_gp, -1).detach().reshape(B * n_gp, -1)
+            )
 
             gp_q = estimator(gp_states, gp_actions)
             grad_gp = torch.autograd.grad(
