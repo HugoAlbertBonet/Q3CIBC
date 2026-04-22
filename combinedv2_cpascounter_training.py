@@ -48,15 +48,19 @@ MODEL_SAVE_DIR = training_shared.get("model_save_dir", "checkpoints")
 log_interval = training_shared.get("log_interval", 1000)
 save_interval = training_shared.get("save_interval", 10000)
 
-num_counter_examples = env_training.get("counter_examples", training_shared.get("counter_examples", 64))
 sampling_method = env_training.get("sampling_method", training_shared.get("sampling_method", "uniform"))
 top_k_control_points = env_training.get(
     "top_k_control_points",
-    training_shared.get("top_k_control_points", num_counter_examples),
+    training_shared.get("top_k_control_points", 64),
 )
 
 langevin_config = env_model.get("langevin_config", {})
-langevin_num_iterations = langevin_config.get("num_iterations", 50)
+# Hyperparam search controls this via env_training.langevin_num_iterations; fall
+# back to env_model.langevin_config.num_iterations for configs that predate it.
+langevin_num_iterations = env_training.get(
+    "langevin_num_iterations",
+    langevin_config.get("num_iterations", 50),
+)
 langevin_lr_init = langevin_config.get("lr_init", 0.1)
 langevin_lr_final = langevin_config.get("lr_final", 1e-5)
 langevin_decay_power = langevin_config.get("polynomial_decay_power", 2.0)
@@ -154,7 +158,7 @@ def main():
     print(f"InfoNCE logit clamp: {infonce_logit_clamp}")
     print(f"Spectral norm (estimator): {use_spectral_norm}")
     print(f"Top-k control points as counter examples: {top_k_control_points}")
-    print(f"Langevin counter examples (from counter_examples): {num_counter_examples}")
+    print(f"Langevin iterations for best-CP refinement: {langevin_num_iterations}")
     print(f"Frame stack: {frame_stack}")
     
     # Initialize Weights & Biases
@@ -279,22 +283,32 @@ def main():
             gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, predicted_actions_detached.shape[2])
             cp_counter_samples = torch.gather(predicted_actions_detached, dim=1, index=gather_idx)
 
-            # Optional Langevin counter-examples generated directly from counter_examples.
-            if num_counter_examples > 0:
+            # Optionally refine the best control point (top-1 by Q-value) via Langevin MCMC
+            # ascent on the estimator. When langevin_num_iterations == 0, skip refinement.
+            if langevin_num_iterations > 0:
                 action_min = torch.full((dataset.action_shape,), action_bounds[0], device=device)
                 action_max = torch.full((dataset.action_shape,), action_bounds[1], device=device)
+
+                best_cp_gather_idx = topk_idx[:, 0:1].unsqueeze(-1).expand(
+                    -1, -1, predicted_actions_detached.shape[2]
+                )
+                best_cp = torch.gather(
+                    predicted_actions_detached, dim=1, index=best_cp_gather_idx
+                )  # (B, 1, D)
 
                 # Freeze estimator params during Langevin MCMC; gradients are only for actions.
                 for p in estimator.parameters():
                     p.requires_grad_(False)
 
-                def _energy_fn(obs_expanded, actions_batch):
-                    return estimator(obs_expanded, actions_batch).squeeze(-1)
+                # Negate estimator output so Langevin descent on this "energy"
+                # equivalently ascends on Q — raising the best CP's estimated value.
+                def _neg_energy_fn(obs_expanded_lv, actions_batch):
+                    return -estimator(obs_expanded_lv, actions_batch).squeeze(-1)
 
-                langevin_samples = sample_langevin(
-                    energy_function=_energy_fn,
+                improved_best_cp = sample_langevin(
+                    energy_function=_neg_energy_fn,
                     observations=states,
-                    num_samples=num_counter_examples,
+                    num_samples=1,
                     action_min=action_min,
                     action_max=action_max,
                     num_iterations=langevin_num_iterations,
@@ -303,14 +317,16 @@ def main():
                     polynomial_decay_power=langevin_decay_power,
                     delta_action_clip=langevin_delta_clip,
                     noise_scale=langevin_noise_scale,
+                    initial_actions=best_cp,
                     device=device,
                 )
 
                 for p in estimator.parameters():
                     p.requires_grad_(True)
 
-                counter_samples = torch.cat([cp_counter_samples, langevin_samples.detach()], dim=1)
+                counter_samples = torch.cat([cp_counter_samples, improved_best_cp.detach()], dim=1)
             else:
+                improved_best_cp = None
                 counter_samples = cp_counter_samples
 
             total_counter_examples = counter_samples.shape[1]
@@ -329,9 +345,9 @@ def main():
             # Rebuild counter samples from non-detached control points so gradients reach generator,
             # while freezing estimator parameters so this branch updates only the generator.
             cp_counter_samples_for_generator = torch.gather(predicted_actions, dim=1, index=gather_idx)
-            if num_counter_examples > 0:
+            if improved_best_cp is not None:
                 counter_samples_for_generator = torch.cat(
-                    [cp_counter_samples_for_generator, langevin_samples.detach()],
+                    [cp_counter_samples_for_generator, improved_best_cp.detach()],
                     dim=1,
                 )
             else:
@@ -403,13 +419,14 @@ def main():
                 }
                 wandb.log(log_dict)
             
-            # Save checkpoint
+            # Save checkpoint (overwrite the same file each interval so we
+            # don't accumulate one .pt per step across long runs).
             if step % save_interval == 0:
                 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-                torch.save(control_point_generator.state_dict(), 
-                          os.path.join(MODEL_SAVE_DIR, f"control_point_generator_step_{step}.pt"))
-                torch.save(estimator.state_dict(), 
-                          os.path.join(MODEL_SAVE_DIR, f"q_estimator_step_{step}.pt"))
+                torch.save(control_point_generator.state_dict(),
+                           os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
+                torch.save(estimator.state_dict(),
+                           os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
     
     # Training complete
     total_time = time.time() - start_time

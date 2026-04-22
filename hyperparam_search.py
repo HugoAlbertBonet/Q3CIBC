@@ -147,6 +147,21 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_training",
     },
+    "target_update_interval": {
+        "values": [200, 500, 1000, 2000, 5000],
+        "type": "int",
+        "location": "training_shared",
+    },
+    "inference_langevin_iterations": {
+        "values": [0, 10, 25, 50, 100],
+        "type": "int",
+        "location": "env_training",
+    },
+    "langevin_num_iterations": {
+        "values": [0, 10, 25, 50, 100],
+        "type": "int",
+        "location": "env_training",
+    },
 }
 
 
@@ -220,12 +235,20 @@ def next_trial_id(script_name: str) -> int:
 
 # ─── Hyperparameter detection ────────────────────────────────────────────────
 
+# Params consumed at evaluation time only (never referenced by training scripts).
+# They must still appear in the search so they get tuned.
+INFERENCE_ONLY_PARAMS: set[str] = {"inference_langevin_iterations"}
+
+
 def detect_script_params(script_path: Path) -> list[str]:
     """Scan training script source to find which search-space params it reads."""
     with open(script_path, "r") as f:
         source = f.read()
     detected = []
     for param_name in SEARCH_SPACE:
+        if param_name in INFERENCE_ONLY_PARAMS:
+            detected.append(param_name)
+            continue
         if re.search(rf'["\']({re.escape(param_name)})["\']', source):
             detected.append(param_name)
     return detected
@@ -340,6 +363,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     """Load Q3C models from *checkpoint_dir* and measure success rate."""
     from utils.models import ControlPointGenerator, QEstimator
     from simulations.particle_simulation import ParticleSimulation
+    from utils.sampling import sample_langevin
 
     active_env = config.get("active_env", "particle")
     env_config = config["environments"][active_env]
@@ -360,6 +384,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     if num_seeds <= 0:
         raise ValueError("simulation.num_seeds must be >= 1")
     seeds = list(range(num_seeds))
+
+    inference_langevin_iterations = int(
+        env_config.get("training", {}).get("inference_langevin_iterations", 0)
+    )
+    langevin_cfg = env_config.get("model", {}).get("langevin_config", {})
 
     cp_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
     q_path = os.path.join(checkpoint_dir, "q_estimator.pt")
@@ -403,7 +432,84 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     )
     q_est.to(device).eval()
 
-    sim = ParticleSimulation(
+    if inference_langevin_iterations > 0:
+        class LangevinRefinedParticleSimulation(ParticleSimulation):
+            """Refines the highest-Q control point with Langevin MCMC before acting."""
+
+            def select_action(self, observation, return_q_range: bool = False):
+                obs_tensor = (
+                    torch.tensor(observation, dtype=torch.float32)
+                    .unsqueeze(0)
+                    .to(self.device)
+                )
+                obs_tensor = self.obs_normalizer.normalize(obs_tensor)
+
+                with torch.no_grad():
+                    cps = self.control_point_generator(obs_tensor)  # (1, N, D)
+                    obs_expanded = obs_tensor.unsqueeze(1).expand(-1, cps.shape[1], -1)
+                    if self._act_min_t is not None:
+                        cp_for_q = (cps - self._act_min_t) / self._act_rng_t
+                    else:
+                        cp_for_q = cps
+                    q_values = self.q_estimator(obs_expanded, cp_for_q).squeeze(-1)
+                    best_idx = q_values.argmax(dim=1)
+                    q_range = (q_values.min().item(), q_values.max().item())
+                    best_cp = cps[0, best_idx[0], :].view(1, 1, -1).clone()
+
+                act_min_t = torch.full(
+                    (cps.shape[-1],), float(action_bounds[0]), device=self.device
+                )
+                act_max_t = torch.full(
+                    (cps.shape[-1],), float(action_bounds[1]), device=self.device
+                )
+
+                for p in self.q_estimator.parameters():
+                    p.requires_grad_(False)
+
+                _norm_min = self._act_min_t
+                _norm_rng = self._act_rng_t
+
+                def _neg_energy_fn(obs_lv, actions_lv):
+                    if _norm_min is not None:
+                        a_in = (actions_lv - _norm_min) / _norm_rng
+                    else:
+                        a_in = actions_lv
+                    return -self.q_estimator(obs_lv, a_in).squeeze(-1)
+
+                refined = sample_langevin(
+                    energy_function=_neg_energy_fn,
+                    observations=obs_tensor,
+                    num_samples=1,
+                    action_min=act_min_t,
+                    action_max=act_max_t,
+                    num_iterations=inference_langevin_iterations,
+                    lr_init=float(langevin_cfg.get("lr_init", 0.1)),
+                    lr_final=float(langevin_cfg.get("lr_final", 1e-5)),
+                    polynomial_decay_power=float(
+                        langevin_cfg.get("polynomial_decay_power", 2.0)
+                    ),
+                    delta_action_clip=float(
+                        langevin_cfg.get("delta_action_clip", 0.1)
+                    ),
+                    noise_scale=float(langevin_cfg.get("noise_scale", 1.0)),
+                    initial_actions=best_cp,
+                    device=self.device,
+                )
+
+                for p in self.q_estimator.parameters():
+                    p.requires_grad_(True)
+
+                action = refined[0, 0, :].cpu().numpy()
+                action = np.clip(action, action_bounds[0], action_bounds[1])
+                if return_q_range:
+                    return action, q_range
+                return action
+
+        sim_cls = LangevinRefinedParticleSimulation
+    else:
+        sim_cls = ParticleSimulation
+
+    sim = sim_cls(
         control_point_generator=cp_gen,
         q_estimator=q_est,
         n_dim=n_dim,
