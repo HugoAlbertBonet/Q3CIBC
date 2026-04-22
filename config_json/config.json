@@ -55,7 +55,7 @@
                 "entropy_bandwidth": 0.1,
                 "gradient_penalty_margin": 1.0,
                 "gradient_penalty_weight": 1.0,
-                "top_k_control_points": 30,
+                "top_k_control_points": 10,
                 "wirefit_top_k_control_points": 20,
                 "wirefit_distribution_weight": 1.0,
                 "wirefit_distribution_temperature": 1.0,
@@ -63,10 +63,12 @@
                 "infonce_logit_clamp": 20.0,
                 "scheduler_type": "cosine_warm_restarts",
                 "cosine_t0": 50000,
-                "estimator_learning_rate": 0.001
+                "estimator_learning_rate": 0.001,
+                "langevin_num_iterations": 0,
+                "inference_langevin_iterations": 0
             },
             "model": {
-                "control_points": 20,
+                "control_points": 50,
                 "num_hidden_layers": 2,
                 "num_neurons": 256,
                 "langevin_config": {
@@ -129,7 +131,7 @@
         "smoothing_param_trainable": false,
         "use_wire_fitting": true,
         "separation_weight": 0.1,
-        "mse_weight": 5,
+        "mse_weight": 10.0,
         "info_nce_weight": 1.0,
         "top_k_langevin_counter_examples": 10,
         "generator_infonce_weight": 0.05,
@@ -143,7 +145,7 @@
         "lr_decay_interval": 100,
         "log_interval": 1000,
         "save_interval": 5000,
-        "model_save_dir": "/home1/halbertb/Q3CIBC/checkpoints/hpsearch/trial_006"
+        "model_save_dir": "/home1/halbertb/Q3CIBC/checkpoints/hpsearch/trial_002"
     },
     "simulation": {
         "default_checkpoint": "checkpoints/control_point_generator.pt",
