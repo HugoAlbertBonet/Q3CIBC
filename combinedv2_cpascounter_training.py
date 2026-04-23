@@ -18,8 +18,13 @@ from utils.loss import lossInfoNCE, lossMSE, lossSeparation, lossEntropyKDE
 from utils.normalizations import ObservationNormalizer
 from utils.sampling import sample_langevin
 
-# Load config
-config_path = Path(__file__).parent / "config_json" / "config.json"
+# Load config. When driven by hyperparam_search.py, Q3C_CONFIG_PATH points at a
+# per-trial config file — that's how parallel hyperparam trials avoid racing on
+# the shared config.json. Falls back to the default path for standalone runs.
+config_path = Path(
+    os.environ.get("Q3C_CONFIG_PATH")
+    or (Path(__file__).parent / "config_json" / "config.json")
+)
 with open(config_path, "r") as f:
     config = json.load(f)
 

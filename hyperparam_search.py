@@ -19,11 +19,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import random
 import re
-import shutil
+import secrets
 import subprocess
 import sys
 import time
@@ -38,9 +39,13 @@ ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
 CONFIG_PATH = ROOT_DIR / "config_json" / "config.json"
-CONFIG_BACKUP_PATH = ROOT_DIR / "config_json" / "config.json.bak"
 RESULTS_BASE_DIR = ROOT_DIR / "results" / "hyperparam_search"
 CHECKPOINTS_BASE_DIR = ROOT_DIR / "checkpoints" / "hpsearch"
+
+
+def _new_run_id() -> str:
+    """Unique identifier for a trial: timestamp + random suffix. Safe under concurrency."""
+    return datetime.now().strftime("%Y%m%dT%H%M%S") + "_" + secrets.token_hex(4)
 
 # ─── Search space: param_name -> {values, type, location} ────────────────────
 # location: "env_training" = environments.<active_env>.training
@@ -168,23 +173,9 @@ SEARCH_SPACE: dict[str, dict] = {
 # ─── Config I/O ──────────────────────────────────────────────────────────────
 
 def load_config() -> dict:
+    """Read the on-disk default config. Never mutated by parallel trials."""
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
-
-
-def save_config(config: dict) -> None:
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(config, f, indent=4)
-
-
-def backup_config() -> None:
-    shutil.copy2(CONFIG_PATH, CONFIG_BACKUP_PATH)
-
-
-def restore_config() -> None:
-    if CONFIG_BACKUP_PATH.exists():
-        shutil.copy2(CONFIG_BACKUP_PATH, CONFIG_PATH)
-        CONFIG_BACKUP_PATH.unlink()
 
 
 # ─── Trials I/O ──────────────────────────────────────────────────────────────
@@ -219,18 +210,39 @@ def load_trials(script_name: str) -> list[dict]:
     return trials
 
 
-def append_trial(script_name: str, record: dict) -> None:
+def append_trial(script_name: str, record: dict) -> int:
+    """Atomically assign a monotonically-increasing trial_id and append the record.
+
+    Uses fcntl.flock for an exclusive lock over the jsonl for the short read-max +
+    write-line section. Safe under parallel sbatch submissions. Returns the id.
+    """
     path = _trials_path(script_name)
     path.parent.mkdir(parents=True, exist_ok=True)
+
     with open(path, "a") as f:
-        f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
-
-
-def next_trial_id(script_name: str) -> int:
-    trials = load_trials(script_name)
-    if not trials:
-        return 1
-    return max(t["trial_id"] for t in trials) + 1
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            max_id = 0
+            try:
+                with open(path, "r") as rf:
+                    for line in rf:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            max_id = max(max_id, int(json.loads(line).get("trial_id", 0)))
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+            except FileNotFoundError:
+                pass
+            trial_id = max_id + 1
+            record["trial_id"] = trial_id
+            f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    return trial_id
 
 
 # ─── Hyperparameter detection ────────────────────────────────────────────────
@@ -292,11 +304,11 @@ def apply_params_to_config(config: dict, params: dict) -> dict:
     return config
 
 
-def set_trial_checkpoint_dir(config: dict, trial_id: int) -> str:
-    """Point model_save_dir to a trial-specific directory and return the path."""
-    trial_dir = str(CHECKPOINTS_BASE_DIR / f"trial_{trial_id:03d}")
-    config.setdefault("training_shared", {})["model_save_dir"] = trial_dir
-    return trial_dir
+def set_run_checkpoint_dir(config: dict, run_id: str) -> str:
+    """Point model_save_dir to a per-run directory (unique even under parallel runs)."""
+    run_dir = str(CHECKPOINTS_BASE_DIR / f"run_{run_id}")
+    config.setdefault("training_shared", {})["model_save_dir"] = run_dir
+    return run_dir
 
 
 # ─── Training subprocess ─────────────────────────────────────────────────────
@@ -304,14 +316,18 @@ def set_trial_checkpoint_dir(config: dict, trial_id: int) -> str:
 def run_training(
     script_path: Path,
     timeout: int | None = None,
+    env_extras: dict[str, str] | None = None,
 ) -> tuple[bool, str, float]:
     """Run a training script as a subprocess, streaming output live.
 
     Returns (success, captured_stdout, duration_seconds).
+    `env_extras` is layered on top of the inherited env (e.g., Q3C_CONFIG_PATH).
     """
     start = time.time()
     stdout_lines: list[str] = []
     env = {**os.environ, "WANDB_MODE": "disabled", "PYTHONUNBUFFERED": "1"}
+    if env_extras:
+        env.update(env_extras)
 
     try:
         proc = subprocess.Popen(
@@ -649,20 +665,27 @@ def suggest_next_params(
 def run_single_trial(
     script_path: Path,
     params: dict,
-    trial_id: int,
     training_steps_override: int | None = None,
     timeout: int | None = None,
 ) -> dict:
-    """Modify config, train, evaluate, record and restore."""
+    """Write a per-run config, train, evaluate, and atomically append the trial record.
+
+    Every trial gets a unique run_id. Its config is written to a unique path and the
+    training subprocess reads it via Q3C_CONFIG_PATH. The checkpoint directory is also
+    run-id-scoped. No shared config.json mutation occurs, so parallel sbatch jobs do
+    not collide on either config state or checkpoint files.
+    """
     script_name = script_path.name
+    run_id = _new_run_id()
+
     print(f"\n{'=' * 80}")
-    print(f"TRIAL {trial_id} — {script_name}")
+    print(f"RUN {run_id} — {script_name}")
     print(f"{'=' * 80}")
     print(f"Parameters:\n{json.dumps(params, indent=2)}")
 
     config = load_config()
     config = apply_params_to_config(config, params)
-    checkpoint_dir = set_trial_checkpoint_dir(config, trial_id)
+    checkpoint_dir = set_run_checkpoint_dir(config, run_id)
 
     active_env = config.get("active_env", "particle")
     if training_steps_override is not None:
@@ -679,74 +702,82 @@ def run_single_trial(
         )
     )
 
-    backup_config()
-    try:
-        save_config(config)
+    # Per-run config lives next to the checkpoints so you can always reconstruct a run.
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    trial_config_path = Path(checkpoint_dir) / "config.json"
+    with open(trial_config_path, "w") as f:
+        json.dump(config, f, indent=4)
 
-        print(f"\n  Training ({actual_steps} steps)...")
-        success, stdout, duration = run_training(script_path, timeout=timeout)
+    print(f"\n  Training ({actual_steps} steps) — config at {trial_config_path}")
+    success, stdout, duration = run_training(
+        script_path,
+        timeout=timeout,
+        env_extras={"Q3C_CONFIG_PATH": str(trial_config_path)},
+    )
 
-        if not success:
-            print(f"\n  Training FAILED after {duration:.0f}s")
-            last_lines = "\n".join(stdout.strip().splitlines()[-5:])
-            record = {
-                "trial_id": trial_id,
-                "script": script_name,
-                "params": params,
-                "training_steps": actual_steps,
-                "duration_seconds": round(duration, 1),
-                "success_rate": 0.0,
-                "avg_reward": 0.0,
-                "training_failed": True,
-                "error": last_lines[-300:],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            append_trial(script_name, record)
-            return record
+    timestamp = datetime.now(timezone.utc).isoformat()
 
-        print(f"\n  Training completed in {duration:.0f}s")
-        train_metrics = extract_final_metrics(stdout)
-
-        print("  Evaluating...")
-        eval_results: dict
-        try:
-            eval_results = evaluate_q3c(checkpoint_dir, config)
-        except Exception as exc:
-            eval_results = {
-                "success_rate": 0.0,
-                "avg_reward": 0.0,
-                "error": f"Evaluation failed: {exc}",
-                "per_seed": [],
-            }
-            print(f"  Evaluation failed: {exc}")
-
+    if not success:
+        print(f"\n  Training FAILED after {duration:.0f}s")
+        last_lines = "\n".join(stdout.strip().splitlines()[-5:])
         record = {
-            "trial_id": trial_id,
+            "run_id": run_id,
             "script": script_name,
             "params": params,
             "training_steps": actual_steps,
             "duration_seconds": round(duration, 1),
-            "success_rate": eval_results.get("success_rate", 0.0),
-            "avg_reward": eval_results.get("avg_reward", 0.0),
-            "avg_min_dist_first_goal": eval_results.get("avg_min_dist_first_goal"),
-            "avg_min_dist_second_goal": eval_results.get("avg_min_dist_second_goal"),
-            "median_min_dist_first_goal": eval_results.get("median_min_dist_first_goal"),
-            "median_min_dist_second_goal": eval_results.get("median_min_dist_second_goal"),
-            "avg_episode_length": eval_results.get("avg_episode_length"),
-            **train_metrics,
-            "eval_details": eval_results.get("per_seed", []),
-            "eval_error": eval_results.get("error"),
+            "success_rate": 0.0,
+            "avg_reward": 0.0,
+            "training_failed": True,
+            "error": last_lines[-300:],
             "checkpoint_dir": checkpoint_dir,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": timestamp,
         }
-        append_trial(script_name, record)
-
-        sr = record["success_rate"]
-        rw = record["avg_reward"]
-        print(f"\n  Result: success_rate={sr:.2%}, avg_reward={rw:.3f}")
+        trial_id = append_trial(script_name, record)
+        print(f"  Recorded as trial #{trial_id}")
         return record
-    finally:
-        restore_config()
+
+    print(f"\n  Training completed in {duration:.0f}s")
+    train_metrics = extract_final_metrics(stdout)
+
+    print("  Evaluating...")
+    eval_results: dict
+    try:
+        eval_results = evaluate_q3c(checkpoint_dir, config)
+    except Exception as exc:
+        eval_results = {
+            "success_rate": 0.0,
+            "avg_reward": 0.0,
+            "error": f"Evaluation failed: {exc}",
+            "per_seed": [],
+        }
+        print(f"  Evaluation failed: {exc}")
+
+    record = {
+        "run_id": run_id,
+        "script": script_name,
+        "params": params,
+        "training_steps": actual_steps,
+        "duration_seconds": round(duration, 1),
+        "success_rate": eval_results.get("success_rate", 0.0),
+        "avg_reward": eval_results.get("avg_reward", 0.0),
+        "avg_min_dist_first_goal": eval_results.get("avg_min_dist_first_goal"),
+        "avg_min_dist_second_goal": eval_results.get("avg_min_dist_second_goal"),
+        "median_min_dist_first_goal": eval_results.get("median_min_dist_first_goal"),
+        "median_min_dist_second_goal": eval_results.get("median_min_dist_second_goal"),
+        "avg_episode_length": eval_results.get("avg_episode_length"),
+        **train_metrics,
+        "eval_details": eval_results.get("per_seed", []),
+        "eval_error": eval_results.get("error"),
+        "checkpoint_dir": checkpoint_dir,
+        "timestamp": timestamp,
+    }
+    trial_id = append_trial(script_name, record)
+
+    sr = record["success_rate"]
+    rw = record["avg_reward"]
+    print(f"\n  Result (trial #{trial_id}): success_rate={sr:.2%}, avg_reward={rw:.3f}")
+    return record
 
 
 # ─── Analyze / summary ───────────────────────────────────────────────────────
@@ -926,7 +957,6 @@ def main() -> None:
 
     # ── Run mode ──────────────────────────────────────────────────────────
     if args.run:
-        trial_id = next_trial_id(script_name)
         if args.params:
             user_params = json.loads(args.params)
             params = baseline.copy()
@@ -943,7 +973,6 @@ def main() -> None:
         run_single_trial(
             script_path=script_path,
             params=params,
-            trial_id=trial_id,
             training_steps_override=args.reduced_steps,
             timeout=args.timeout,
         )
@@ -952,7 +981,6 @@ def main() -> None:
     # ── Auto mode ─────────────────────────────────────────────────────────
     if args.auto:
         for i in range(args.max_trials):
-            trial_id = next_trial_id(script_name)
             trials = load_trials(script_name)
             params, reason = suggest_next_params(trials, detected_params, baseline)
             print(f"\n[Auto {i + 1}/{args.max_trials}] Strategy: {reason}")
@@ -964,7 +992,6 @@ def main() -> None:
             run_single_trial(
                 script_path=script_path,
                 params=params,
-                trial_id=trial_id,
                 training_steps_override=args.reduced_steps,
                 timeout=args.timeout,
             )
