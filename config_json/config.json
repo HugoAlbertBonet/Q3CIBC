@@ -55,7 +55,7 @@
                 "entropy_bandwidth": 0.1,
                 "gradient_penalty_margin": 1.0,
                 "gradient_penalty_weight": 1.0,
-                "top_k_control_points": 10,
+                "top_k_control_points": 30,
                 "wirefit_top_k_control_points": 20,
                 "wirefit_distribution_weight": 1.0,
                 "wirefit_distribution_temperature": 1.0,
@@ -68,7 +68,7 @@
                 "inference_langevin_iterations": 0
             },
             "model": {
-                "control_points": 50,
+                "control_points": 20,
                 "num_hidden_layers": 2,
                 "num_neurons": 256,
                 "langevin_config": {
@@ -131,7 +131,7 @@
         "smoothing_param_trainable": false,
         "use_wire_fitting": true,
         "separation_weight": 0.1,
-        "mse_weight": 10.0,
+        "mse_weight": 5.0,
         "info_nce_weight": 1.0,
         "top_k_langevin_counter_examples": 10,
         "generator_infonce_weight": 0.05,

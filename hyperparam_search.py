@@ -526,18 +526,39 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         all_results.append(result)
     sim.close()
 
-    successes = [r.get("success", False) for r in all_results]
-    rewards = [r.get("total_reward", 0.0) for r in all_results]
+    def _finite(x: float) -> float | None:
+        """JSON-safe: inf/nan → None so trials.jsonl stays strictly valid JSON."""
+        xf = float(x)
+        return xf if np.isfinite(xf) else None
+
+    successes = [bool(r.get("success", False)) for r in all_results]
+    rewards = [float(r.get("total_reward", 0.0)) for r in all_results]
+    dists_first = [float(r.get("min_dist_to_first_goal", np.inf)) for r in all_results]
+    dists_second = [float(r.get("min_dist_to_second_goal", np.inf)) for r in all_results]
+    ep_lengths = [int(r.get("episode_length", 0)) for r in all_results]
+    terminated_flags = [bool(r.get("terminated", False)) for r in all_results]
+
+    finite_first = [d for d in dists_first if np.isfinite(d)]
+    finite_second = [d for d in dists_second if np.isfinite(d)]
 
     return {
         "success_rate": float(np.mean(successes)),
         "avg_reward": float(np.mean(rewards)),
+        "avg_min_dist_first_goal": float(np.mean(finite_first)) if finite_first else None,
+        "avg_min_dist_second_goal": float(np.mean(finite_second)) if finite_second else None,
+        "median_min_dist_first_goal": float(np.median(finite_first)) if finite_first else None,
+        "median_min_dist_second_goal": float(np.median(finite_second)) if finite_second else None,
+        "avg_episode_length": float(np.mean(ep_lengths)),
         "num_seeds": len(seeds),
         "per_seed": [
             {
                 "seed": seeds[i],
-                "success": bool(successes[i]),
-                "reward": float(rewards[i]),
+                "success": successes[i],
+                "reward": rewards[i],
+                "min_dist_first_goal": _finite(dists_first[i]),
+                "min_dist_second_goal": _finite(dists_second[i]),
+                "episode_length": ep_lengths[i],
+                "terminated": terminated_flags[i],
             }
             for i in range(len(seeds))
         ],
@@ -707,6 +728,11 @@ def run_single_trial(
             "duration_seconds": round(duration, 1),
             "success_rate": eval_results.get("success_rate", 0.0),
             "avg_reward": eval_results.get("avg_reward", 0.0),
+            "avg_min_dist_first_goal": eval_results.get("avg_min_dist_first_goal"),
+            "avg_min_dist_second_goal": eval_results.get("avg_min_dist_second_goal"),
+            "median_min_dist_first_goal": eval_results.get("median_min_dist_first_goal"),
+            "median_min_dist_second_goal": eval_results.get("median_min_dist_second_goal"),
+            "avg_episode_length": eval_results.get("avg_episode_length"),
             **train_metrics,
             "eval_details": eval_results.get("per_seed", []),
             "eval_error": eval_results.get("error"),
