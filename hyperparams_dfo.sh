@@ -9,7 +9,7 @@
 #SBATCH --mem=8G
 #SBATCH --time=25:00:00
 
-export WANDB_API_KEY=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
+export WANDB_API_KEY="${WANDB_API_KEY:?set WANDB_API_KEY before sbatch}"
 
 # Q3C-IBC no-Langevin baseline search — batch of 10
 # Anchor: trial 1 config (20 CPs, 2x256, lr 1e-3, mse 5, top_k 30, entropy, warm-restarts)
