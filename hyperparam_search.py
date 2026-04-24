@@ -167,7 +167,56 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_training",
     },
+    # Langevin refinement hyperparameters. These override the per-env
+    # env_model.langevin_config defaults at both training and inference time.
+    "langevin_lr_init": {
+        "values": [0.005, 0.01, 0.02, 0.05, 0.1],
+        "type": "float",
+        "location": "env_training",
+    },
+    "langevin_lr_final": {
+        "values": [1e-6, 1e-5, 1e-4],
+        "type": "float",
+        "location": "env_training",
+    },
+    "langevin_noise_scale": {
+        "values": [0.0, 0.05, 0.1, 0.3, 1.0],
+        "type": "float",
+        "location": "env_training",
+    },
+    "langevin_delta_clip": {
+        "values": [0.01, 0.02, 0.05, 0.1],
+        "type": "float",
+        "location": "env_training",
+    },
+    "langevin_decay_power": {
+        "values": [1.0, 2.0, 4.0],
+        "type": "float",
+        "location": "env_training",
+    },
 }
+
+
+def effective_langevin_config(env_config: dict) -> dict:
+    """Merge env_training langevin_* overrides onto env_model.langevin_config defaults.
+
+    Returns a dict keyed by the native sample_langevin arg names (lr_init, etc.),
+    so callers in both training and evaluation share one source of truth.
+    """
+    base = dict(env_config.get("model", {}).get("langevin_config", {}))
+    training = env_config.get("training", {})
+    overrides = {
+        "num_iterations": "langevin_num_iterations",
+        "lr_init": "langevin_lr_init",
+        "lr_final": "langevin_lr_final",
+        "noise_scale": "langevin_noise_scale",
+        "delta_action_clip": "langevin_delta_clip",
+        "polynomial_decay_power": "langevin_decay_power",
+    }
+    for native_key, training_key in overrides.items():
+        if training_key in training:
+            base[native_key] = training[training_key]
+    return base
 
 
 # ─── Config I/O ──────────────────────────────────────────────────────────────
@@ -404,7 +453,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     inference_langevin_iterations = int(
         env_config.get("training", {}).get("inference_langevin_iterations", 0)
     )
-    langevin_cfg = env_config.get("model", {}).get("langevin_config", {})
+    # Effective langevin hyperparams: env_training.langevin_* overrides env_model.langevin_config.
+    langevin_cfg = effective_langevin_config(env_config)
 
     cp_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
     q_path = os.path.join(checkpoint_dir, "q_estimator.pt")

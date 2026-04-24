@@ -60,17 +60,25 @@ top_k_control_points = env_training.get(
 )
 
 langevin_config = env_model.get("langevin_config", {})
-# Hyperparam search controls this via env_training.langevin_num_iterations; fall
-# back to env_model.langevin_config.num_iterations for configs that predate it.
+# Each langevin hyperparam: env_training.langevin_* override wins over
+# env_model.langevin_config.* default. Keeps hyperparam_search's SEARCH_SPACE
+# entries (langevin_lr_init, ..., langevin_decay_power) effective without
+# touching the nested config block.
 langevin_num_iterations = env_training.get(
     "langevin_num_iterations",
     langevin_config.get("num_iterations", 50),
 )
-langevin_lr_init = langevin_config.get("lr_init", 0.1)
-langevin_lr_final = langevin_config.get("lr_final", 1e-5)
-langevin_decay_power = langevin_config.get("polynomial_decay_power", 2.0)
-langevin_delta_clip = langevin_config.get("delta_action_clip", 0.1)
-langevin_noise_scale = langevin_config.get("noise_scale", 1.0)
+langevin_lr_init = env_training.get("langevin_lr_init", langevin_config.get("lr_init", 0.1))
+langevin_lr_final = env_training.get("langevin_lr_final", langevin_config.get("lr_final", 1e-5))
+langevin_decay_power = env_training.get(
+    "langevin_decay_power", langevin_config.get("polynomial_decay_power", 2.0)
+)
+langevin_delta_clip = env_training.get(
+    "langevin_delta_clip", langevin_config.get("delta_action_clip", 0.1)
+)
+langevin_noise_scale = env_training.get(
+    "langevin_noise_scale", langevin_config.get("noise_scale", 1.0)
+)
 # Separation loss epsilon: must be << action-space diameter so overlapping control
 # points are strongly repelled.  Default 1.0 is too large for particle's [0,1]^2.
 separation_epsilon = env_training.get("separation_epsilon", training_shared.get("separation_epsilon", 1.0))
