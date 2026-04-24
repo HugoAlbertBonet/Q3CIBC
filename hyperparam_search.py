@@ -103,9 +103,14 @@ SEARCH_SPACE: dict[str, dict] = {
         "location": "env_training",
     },
     "separation_loss": {
-        "values": ["separation", "entropy"],
+        "values": ["separation", "entropy", "chamfer"],
         "type": "str",
         "location": "env_training",
+    },
+    "exclude_top_from_separation": {
+        "values": [False, True],
+        "type": "bool",
+        "location": "training_shared",
     },
     "entropy_bandwidth": {
         "values": [0.05, 0.1, 0.2],

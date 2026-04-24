@@ -7,12 +7,22 @@ Variation where:
   - The ControlPointGenerator is trained with InfoNCE using the top-scoring
     control point (selected by a target estimator with no grad) as the expert
     and the remaining control points as negatives. This gradient updates only
-    the generator. Additional terms: separation, plus an optional small MSE.
+    the generator. Additional terms: separation (multiple variants), plus an
+    optional small MSE.
   - A target estimator (periodic snapshot of the live estimator, synced every
     TARGET_UPDATE_INTERVAL steps) is used for the generator's InfoNCE to keep
     the Q-landscape stable while the generator optimizes against it.
 
-Uses config.json to determine which environment to train on.
+Separation variants (``separation_loss``):
+  - "separation": pairwise inverse-distance repulsion (legacy default).
+  - "entropy":    KDE-based negative differential entropy.
+  - "chamfer":    Chamfer distance between CPs and Langevin hard-negatives;
+                  wirefitting-aligned coverage (CPs track high-Q regions of
+                  the Q-landscape instead of uniform spread).
+
+Toggle ``exclude_top_from_separation`` to detach the top-Q CP's contribution
+to the separation/coverage term, letting it sit exactly at the argmax-Q point
+while non-top CPs still get repelled from its location.
 """
 
 import os
@@ -58,6 +68,10 @@ save_interval = training_shared.get("save_interval", 10000)
 separation_epsilon = env_training.get("separation_epsilon", training_shared.get("separation_epsilon", 1.0))
 separation_loss_type = env_training.get("separation_loss", training_shared.get("separation_loss", "separation"))
 entropy_bandwidth = env_training.get("entropy_bandwidth", training_shared.get("entropy_bandwidth", 0.1))
+exclude_top_from_separation = env_training.get(
+    "exclude_top_from_separation",
+    training_shared.get("exclude_top_from_separation", False),
+)
 
 # Generator scheduler
 scheduler_type = env_training.get(
@@ -220,6 +234,7 @@ def main():
     print(f"Langevin counter-examples: {NUM_COUNTER_EXAMPLES} ({LANGEVIN_TRAIN_ITERATIONS} iters)")
     print(f"Gradient penalty margin: {GRADIENT_MARGIN}")
     print(f"Target estimator sync: every {TARGET_UPDATE_INTERVAL} steps")
+    print(f"Separation loss: {separation_loss_type} (exclude_top={exclude_top_from_separation})")
     print(f"Frame stack: {frame_stack}")
 
     wandb.init(
@@ -236,6 +251,7 @@ def main():
             "gradient_margin": GRADIENT_MARGIN,
             "softmax_temperature": SOFTMAX_TEMPERATURE,
             "target_update_interval": TARGET_UPDATE_INTERVAL,
+            "exclude_top_from_separation": exclude_top_from_separation,
         },
         name=f"{active_env}_ibc_with_cps_cp{control_points}_lr{generator_learning_rate}",
     )
@@ -392,18 +408,51 @@ def main():
             loss_gen_infonce = -log_probs_gen[:, 0].mean()
 
             loss_mse = mse_weight * (lossMSE(predicted_actions, actions) / B)
+
+            # Optionally detach the top CP slot so the separation/coverage
+            # term is not applied to it. The top CP's *value* is still used
+            # in distance computations, so non-top CPs are still repelled
+            # from its location, but the top CP itself feels no spread force
+            # and is free to sit at the argmax-Q point.
+            if exclude_top_from_separation:
+                is_top = torch.zeros(
+                    B, control_points, dtype=torch.bool, device=device
+                )
+                is_top[torch.arange(B, device=device), top_idx] = True
+                pa_for_sep = torch.where(
+                    is_top.unsqueeze(-1),
+                    predicted_actions.detach(),
+                    predicted_actions,
+                )
+            else:
+                pa_for_sep = predicted_actions
+
             if separation_loss_type == "entropy":
                 loss_sep = separation_weight * lossEntropyKDE(
-                    predicted_actions, bandwidth=entropy_bandwidth
+                    pa_for_sep, bandwidth=entropy_bandwidth
                 )
             elif separation_loss_type == "separation":
                 loss_sep = separation_weight * (
-                    lossSeparation(predicted_actions, epsilon=separation_epsilon) / B
+                    lossSeparation(pa_for_sep, epsilon=separation_epsilon) / B
                 )
+            elif separation_loss_type == "chamfer":
+                # Wirefitting-aligned coverage: minimise Chamfer distance
+                # between CPs and the Langevin hard-negatives (in the
+                # estimator's normalised space). CPs end up distributed over
+                # the high-Q regions the Q-landscape actually cares about,
+                # rather than uniformly in action space.
+                cp_norm_for_sep = (pa_for_sep - act_min_t) / act_rng_t
+                langevin_det = langevin_counter.detach()
+                dists = (
+                    cp_norm_for_sep.unsqueeze(2) - langevin_det.unsqueeze(1)
+                ).norm(dim=-1)  # (B, N_cp, N_lang)
+                cp_to_lang = dists.min(dim=2).values.pow(2).mean()
+                lang_to_cp = dists.min(dim=1).values.pow(2).mean()
+                loss_sep = separation_weight * 0.5 * (cp_to_lang + lang_to_cp)
             else:
                 raise ValueError(
                     f"Unknown separation_loss '{separation_loss_type}'. "
-                    "Expected 'separation' or 'entropy'."
+                    "Expected 'separation', 'entropy', or 'chamfer'."
                 )
             loss_generator = loss_gen_infonce + loss_sep + loss_mse
 
