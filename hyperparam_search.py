@@ -199,6 +199,34 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # IBC negative mixture (Florence et al., 2021).
+    "num_uniform_negatives": {
+        "values": [0, 16, 32, 64, 128],
+        "type": "int",
+        "location": "env_training",
+    },
+    "num_langevin_negatives": {
+        "values": [0, 16, 32, 64],
+        "type": "int",
+        "location": "env_training",
+    },
+    # IBC gradient penalty (Florence et al., 2021, App. B).
+    "gradient_penalty_weight": {
+        "values": [0.0, 0.1, 1.0, 10.0],
+        "type": "float",
+        "location": "training_shared",
+    },
+    "gradient_penalty_margin": {
+        "values": [0.5, 1.0, 2.0],
+        "type": "float",
+        "location": "training_shared",
+    },
+    # Deterministic seed — searchable so we can run reps with seed=0,1,2,...
+    "trial_seed": {
+        "values": [0, 1, 2, 3, 4],
+        "type": "int",
+        "location": "env_training",
+    },
 }
 
 
@@ -975,6 +1003,15 @@ def main() -> None:
         default=None,
         help="Per-trial timeout in seconds",
     )
+    parser.add_argument(
+        "--num-reps",
+        type=int,
+        default=1,
+        help=(
+            "Number of repetitions per config (each rep gets trial_seed=0,1,...)."
+            " Use this to measure variance honestly (default: 1)."
+        ),
+    )
     args = parser.parse_args()
 
     fixed_params: dict = {}
@@ -1025,12 +1062,19 @@ def main() -> None:
             params.update(fixed_params)
             print(f"Applied fixed params: {json.dumps(fixed_params)}")
 
-        run_single_trial(
-            script_path=script_path,
-            params=params,
-            training_steps_override=args.reduced_steps,
-            timeout=args.timeout,
-        )
+        seed_pinned = "trial_seed" in params
+        for rep in range(max(1, args.num_reps)):
+            rep_params = dict(params)
+            if not seed_pinned:
+                rep_params["trial_seed"] = rep
+            if args.num_reps > 1:
+                print(f"\n[rep {rep + 1}/{args.num_reps}] trial_seed={rep_params['trial_seed']}")
+            run_single_trial(
+                script_path=script_path,
+                params=rep_params,
+                training_steps_override=args.reduced_steps,
+                timeout=args.timeout,
+            )
         return
 
     # ── Auto mode ─────────────────────────────────────────────────────────
@@ -1044,12 +1088,19 @@ def main() -> None:
                 params.update(fixed_params)
                 print(f"[Auto {i + 1}/{args.max_trials}] Fixed params: {json.dumps(fixed_params)}")
 
-            run_single_trial(
-                script_path=script_path,
-                params=params,
-                training_steps_override=args.reduced_steps,
-                timeout=args.timeout,
-            )
+            seed_pinned = "trial_seed" in params
+            for rep in range(max(1, args.num_reps)):
+                rep_params = dict(params)
+                if not seed_pinned:
+                    rep_params["trial_seed"] = rep
+                if args.num_reps > 1:
+                    print(f"  [rep {rep + 1}/{args.num_reps}] trial_seed={rep_params['trial_seed']}")
+                run_single_trial(
+                    script_path=script_path,
+                    params=rep_params,
+                    training_steps_override=args.reduced_steps,
+                    timeout=args.timeout,
+                )
 
         print("\n\nAuto-exploration complete. Full results:")
         print_analysis(script_name)

@@ -1,14 +1,16 @@
-"""Combined training script for generator (MSE) and estimator (Uniform/Langevin).
+"""Combined training script for generator (MSE + InfoNCE) and estimator (IBC InfoNCE).
 
 Uses config.json to determine which environment to train on.
 Set "active_env" in config to switch between environments.
 """
 
 import os
+import random
 import time
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import wandb
@@ -79,6 +81,34 @@ langevin_delta_clip = env_training.get(
 langevin_noise_scale = env_training.get(
     "langevin_noise_scale", langevin_config.get("noise_scale", 1.0)
 )
+
+# IBC counter-example mixture (Florence et al., 2021, §4.1).
+# Estimator's InfoNCE negatives = top-k generator CPs (existing) + uniform random
+# + Langevin-refined hard negatives. The Langevin negatives are sampled from
+# uniform initialisations and pushed UP the Q surface (i.e., toward expert-like
+# actions that aren't the expert) via gradient ascent on Q.
+num_uniform_negatives = env_training.get(
+    "num_uniform_negatives", training_shared.get("num_uniform_negatives", 32)
+)
+num_langevin_negatives = env_training.get(
+    "num_langevin_negatives", training_shared.get("num_langevin_negatives", 32)
+)
+
+# IBC gradient penalty (Florence et al., 2021, App. B; Gulrajani et al., 2017).
+# Bounds ||∇_a E(s,a)|| around a margin to give the energy local curvature.
+gradient_penalty_weight = env_training.get(
+    "gradient_penalty_weight", training_shared.get("gradient_penalty_weight", 0.0)
+)
+gradient_penalty_margin = env_training.get(
+    "gradient_penalty_margin", training_shared.get("gradient_penalty_margin", 1.0)
+)
+
+# Deterministic seeding & NaN recovery — both fight the ~33% training-divergence rate.
+trial_seed = env_training.get("trial_seed", training_shared.get("trial_seed", 0))
+nan_abort_threshold = env_training.get(
+    "nan_abort_threshold", training_shared.get("nan_abort_threshold", 50)
+)
+
 # Separation loss epsilon: must be << action-space diameter so overlapping control
 # points are strongly repelled.  Default 1.0 is too large for particle's [0,1]^2.
 separation_epsilon = env_training.get("separation_epsilon", training_shared.get("separation_epsilon", 1.0))
@@ -158,7 +188,15 @@ def load_dataset():
 
 def main():
     global learning_rate
-    
+
+    # Deterministic seeding — same trial_seed → same training trajectory across reps.
+    random.seed(trial_seed)
+    np.random.seed(trial_seed)
+    torch.manual_seed(trial_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(trial_seed)
+    print(f"trial_seed={trial_seed} (deterministic seeding applied)")
+
     # Device setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -171,7 +209,11 @@ def main():
     print(f"InfoNCE logit clamp: {infonce_logit_clamp}")
     print(f"Spectral norm (estimator): {use_spectral_norm}")
     print(f"Top-k control points as counter examples: {top_k_control_points}")
-    print(f"Langevin iterations for best-CP refinement: {langevin_num_iterations}")
+    print(f"IBC uniform negatives: {num_uniform_negatives}")
+    print(f"IBC Langevin negatives: {num_langevin_negatives} (iters={langevin_num_iterations}, "
+          f"lr={langevin_lr_init}, noise={langevin_noise_scale}, clip={langevin_delta_clip})")
+    print(f"Gradient penalty: weight={gradient_penalty_weight}, margin={gradient_penalty_margin}")
+    print(f"NaN abort threshold (consecutive bad batches): {nan_abort_threshold}")
     print(f"Frame stack: {frame_stack}")
     
     # Initialize Weights & Biases
@@ -254,10 +296,16 @@ def main():
     
     # Number of generated control points used as counter examples.
     k_cp_counter_examples = max(1, min(top_k_control_points, control_points))
-    
+
+    # IBC action-space bounds tensors (used by uniform/Langevin negatives).
+    action_min_tensor = torch.full((dataset.action_shape,), action_bounds[0], device=device)
+    action_max_tensor = torch.full((dataset.action_shape,), action_bounds[1], device=device)
+    action_range_tensor = action_max_tensor - action_min_tensor
+
     # Training timing
     start_time = time.time()
     step = 0
+    consecutive_nan_batches = 0
     
     # Cycle through dataloader indefinitely until steps are reached
     while step < training_steps:
@@ -296,50 +344,54 @@ def main():
             gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, predicted_actions_detached.shape[2])
             cp_counter_samples = torch.gather(predicted_actions_detached, dim=1, index=gather_idx)
 
-            # Optionally refine the best control point (top-1 by Q-value) via Langevin MCMC
-            # ascent on the estimator. When langevin_num_iterations == 0, skip refinement.
-            if langevin_num_iterations > 0:
-                action_min = torch.full((dataset.action_shape,), action_bounds[0], device=device)
-                action_max = torch.full((dataset.action_shape,), action_bounds[1], device=device)
+            # ─── IBC counter-example mixture ─────────────────────────────────
+            # Florence et al. 2021, §4.1: estimator should see hard negatives from
+            # multiple sources, not just the generator's own outputs. Mix:
+            #   (a) top-k CPs (above) — actions the generator says are good
+            #   (b) uniform random — easy/medium negatives covering the action box
+            #   (c) Langevin-refined — start at uniform, ascend Q to find HARD
+            #       negatives the *current estimator* believes are good.
+            extra_neg_chunks: list[torch.Tensor] = []
 
-                best_cp_gather_idx = topk_idx[:, 0:1].unsqueeze(-1).expand(
-                    -1, -1, predicted_actions_detached.shape[2]
-                )
-                best_cp = torch.gather(
-                    predicted_actions_detached, dim=1, index=best_cp_gather_idx
-                )  # (B, 1, D)
+            if num_uniform_negatives > 0:
+                uniform_neg = torch.rand(
+                    B, num_uniform_negatives, dataset.action_shape, device=device
+                ) * action_range_tensor + action_min_tensor
+                extra_neg_chunks.append(uniform_neg)
 
-                # Freeze estimator params during Langevin MCMC; gradients are only for actions.
+            langevin_neg = None
+            if num_langevin_negatives > 0 and langevin_num_iterations > 0:
+                # Freeze estimator params during MCMC: gradients flow only to actions.
                 for p in estimator.parameters():
                     p.requires_grad_(False)
 
-                # Negate estimator output so Langevin descent on this "energy"
-                # equivalently ascends on Q — raising the best CP's estimated value.
                 def _neg_energy_fn(obs_expanded_lv, actions_batch):
+                    # Q ascent ≡ descent on -Q (sample_langevin descends).
                     return -estimator(obs_expanded_lv, actions_batch).squeeze(-1)
 
-                improved_best_cp = sample_langevin(
+                langevin_neg = sample_langevin(
                     energy_function=_neg_energy_fn,
                     observations=states,
-                    num_samples=1,
-                    action_min=action_min,
-                    action_max=action_max,
+                    num_samples=num_langevin_negatives,
+                    action_min=action_min_tensor,
+                    action_max=action_max_tensor,
                     num_iterations=langevin_num_iterations,
                     lr_init=langevin_lr_init,
                     lr_final=langevin_lr_final,
                     polynomial_decay_power=langevin_decay_power,
                     delta_action_clip=langevin_delta_clip,
                     noise_scale=langevin_noise_scale,
-                    initial_actions=best_cp,
                     device=device,
                 )
 
                 for p in estimator.parameters():
                     p.requires_grad_(True)
 
-                counter_samples = torch.cat([cp_counter_samples, improved_best_cp.detach()], dim=1)
+                extra_neg_chunks.append(langevin_neg.detach())
+
+            if extra_neg_chunks:
+                counter_samples = torch.cat([cp_counter_samples] + extra_neg_chunks, dim=1)
             else:
-                improved_best_cp = None
                 counter_samples = cp_counter_samples
 
             total_counter_examples = counter_samples.shape[1]
@@ -350,18 +402,38 @@ def main():
             
             # Direct energy evaluation for InfoNCE
             energies = estimator(states_expanded, all_actions).squeeze(-1)
-            
+
             # InfoNCE loss: expert action should have the highest Q value (lowest energy equivalent)
             loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
+
+            # ─── Gradient penalty on the estimator (IBC App. B / WGAN-GP style) ─
+            # Bounds ||∇_a E(s, a)|| around `gradient_penalty_margin` so the energy
+            # has local curvature instead of an unbounded slope. Applied to the
+            # full action set (expert + negatives) so it shapes Q everywhere it's
+            # actually evaluated by the InfoNCE loss.
+            if gradient_penalty_weight > 0.0:
+                gp_actions = all_actions.detach().clone().requires_grad_(True)
+                gp_energies = estimator(states_expanded, gp_actions).squeeze(-1)
+                gp_grad = torch.autograd.grad(
+                    outputs=gp_energies.sum(),
+                    inputs=gp_actions,
+                    create_graph=True,
+                )[0]
+                grad_norms = gp_grad.flatten(start_dim=2).norm(dim=-1)
+                penalty = torch.clamp(
+                    grad_norms - gradient_penalty_margin, min=0.0
+                ).pow(2).mean()
+                loss_gradient_penalty = gradient_penalty_weight * penalty
+            else:
+                loss_gradient_penalty = torch.tensor(0.0, device=device)
 
             # Generator receives InfoNCE with opposite sign.
             # Rebuild counter samples from non-detached control points so gradients reach generator,
             # while freezing estimator parameters so this branch updates only the generator.
             cp_counter_samples_for_generator = torch.gather(predicted_actions, dim=1, index=gather_idx)
-            if improved_best_cp is not None:
+            if extra_neg_chunks:
                 counter_samples_for_generator = torch.cat(
-                    [cp_counter_samples_for_generator, improved_best_cp.detach()],
-                    dim=1,
+                    [cp_counter_samples_for_generator] + extra_neg_chunks, dim=1,
                 )
             else:
                 counter_samples_for_generator = cp_counter_samples_for_generator
@@ -373,33 +445,49 @@ def main():
             loss_infonce_generator = lossInfoNCE(energies_for_generator, logit_clamp=infonce_logit_clamp)
             for param in estimator.parameters():
                 param.requires_grad_(True)
-            
+
             if (
                 torch.isnan(loss_estimator)
                 or torch.isnan(loss_infonce_generator)
                 or torch.isnan(loss_generator)
+                or torch.isnan(loss_gradient_penalty)
             ):
-                print("NaN loss detected, skipping this batch.")
+                consecutive_nan_batches += 1
+                # Wipe Adam moment estimates so a single NaN batch doesn't poison
+                # the optimizer state and silently break the rest of training.
+                optimizer_generator.state.clear()
+                optimizer_estimator.state.clear()
+                if consecutive_nan_batches >= nan_abort_threshold:
+                    print(
+                        f"NaN loss for {consecutive_nan_batches} consecutive batches "
+                        f"(>= threshold {nan_abort_threshold}). Aborting training."
+                    )
+                    raise RuntimeError(
+                        f"Training diverged: {consecutive_nan_batches} consecutive NaN batches"
+                    )
+                if consecutive_nan_batches % 10 == 1:
+                    print(f"NaN loss detected (run {consecutive_nan_batches}); cleared optimizer state, continuing.")
                 continue
-            
+            consecutive_nan_batches = 0
+
             # ==================== Update Models ====================
             optimizer_estimator.zero_grad()
             optimizer_generator.zero_grad()
-            
-            loss_estimator_total = info_nce_weight * loss_estimator
+
+            loss_estimator_total = info_nce_weight * loss_estimator + loss_gradient_penalty
             loss_generator_total = loss_generator - generator_infonce_weight * loss_infonce_generator
             total_loss = loss_generator_total + loss_estimator_total
             total_loss.backward()
-            
+
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(control_point_generator.parameters(), 1.0)
             torch.nn.utils.clip_grad_norm_(estimator.parameters(), 1.0)
-            
+
             optimizer_estimator.step()
             optimizer_generator.step()
             scheduler_generator.step()
             scheduler_estimator.step()
-            
+
             step += 1
             
             # Logging
@@ -416,14 +504,16 @@ def main():
                       f"(MSE: {loss_mse.item():.4f}, "
                       f"Sep: {loss_sep.item():.4f}, "
                       f"EST: {loss_estimator.item():.4f}, "
+                      f"GP: {loss_gradient_penalty.item():.4f}, "
                       f"GEN_INF_ONCE(-): {loss_infonce_generator.item():.4f}, "
                       f"Acc: {accuracy:.3f}) | LR: {current_lr:.2e} | {elapsed:.1f}s")
-                
+
                 log_dict = {
                     "step": step,
                     "loss/total": total_loss.item(),
                     "loss/generator": loss_generator_total.item(),
                     "loss/estimator": loss_estimator.item(),
+                    "loss/gradient_penalty": loss_gradient_penalty.item(),
                     "loss/infonce_generator_opposite": loss_infonce_generator.item(),
                     "loss/mse": loss_mse.item(),
                     "loss/separation": loss_sep.item(),

@@ -2,6 +2,8 @@
 
 Uses config.json to determine which environment to train on.
 Set "active_env" in config to switch between environments.
+
+Combinedv2_cpascounter backup
 """
 
 import os
@@ -14,12 +16,17 @@ import torch.nn as nn
 import wandb
 
 from utils.models import ControlPointGenerator, QEstimator
-from utils.loss import lossInfoNCE, lossMSE, lossSeparation
-from utils.normalizations import wireFittingInterpolation, ObservationNormalizer
-from utils.sampling import sample_uniform, sample_langevin
+from utils.loss import lossInfoNCE, lossMSE, lossSeparation, lossEntropyKDE
+from utils.normalizations import ObservationNormalizer
+from utils.sampling import sample_langevin
 
-# Load config
-config_path = Path(__file__).parent / "config_json" / "config.json"
+# Load config. When driven by hyperparam_search.py, Q3C_CONFIG_PATH points at a
+# per-trial config file — that's how parallel hyperparam trials avoid racing on
+# the shared config.json. Falls back to the default path for standalone runs.
+config_path = Path(
+    os.environ.get("Q3C_CONFIG_PATH")
+    or (Path(__file__).parent / "config_json" / "config.json")
+)
 with open(config_path, "r") as f:
     config = json.load(f)
 
@@ -31,33 +38,88 @@ env_training = env_config.get("training", {})
 env_model = env_config.get("model", {})
 
 # Training parameters (merge env-specific with shared, env-specific takes priority)
-training_steps = env_training.get("training_steps", training_shared.get("training_steps", 50000))
-learning_rate = env_training.get("learning_rate", training_shared.get("learning_rate", 0.0005))
+training_steps = env_training.get("training_steps", training_shared.get("training_steps", 100000))
 batch_size = env_training.get("batch_size", training_shared.get("batch_size", 128))
-smoothing_param = training_shared.get("smoothing_param", 0.1)
-smoothing_param_trainable = training_shared.get("smoothing_param_trainable", False)
-use_wire_fitting = training_shared.get("use_wire_fitting", True)
-separation_weight = training_shared.get("separation_weight", 10)
-lr_decay = training_shared.get("lr_decay", 0.99)
+learning_rate = env_training.get("learning_rate", training_shared.get("learning_rate", 1e-3))
+
+# Q3C IBC Loss parameters
+separation_weight = training_shared.get("separation_weight", 0.1)
+mse_weight = training_shared.get("mse_weight", 1.0)
+info_nce_weight = training_shared.get("info_nce_weight", 1.0)
+generator_infonce_weight = env_training.get(
+    "generator_infonce_weight",
+    training_shared.get("generator_infonce_weight", 0.05),
+)
+
 MODEL_SAVE_DIR = training_shared.get("model_save_dir", "checkpoints")
 log_interval = training_shared.get("log_interval", 1000)
 save_interval = training_shared.get("save_interval", 10000)
-lr_decay_interval = training_shared.get("lr_decay_interval", 100)
-num_counter_examples = env_training.get("counter_examples", training_shared.get("counter_examples", 8))
-top_k_control_points = min(
-    env_training.get("top_k_control_points", training_shared.get("top_k_control_points", 10)),
-    env_model.get("control_points", 50)
-)
-sampling_method = env_training.get("sampling_method", training_shared.get("sampling_method", "uniform"))
 
-# Langevin config
+sampling_method = env_training.get("sampling_method", training_shared.get("sampling_method", "uniform"))
+top_k_control_points = env_training.get(
+    "top_k_control_points",
+    training_shared.get("top_k_control_points", 64),
+)
+
 langevin_config = env_model.get("langevin_config", {})
-langevin_num_iterations = langevin_config.get("num_iterations", 50)
-langevin_lr_init = langevin_config.get("lr_init", 0.1)
-langevin_lr_final = langevin_config.get("lr_final", 1e-5)
-langevin_decay_power = langevin_config.get("polynomial_decay_power", 2.0)
-langevin_delta_clip = langevin_config.get("delta_action_clip", 0.1)
-langevin_noise_scale = langevin_config.get("noise_scale", 1.0)
+# Each langevin hyperparam: env_training.langevin_* override wins over
+# env_model.langevin_config.* default. Keeps hyperparam_search's SEARCH_SPACE
+# entries (langevin_lr_init, ..., langevin_decay_power) effective without
+# touching the nested config block.
+langevin_num_iterations = env_training.get(
+    "langevin_num_iterations",
+    langevin_config.get("num_iterations", 50),
+)
+langevin_lr_init = env_training.get("langevin_lr_init", langevin_config.get("lr_init", 0.1))
+langevin_lr_final = env_training.get("langevin_lr_final", langevin_config.get("lr_final", 1e-5))
+langevin_decay_power = env_training.get(
+    "langevin_decay_power", langevin_config.get("polynomial_decay_power", 2.0)
+)
+langevin_delta_clip = env_training.get(
+    "langevin_delta_clip", langevin_config.get("delta_action_clip", 0.1)
+)
+langevin_noise_scale = env_training.get(
+    "langevin_noise_scale", langevin_config.get("noise_scale", 1.0)
+)
+# Separation loss epsilon: must be << action-space diameter so overlapping control
+# points are strongly repelled.  Default 1.0 is too large for particle's [0,1]^2.
+separation_epsilon = env_training.get("separation_epsilon", training_shared.get("separation_epsilon", 1.0))
+separation_loss_type = env_training.get("separation_loss", training_shared.get("separation_loss", "separation"))
+entropy_bandwidth = env_training.get("entropy_bandwidth", training_shared.get("entropy_bandwidth", 0.1))
+
+# S1: Separate LR for estimator (defaults to same as generator)
+estimator_learning_rate = env_training.get(
+    "estimator_learning_rate",
+    training_shared.get("estimator_learning_rate", learning_rate),
+)
+
+# S2: Scheduler type — "cosine" (default) or "cosine_warm_restarts"
+scheduler_type = env_training.get(
+    "scheduler_type",
+    training_shared.get("scheduler_type", "cosine"),
+)
+cosine_t0 = env_training.get(
+    "cosine_t0",
+    training_shared.get("cosine_t0", 50000),
+)
+
+# S4: InfoNCE logit clamp — lower values keep gradients flowing
+infonce_logit_clamp = env_training.get(
+    "infonce_logit_clamp",
+    training_shared.get("infonce_logit_clamp", 50.0),
+)
+
+# S6: Spectral norm on estimator
+use_spectral_norm = env_model.get(
+    "use_spectral_norm",
+    training_shared.get("use_spectral_norm", False),
+)
+
+# S7: Override cosine T_max (defaults to training_steps)
+cosine_t_max = env_training.get(
+    "cosine_t_max",
+    training_shared.get("cosine_t_max", None),
+)
 
 # Model parameters
 control_points = env_model.get("control_points", 50)
@@ -105,8 +167,13 @@ def main():
     print(f"Active environment: {active_env}")
     print(f"Training steps: {training_steps}")
     print(f"Batch size: {batch_size}")
-    print(f"Learning rate: {learning_rate}")
-    print(f"Sampling method: {sampling_method}")
+    print(f"Learning rate (generator): {learning_rate}")
+    print(f"Learning rate (estimator): {estimator_learning_rate}")
+    print(f"Scheduler: {scheduler_type}")
+    print(f"InfoNCE logit clamp: {infonce_logit_clamp}")
+    print(f"Spectral norm (estimator): {use_spectral_norm}")
+    print(f"Top-k control points as counter examples: {top_k_control_points}")
+    print(f"Langevin iterations for best-CP refinement: {langevin_num_iterations}")
     print(f"Frame stack: {frame_stack}")
     
     # Initialize Weights & Biases
@@ -124,6 +191,21 @@ def main():
     print(f"Loading {active_env} dataset...")
     dataset = load_dataset()
     print(f"Dataset size: {len(dataset)}")
+
+    if active_env == "particle" and hasattr(dataset, "_episode_starts"):
+        episode_starts = int(dataset._episode_starts.sum())
+        tfrecord_count = len(getattr(dataset, "tfrecord_files", []))
+        avg_episode_length = len(dataset) / max(episode_starts, 1)
+        print(
+            f"Particle dataset episodes: {episode_starts} | "
+            f"Avg samples/episode: {avg_episode_length:.2f}"
+        )
+        if tfrecord_count and episode_starts <= tfrecord_count:
+            raise RuntimeError(
+                "Particle dataset episode boundary parsing looks wrong: "
+                f"detected {episode_starts} episode starts across {tfrecord_count} TFRecord files. "
+                "This usually means step_type decoding failed and frame stacking would mix episodes."
+            )
     
     # Create models
     control_point_generator = ControlPointGenerator(
@@ -136,29 +218,44 @@ def main():
     
     estimator = QEstimator(
         state_dim=dataset.state_shape,
-        action_dim=dataset.action_shape, 
-        hidden_dims=[num_neurons for _ in range(num_hidden_layers)]
+        action_dim=dataset.action_shape,
+        hidden_dims=[num_neurons for _ in range(num_hidden_layers)],
+        use_spectral_norm=use_spectral_norm,
     ).to(device)
     
-    # Smoothing parameter
-    if smoothing_param_trainable:
-        smoothing_param_tensor = nn.Parameter(torch.tensor(smoothing_param, device=device))
-        optimizer_estimator = torch.optim.AdamW(
-            list(estimator.parameters()) + [smoothing_param_tensor], lr=learning_rate
+    optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
+    optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=estimator_learning_rate)
+
+    # Learning Rate Schedules
+    effective_t_max = cosine_t_max if cosine_t_max is not None else training_steps
+    if scheduler_type == "cosine_warm_restarts":
+        scheduler_generator = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer_generator, T_0=cosine_t0, eta_min=1e-6
+        )
+        scheduler_estimator = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer_estimator, T_0=cosine_t0, eta_min=1e-6
         )
     else:
-        smoothing_param_tensor = torch.tensor(smoothing_param, device=device)
-        optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=learning_rate)
+        scheduler_generator = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer_generator, T_max=effective_t_max, eta_min=1e-6
+        )
+        scheduler_estimator = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer_estimator, T_max=effective_t_max, eta_min=1e-6
+        )
     
-    optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
     # Observation normalizer
-    obs_normalizer = ObservationNormalizer(env_id=env_id, device=device, frame_stack=frame_stack)
+    particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
+    obs_normalizer = ObservationNormalizer(
+        env_id=env_id,
+        device=device,
+        frame_stack=frame_stack,
+        particle_n_dim=particle_n_dim,
+    )
     
-    # Action bounds for counter-example sampling
-    action_min = action_bounds[0]
-    action_max = action_bounds[1]
+    # Number of generated control points used as counter examples.
+    k_cp_counter_examples = max(1, min(top_k_control_points, control_points))
     
     # Training timing
     start_time = time.time()
@@ -174,111 +271,177 @@ def main():
             states = batch['state'].float().to(device)
             states = obs_normalizer.normalize(states)
             actions = batch['action'].float().to(device)
+            B = states.shape[0]
             
-            # ==================== Generator Training (MSE) ====================
+            # ==================== Generator Loss (MSE + Separation) ====================
             predicted_actions = control_point_generator(states)
-            loss_mse = lossMSE(predicted_actions, actions)
-            loss_sep = separation_weight * lossSeparation(predicted_actions)
+            # Both lossMSE and lossSeparation return SUMS over the batch.
+            # We divide by B to make them MEANs over the batch, matching InfoNCE.
+            loss_mse = mse_weight * (lossMSE(predicted_actions, actions) / B)
+            if separation_loss_type == "entropy":
+                loss_sep = separation_weight * lossEntropyKDE(predicted_actions, bandwidth=entropy_bandwidth)
+            elif separation_loss_type == "separation":
+                loss_sep = separation_weight * (lossSeparation(predicted_actions, epsilon=separation_epsilon) / B)
+            else:
+                raise ValueError(f"Unknown separation_loss '{separation_loss_type}'. Expected 'separation' or 'entropy'.")
             loss_generator = loss_mse + loss_sep
             
-            optimizer_generator.zero_grad()
-            loss_generator.backward()
-            optimizer_generator.step()
-            
-            # ==================== Estimator Training (Uniform/Langevin Sampling) ====================
+            # ==================== Estimator Training (Direct InfoNCE) ====================
+            # Use top-k generated control points directly as counter examples.
+            # Detach control points so InfoNCE loss gradients only flow to estimator, not generator.
+            predicted_actions_detached = predicted_actions.detach()
             with torch.no_grad():
-                predicted_actions_for_est = control_point_generator(states).detach()
-            
-            # Expand states to match control points
-            states_expanded = states.unsqueeze(1).expand(-1, predicted_actions_for_est.shape[1], -1)
-            estimations = estimator(states_expanded, predicted_actions_for_est).squeeze(-1)
-            
-            # Generate counter-example samples
-            if sampling_method == "langevin":
-                action_min_tensor = torch.full((actions.shape[1],), action_min, device=device)
-                action_max_tensor = torch.full((actions.shape[1],), action_max, device=device)
-                
-                def energy_fn(obs, act):
-                    return -estimator(obs, act).squeeze(-1)
-                
-                counter_samples = sample_langevin(
-                    energy_function=energy_fn,
+                states_for_cp = states.unsqueeze(1).expand(-1, predicted_actions_detached.shape[1], -1)
+                cp_q_values = estimator(states_for_cp, predicted_actions_detached).squeeze(-1)
+                topk_idx = torch.topk(cp_q_values, k=k_cp_counter_examples, dim=1).indices
+
+            gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, predicted_actions_detached.shape[2])
+            cp_counter_samples = torch.gather(predicted_actions_detached, dim=1, index=gather_idx)
+
+            # Optionally refine the best control point (top-1 by Q-value) via Langevin MCMC
+            # ascent on the estimator. When langevin_num_iterations == 0, skip refinement.
+            if langevin_num_iterations > 0:
+                action_min = torch.full((dataset.action_shape,), action_bounds[0], device=device)
+                action_max = torch.full((dataset.action_shape,), action_bounds[1], device=device)
+
+                best_cp_gather_idx = topk_idx[:, 0:1].unsqueeze(-1).expand(
+                    -1, -1, predicted_actions_detached.shape[2]
+                )
+                best_cp = torch.gather(
+                    predicted_actions_detached, dim=1, index=best_cp_gather_idx
+                )  # (B, 1, D)
+
+                # Freeze estimator params during Langevin MCMC; gradients are only for actions.
+                for p in estimator.parameters():
+                    p.requires_grad_(False)
+
+                # Negate estimator output so Langevin descent on this "energy"
+                # equivalently ascends on Q — raising the best CP's estimated value.
+                def _neg_energy_fn(obs_expanded_lv, actions_batch):
+                    return -estimator(obs_expanded_lv, actions_batch).squeeze(-1)
+
+                improved_best_cp = sample_langevin(
+                    energy_function=_neg_energy_fn,
                     observations=states,
-                    num_samples=num_counter_examples,
-                    action_min=action_min_tensor,
-                    action_max=action_max_tensor,
+                    num_samples=1,
+                    action_min=action_min,
+                    action_max=action_max,
                     num_iterations=langevin_num_iterations,
                     lr_init=langevin_lr_init,
                     lr_final=langevin_lr_final,
                     polynomial_decay_power=langevin_decay_power,
                     delta_action_clip=langevin_delta_clip,
                     noise_scale=langevin_noise_scale,
-                    device=device
+                    initial_actions=best_cp,
+                    device=device,
+                )
+
+                for p in estimator.parameters():
+                    p.requires_grad_(True)
+
+                counter_samples = torch.cat([cp_counter_samples, improved_best_cp.detach()], dim=1)
+            else:
+                improved_best_cp = None
+                counter_samples = cp_counter_samples
+
+            total_counter_examples = counter_samples.shape[1]
+            
+            # Concatenate expert action (index 0) with counter-examples
+            all_actions = torch.cat([actions.unsqueeze(1), counter_samples], dim=1)
+            states_expanded = states.unsqueeze(1).expand(-1, 1 + total_counter_examples, -1)
+            
+            # Direct energy evaluation for InfoNCE
+            energies = estimator(states_expanded, all_actions).squeeze(-1)
+            
+            # InfoNCE loss: expert action should have the highest Q value (lowest energy equivalent)
+            loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
+
+            # Generator receives InfoNCE with opposite sign.
+            # Rebuild counter samples from non-detached control points so gradients reach generator,
+            # while freezing estimator parameters so this branch updates only the generator.
+            cp_counter_samples_for_generator = torch.gather(predicted_actions, dim=1, index=gather_idx)
+            if improved_best_cp is not None:
+                counter_samples_for_generator = torch.cat(
+                    [cp_counter_samples_for_generator, improved_best_cp.detach()],
+                    dim=1,
                 )
             else:
-                # Uniform sampling
-                counter_samples = sample_uniform(
-                    num_counter_examples,
-                    states.shape[0],
-                    [action_min for _ in range(actions.shape[1])],
-                    [action_max for _ in range(actions.shape[1])]
-                )
-                counter_samples = torch.from_numpy(counter_samples).float().to(device)
+                counter_samples_for_generator = cp_counter_samples_for_generator
+
+            all_actions_for_generator = torch.cat([actions.unsqueeze(1), counter_samples_for_generator], dim=1)
+            for param in estimator.parameters():
+                param.requires_grad_(False)
+            energies_for_generator = estimator(states_expanded, all_actions_for_generator).squeeze(-1)
+            loss_infonce_generator = lossInfoNCE(energies_for_generator, logit_clamp=infonce_logit_clamp)
+            for param in estimator.parameters():
+                param.requires_grad_(True)
             
-            interpolated_points = torch.cat([actions.unsqueeze(1), counter_samples], dim=1)
-            interpolated_estimations = wireFittingInterpolation(
-                control_points=predicted_actions_for_est,
-                interpolated_points=interpolated_points,
-                control_point_values=estimations,
-                c=smoothing_param_tensor.expand(states.shape[0], predicted_actions_for_est.shape[1]),
-                k=top_k_control_points,
-            )
-            
-            loss_estimator = lossInfoNCE(interpolated_estimations)
-            
-            if torch.isnan(loss_estimator):
+            if (
+                torch.isnan(loss_estimator)
+                or torch.isnan(loss_infonce_generator)
+                or torch.isnan(loss_generator)
+            ):
                 print("NaN loss detected, skipping this batch.")
                 continue
             
+            # ==================== Update Models ====================
             optimizer_estimator.zero_grad()
-            loss_estimator.backward()
+            optimizer_generator.zero_grad()
+            
+            loss_estimator_total = info_nce_weight * loss_estimator
+            loss_generator_total = loss_generator - generator_infonce_weight * loss_infonce_generator
+            total_loss = loss_generator_total + loss_estimator_total
+            total_loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(control_point_generator.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(estimator.parameters(), 1.0)
+            
             optimizer_estimator.step()
+            optimizer_generator.step()
+            scheduler_generator.step()
+            scheduler_estimator.step()
             
             step += 1
             
-            # Decay learning rate
-            if step % lr_decay_interval == 0:
-                learning_rate *= lr_decay
-                optimizer_generator.param_groups[0]['lr'] = learning_rate
-                optimizer_estimator.param_groups[0]['lr'] = learning_rate
-            
             # Logging
             if step % log_interval == 0:
-                batch_size_actual = states.shape[0]
-                loss_est_per_sample = loss_estimator.item() / batch_size_actual
+                current_lr = scheduler_generator.get_last_lr()[0]
+                
+                # Compute accuracy of estimator
+                with torch.no_grad():
+                    best_idx = energies.argmax(dim=1)
+                    accuracy = (best_idx == 0).float().mean().item()
+                    
                 elapsed = time.time() - start_time
-                print(f"Step {step}/{training_steps} | Loss Gen: {loss_generator.item():.4f}, "
-                      f"Loss Est: {loss_est_per_sample:.4f} | LR: {learning_rate:.2e} | Elapsed: {elapsed:.1f}s")
+                print(f"Step {step}/{training_steps} | Total: {total_loss.item():.4f} "
+                      f"(MSE: {loss_mse.item():.4f}, "
+                      f"Sep: {loss_sep.item():.4f}, "
+                      f"EST: {loss_estimator.item():.4f}, "
+                      f"GEN_INF_ONCE(-): {loss_infonce_generator.item():.4f}, "
+                      f"Acc: {accuracy:.3f}) | LR: {current_lr:.2e} | {elapsed:.1f}s")
                 
                 log_dict = {
                     "step": step,
-                    "loss/generator": loss_generator.item() / batch_size_actual,
-                    "loss/estimator": loss_est_per_sample,
-                    "loss/mse": loss_mse.item() / batch_size_actual,
-                    "loss/separation": loss_sep.item() / batch_size_actual,
-                    "learning_rate": learning_rate,
+                    "loss/total": total_loss.item(),
+                    "loss/generator": loss_generator_total.item(),
+                    "loss/estimator": loss_estimator.item(),
+                    "loss/infonce_generator_opposite": loss_infonce_generator.item(),
+                    "loss/mse": loss_mse.item(),
+                    "loss/separation": loss_sep.item(),
+                    "metric/accuracy": accuracy,
+                    "learning_rate": current_lr,
                 }
-                if smoothing_param_trainable:
-                    log_dict["smoothing_param"] = smoothing_param_tensor.item()
                 wandb.log(log_dict)
             
-            # Save checkpoint
+            # Save checkpoint (overwrite the same file each interval so we
+            # don't accumulate one .pt per step across long runs).
             if step % save_interval == 0:
                 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-                torch.save(control_point_generator.state_dict(), 
-                          os.path.join(MODEL_SAVE_DIR, f"control_point_generator_step_{step}.pt"))
-                torch.save(estimator.state_dict(), 
-                          os.path.join(MODEL_SAVE_DIR, f"q_estimator_step_{step}.pt"))
+                torch.save(control_point_generator.state_dict(),
+                           os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
+                torch.save(estimator.state_dict(),
+                           os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
     
     # Training complete
     total_time = time.time() - start_time
@@ -289,14 +452,11 @@ def main():
     torch.save(control_point_generator.state_dict(), os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
     torch.save(estimator.state_dict(), os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
     
-    if smoothing_param_trainable:
-        torch.save(smoothing_param_tensor, os.path.join(MODEL_SAVE_DIR, "smoothing_param.pt"))
-        print(f"Learned smoothing_param: {smoothing_param_tensor.item():.6f}")
-    else:
-        smoothing_param_path = os.path.join(MODEL_SAVE_DIR, "smoothing_param.pt")
-        if os.path.exists(smoothing_param_path):
-            os.remove(smoothing_param_path)
-            print(f"Removed stale {smoothing_param_path}")
+    # Remove stale smoothing param if exists
+    smoothing_param_path = os.path.join(MODEL_SAVE_DIR, "smoothing_param.pt")
+    if os.path.exists(smoothing_param_path):
+        os.remove(smoothing_param_path)
+        print(f"Removed stale {smoothing_param_path}")
     
     print(f"Models saved to {MODEL_SAVE_DIR}/")
     
@@ -304,14 +464,10 @@ def main():
     artifact = wandb.Artifact("model-checkpoints", type="model")
     artifact.add_file(os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
     artifact.add_file(os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
-    if smoothing_param_trainable:
-        artifact.add_file(os.path.join(MODEL_SAVE_DIR, "smoothing_param.pt"))
     wandb.log_artifact(artifact)
     
     # Log final metrics
     wandb.summary["total_training_time_min"] = total_time / 60
-    if smoothing_param_trainable:
-        wandb.summary["final_smoothing_param"] = smoothing_param_tensor.item()
     
     wandb.finish()
 
