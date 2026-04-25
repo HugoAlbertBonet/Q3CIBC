@@ -217,7 +217,9 @@ SEARCH_SPACE: dict[str, dict] = {
         "location": "training_shared",
     },
     "gradient_penalty_margin": {
-        "values": [0.5, 1.0, 2.0],
+        # 0.05–0.2 is the firing range for our 2x256 MLP on [0,1]^8;
+        # 0.5–2.0 stays in line with the IBC paper at larger scales.
+        "values": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0],
         "type": "float",
         "location": "training_shared",
     },
