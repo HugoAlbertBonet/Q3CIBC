@@ -23,6 +23,12 @@ Separation variants (``separation_loss``):
 Toggle ``exclude_top_from_separation`` to detach the top-Q CP's contribution
 to the separation/coverage term, letting it sit exactly at the argmax-Q point
 while non-top CPs still get repelled from its location.
+
+Set ``noisy_expert_count > 0`` (with ``noisy_expert_std``) to add small
+Gaussian-noise perturbations of the dataset expert as extra counter-examples
+in both InfoNCE losses. Sharpens the Q-peak locally so CPs can land exactly
+at the expert rather than near it (addresses "close but not close enough" in
+high-D action spaces).
 """
 
 import os
@@ -108,6 +114,19 @@ LR_DECAY_STEPS = 100
 NUM_COUNTER_EXAMPLES = env_training.get(
     "counter_examples",
     training_shared.get("counter_examples", 16),
+)
+# Near-expert counter-examples: actions sampled by adding small Gaussian noise
+# to the dataset expert action (in the estimator's normalised [0,1] space).
+# Used as additional negatives in BOTH the estimator's and the generator's
+# InfoNCE — they sharpen the Q-peak locally so the top CP can land exactly at
+# the expert rather than merely near it. Set count=0 to disable.
+NOISY_EXPERT_COUNT = env_training.get(
+    "noisy_expert_count",
+    training_shared.get("noisy_expert_count", 0),
+)
+NOISY_EXPERT_STD = env_training.get(
+    "noisy_expert_std",
+    training_shared.get("noisy_expert_std", 0.05),
 )
 LANGEVIN_TRAIN_ITERATIONS = 100
 LANGEVIN_STEPSIZE_INIT = 0.1
@@ -238,6 +257,7 @@ def main():
     print(f"Estimator LR: {ESTIMATOR_LEARNING_RATE} (exponential decay: rate={LR_DECAY_RATE}, every {LR_DECAY_STEPS} steps)")
     print(f"Estimator architecture: MLP {ESTIMATOR_HIDDEN_DIMS}")
     print(f"Langevin counter-examples: {NUM_COUNTER_EXAMPLES} ({LANGEVIN_TRAIN_ITERATIONS} iters)")
+    print(f"Noisy-expert counter-examples: {NOISY_EXPERT_COUNT} (std={NOISY_EXPERT_STD})")
     print(f"Gradient penalty margin: {GRADIENT_MARGIN}")
     print(f"Target estimator sync: every {TARGET_UPDATE_INTERVAL} steps")
     print(f"Separation loss: {separation_loss_type} (exclude_top={exclude_top_from_separation})")
@@ -258,6 +278,8 @@ def main():
             "softmax_temperature": SOFTMAX_TEMPERATURE,
             "target_update_interval": TARGET_UPDATE_INTERVAL,
             "exclude_top_from_separation": exclude_top_from_separation,
+            "noisy_expert_count": NOISY_EXPERT_COUNT,
+            "noisy_expert_std": NOISY_EXPERT_STD,
         },
         name=f"{active_env}_ibc_with_cps_cp{control_points}_lr{generator_learning_rate}",
     )
@@ -381,7 +403,28 @@ def main():
             langevin_counter = langevin_counter_examples(
                 estimator, states_norm, device
             )  # (B, N_lang, action_dim) in normalized space
-            n_counter = langevin_counter.shape[1]
+
+            # Optional near-expert counter-examples: small Gaussian-noise
+            # perturbations of the dataset expert action. Sharpens the Q-peak
+            # locally so CPs can land precisely at the expert rather than near.
+            if NOISY_EXPERT_COUNT > 0:
+                noise = (
+                    torch.randn(
+                        B, NOISY_EXPERT_COUNT, action_dim, device=device
+                    )
+                    * NOISY_EXPERT_STD
+                )
+                noisy_expert_negs = (actions_norm.unsqueeze(1) + noise).clamp(
+                    0.0 - UNIFORM_BOUNDARY_BUFFER,
+                    1.0 + UNIFORM_BOUNDARY_BUFFER,
+                )
+                combined_negs = torch.cat(
+                    [langevin_counter, noisy_expert_negs], dim=1
+                )
+            else:
+                combined_negs = langevin_counter
+
+            n_counter = combined_negs.shape[1]
 
             # ============================================================
             # Generator loss: InfoNCE with top CP as expert and Langevin
@@ -400,12 +443,13 @@ def main():
                 q_cps_det = target_estimator(obs_expanded_cp, cp_norm.detach()).squeeze(-1)
                 top_idx = q_cps_det.argmax(dim=1)  # (B,)
 
-            # Step 2 (grad): top CP (with grad) vs Langevin negatives (detached).
-            # Fancy indexing keeps gradient flowing only through the top slot.
+            # Step 2 (grad): top CP (with grad) vs Langevin (+ optional noisy
+            # expert) negatives (detached). Fancy indexing keeps gradient
+            # flowing only through the top slot.
             top_cp = cp_norm[torch.arange(B, device=device), top_idx]  # (B, A)
             gen_all_actions = torch.cat(
-                [top_cp.unsqueeze(1), langevin_counter.detach()], dim=1
-            )  # (B, 1+N_lang, A)
+                [top_cp.unsqueeze(1), combined_negs.detach()], dim=1
+            )  # (B, 1+N_neg, A)
             gen_states_expanded = states_norm.unsqueeze(1).expand(-1, 1 + n_counter, -1)
 
             q_gen = target_estimator(gen_states_expanded, gen_all_actions).squeeze(-1)
@@ -464,14 +508,15 @@ def main():
 
             # ============================================================
             # Estimator loss: InfoNCE (Q-value convention) + gradient penalty
-            # Counter-examples: Langevin hard-negatives ONLY (no CPs).
+            # Counter-examples: Langevin hard-negatives + optional noisy
+            # expert perturbations. No CPs.
             # Expert at index 0 (matches lossInfoNCE convention).
             # ============================================================
 
             # Expert at index 0 (Q-value convention; matches utils.loss.lossInfoNCE)
             all_actions = torch.cat(
-                [actions_norm.unsqueeze(1), langevin_counter], dim=1
-            )  # (B, 1+N_lang, action_dim)
+                [actions_norm.unsqueeze(1), combined_negs], dim=1
+            )  # (B, 1+N_neg, action_dim)
 
             states_expanded = states_norm.unsqueeze(1).expand(-1, 1 + n_counter, -1)
 
