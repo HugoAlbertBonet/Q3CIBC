@@ -96,12 +96,23 @@ num_langevin_negatives = env_training.get(
 
 # IBC gradient penalty (Florence et al., 2021, App. B; Gulrajani et al., 2017).
 # Bounds ||∇_a E(s,a)|| around a margin to give the energy local curvature.
+# - "hinge" (IBC paper): max(0, ||grad|| - margin)^2  — bounds gradients above margin.
+#                        Inactive while ||grad|| < margin (typical at initialization).
+# - "target" (WGAN-GP): (||grad|| - margin)^2 — pushes gradients toward exactly margin
+#                       in BOTH directions. Always fires; more aggressive shaping.
 gradient_penalty_weight = env_training.get(
     "gradient_penalty_weight", training_shared.get("gradient_penalty_weight", 0.0)
 )
 gradient_penalty_margin = env_training.get(
     "gradient_penalty_margin", training_shared.get("gradient_penalty_margin", 1.0)
 )
+gradient_penalty_form = env_training.get(
+    "gradient_penalty_form", training_shared.get("gradient_penalty_form", "hinge")
+)
+if gradient_penalty_form not in ("hinge", "target"):
+    raise ValueError(
+        f"gradient_penalty_form must be 'hinge' or 'target', got {gradient_penalty_form!r}"
+    )
 
 # Deterministic seeding & NaN recovery — both fight the ~33% training-divergence rate.
 trial_seed = env_training.get("trial_seed", training_shared.get("trial_seed", 0))
@@ -212,7 +223,7 @@ def main():
     print(f"IBC uniform negatives: {num_uniform_negatives}")
     print(f"IBC Langevin negatives: {num_langevin_negatives} (iters={langevin_num_iterations}, "
           f"lr={langevin_lr_init}, noise={langevin_noise_scale}, clip={langevin_delta_clip})")
-    print(f"Gradient penalty: weight={gradient_penalty_weight}, margin={gradient_penalty_margin}")
+    print(f"Gradient penalty: weight={gradient_penalty_weight}, margin={gradient_penalty_margin}, form={gradient_penalty_form}")
     print(f"NaN abort threshold (consecutive bad batches): {nan_abort_threshold}")
     print(f"Frame stack: {frame_stack}")
     
@@ -420,9 +431,13 @@ def main():
                     create_graph=True,
                 )[0]
                 grad_norms = gp_grad.flatten(start_dim=2).norm(dim=-1)
-                penalty = torch.clamp(
-                    grad_norms - gradient_penalty_margin, min=0.0
-                ).pow(2).mean()
+                if gradient_penalty_form == "hinge":
+                    # IBC-faithful: only penalize gradients ABOVE the margin.
+                    penalty = torch.clamp(
+                        grad_norms - gradient_penalty_margin, min=0.0
+                    ).pow(2).mean()
+                else:  # "target" — WGAN-GP: drive gradients toward the margin from both sides.
+                    penalty = (grad_norms - gradient_penalty_margin).pow(2).mean()
                 loss_gradient_penalty = gradient_penalty_weight * penalty
             else:
                 loss_gradient_penalty = torch.tensor(0.0, device=device)
