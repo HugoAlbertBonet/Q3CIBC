@@ -112,6 +112,16 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "bool",
         "location": "training_shared",
     },
+    "noisy_expert_count": {
+        "values": [0, 4, 8, 16],
+        "type": "int",
+        "location": "training_shared",
+    },
+    "noisy_expert_std": {
+        "values": [0.02, 0.05, 0.1, 0.2],
+        "type": "float",
+        "location": "training_shared",
+    },
     "entropy_bandwidth": {
         "values": [0.05, 0.1, 0.2],
         "type": "float",
@@ -221,6 +231,13 @@ SEARCH_SPACE: dict[str, dict] = {
         # 0.5–2.0 stays in line with the IBC paper at larger scales.
         "values": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0],
         "type": "float",
+        "location": "training_shared",
+    },
+    "gradient_penalty_form": {
+        # "hinge"  = IBC-faithful one-sided: penalty = max(0, |grad|-margin)^2
+        # "target" = WGAN-GP two-sided:      penalty = (|grad|-margin)^2
+        "values": ["hinge", "target"],
+        "type": "str",
         "location": "training_shared",
     },
     # Deterministic seed — searchable so we can run reps with seed=0,1,2,...
