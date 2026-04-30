@@ -9,23 +9,23 @@
 #SBATCH --mem=8G
 #SBATCH --time=25:00:00
 
-# IBC-DFO @ n_dim=32 — paper-faithful starter batch (4 runs).
-# Architecture: HIDDEN_DIMS=[256,256]  (paper particle config — UNCHANGED).
-# Exp A = paper baseline, NUM_COUNTER_EXAMPLES=16.
-# Exp B = paper baseline + doubled counter-examples (16→32), to match the
-#         doubled action dimensionality (8→32).
+# IBC-DFO @ n_dim=32 — batch 2: scale training compute.
+# Exp C = paper baseline + 2× training steps (CE=16, steps=200k).
+# Exp D = paper baseline + 4× counter-examples (CE=64, steps=100k).
+# Architecture (256×2) and inference Langevin (512 samples × 100 iters) UNCHANGED.
 
-# === Exp A — paper baseline, seed 1 === DONE
-#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 1, "NUM_COUNTER_EXAMPLES": 16}'
+# === Exp C — longer training (TRAINING_STEPS=200k), seed 1 === DONE
+#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 1, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 200000}'
 
-# === Exp A — paper baseline, seed 2 === DONE
-#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 2, "NUM_COUNTER_EXAMPLES": 16}'
+# === Exp C — longer training, seed 2 === DONE
+#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 2, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 200000}'
 
-# === Exp B — paper baseline + 2× counter-examples, seed 1 ===DONE
-#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 1, "NUM_COUNTER_EXAMPLES": 32}'
+# === Exp D — 4× counter-examples (NUM_COUNTER_EXAMPLES=64), seed 1 === DONE
+#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 1, "NUM_COUNTER_EXAMPLES": 64, "TRAINING_STEPS": 100000}'
 
-# === Exp B — paper baseline + 2× counter-examples, seed 2 ===DONE
-uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 2, "NUM_COUNTER_EXAMPLES": 32}'
+# === Exp D — 4× counter-examples, seed 2 === DONE
+uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 2, "NUM_COUNTER_EXAMPLES": 64, "TRAINING_STEPS": 100000}'
+
 
 
 # Q3C-IBC batch 12 — fill in seeds 2/3/4 for I.c@cp=30 and seeds 1/2/3/4 for I.c++.
