@@ -492,7 +492,15 @@ def evaluate_checkpoint(ckpt_path: str, langevin_cfg: dict, num_seeds: int = 50)
 
 # ─── Trial runner ─────────────────────────────────────────────────────────────
 
-def run_trial(params_override: dict | None = None, quick: bool = False):
+def run_trial(
+    params_override: dict | None = None,
+    quick: bool = False,
+    reeval_checkpoint: str | None = None,
+):
+    """If `reeval_checkpoint` is given, skip training and just evaluate that
+    checkpoint with the inference params from `params_override`. Useful for
+    sweeping inference Langevin without paying for retraining (with deterministic
+    seeds, retrained models are bit-exact identical to existing checkpoints)."""
     run_id = _new_run_id()
     hparams = deepcopy(BASELINE_HPARAMS)
 
@@ -506,30 +514,61 @@ def run_trial(params_override: dict | None = None, quick: bool = False):
     print(f"\n{'='*70}")
     print(f"DFO RUN {run_id}")
     print(f"{'='*70}")
-    print(f"Params:\n{json.dumps(hparams, indent=2, default=str)}")
+    if reeval_checkpoint:
+        print(f"REEVAL ONLY — checkpoint: {reeval_checkpoint}")
+        print(f"Inference Langevin params:\n"
+              f"  num_samples={hparams['INFERENCE_NUM_SAMPLES']}, "
+              f"num_iterations={hparams['INFERENCE_NUM_ITERATIONS']}, "
+              f"lr_init={hparams['INFERENCE_LR_INIT']}, "
+              f"noise_scale={hparams['INFERENCE_NOISE_SCALE']}")
+    else:
+        print(f"Params:\n{json.dumps(hparams, indent=2, default=str)}")
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
-    print(f"\n  Training ({hparams['TRAINING_STEPS']} steps)...")
     train_meta: dict
-    try:
-        train_meta = train_dfo(hparams, run_id)
-        training_failed = False
-        train_error = None
-    except RuntimeError as exc:
-        # Likely the NaN-abort path; record the failure and skip eval.
-        print(f"\n  Training FAILED: {exc}")
+    if reeval_checkpoint:
+        ckpt = Path(reeval_checkpoint)
+        if not ckpt.exists():
+            # Allow passing a run_id; resolve to its q_estimator.pt
+            candidate = CHECKPOINTS_BASE / reeval_checkpoint / "q_estimator.pt"
+            if candidate.exists():
+                ckpt = candidate
+            else:
+                raise FileNotFoundError(
+                    f"Checkpoint not found: tried {reeval_checkpoint} and {candidate}"
+                )
         train_meta = {
-            "checkpoint_path": None,
-            "checkpoint_dir": str(CHECKPOINTS_BASE / f"run_{run_id}"),
+            "checkpoint_path": str(ckpt),
+            "checkpoint_dir": str(ckpt.parent),
             "duration_seconds": 0.0,
             "final_train_loss": None,
             "final_infonce": None,
             "final_grad_penalty": None,
             "final_accuracy": None,
         }
-        training_failed = True
-        train_error = str(exc)
+        training_failed = False
+        train_error = None
+    else:
+        print(f"\n  Training ({hparams['TRAINING_STEPS']} steps)...")
+        try:
+            train_meta = train_dfo(hparams, run_id)
+            training_failed = False
+            train_error = None
+        except RuntimeError as exc:
+            # Likely the NaN-abort path; record the failure and skip eval.
+            print(f"\n  Training FAILED: {exc}")
+            train_meta = {
+                "checkpoint_path": None,
+                "checkpoint_dir": str(CHECKPOINTS_BASE / f"run_{run_id}"),
+                "duration_seconds": 0.0,
+                "final_train_loss": None,
+                "final_infonce": None,
+                "final_grad_penalty": None,
+                "final_accuracy": None,
+            }
+            training_failed = True
+            train_error = str(exc)
 
     inference_cfg = {
         "num_samples": int(hparams["INFERENCE_NUM_SAMPLES"]),
@@ -587,6 +626,8 @@ def run_trial(params_override: dict | None = None, quick: bool = False):
         "training_failed": training_failed,
         "error": train_error,
         "quick": quick,
+        "reeval_only": reeval_checkpoint is not None,
+        "reeval_checkpoint": reeval_checkpoint,
     }
 
     trial_id = append_trial(record)
@@ -671,6 +712,13 @@ def main():
         help="Number of repetitions of the same config (each gets trial_seed=0,1,..). "
              "Use to measure variance honestly. Default 1.",
     )
+    parser.add_argument(
+        "--reeval-checkpoint", type=str, default=None,
+        help="Path to a previously-saved q_estimator.pt (or a run_id under "
+             "checkpoints/hpsearch_dfo/). Skips training and only runs eval "
+             "with the inference Langevin params from --params. Cheap way to "
+             "sweep inference cost without retraining the same model.",
+    )
     args = parser.parse_args()
 
     if args.analyze:
@@ -686,7 +734,11 @@ def main():
                 rep_params["trial_seed"] = rep
             if args.num_reps > 1:
                 print(f"\n[rep {rep + 1}/{args.num_reps}] trial_seed={rep_params['trial_seed']}")
-            run_trial(rep_params, quick=args.quick)
+            run_trial(
+                rep_params,
+                quick=args.quick,
+                reeval_checkpoint=args.reeval_checkpoint,
+            )
         return
 
     parser.print_help()
