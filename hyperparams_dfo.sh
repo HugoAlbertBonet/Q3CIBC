@@ -9,23 +9,19 @@
 #SBATCH --mem=8G
 #SBATCH --time=25:00:00
 
-# IBC-DFO @ n_dim=32 — batch 2: scale training compute.
-# Exp C = paper baseline + 2× training steps (CE=16, steps=200k).
-# Exp D = paper baseline + 4× counter-examples (CE=64, steps=100k).
-# Architecture (256×2) and inference Langevin (512 samples × 100 iters) UNCHANGED.
+# IBC-DFO @ n_dim=32 — batch 3: probe inference samples (re-eval mode, no retrain).
+# Both checkpoints come from CE=16 / 100k paper-faithful training (runs 1 & 2 in trials.jsonl).
 
-# === Exp C — longer training (TRAINING_STEPS=200k), seed 1 === DONE
-#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 1, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 200000}'
+CKPT_S1=/home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260429T111857_c63f2613/q_estimator.pt
+CKPT_S2=/home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260429T111924_18153934/q_estimator.pt
 
-# === Exp C — longer training, seed 2 === DONE
-#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 2, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 200000}'
+# === Exp E — 4× inference samples (2048), seeds 1 & 2 ===DONE
+#uv run hyperparam_search_dfo.py --run --reeval-checkpoint $CKPT_S1 --params '{"INFERENCE_NUM_SAMPLES": 2048, "trial_seed": 1, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 100000}'
+#uv run hyperparam_search_dfo.py --run --reeval-checkpoint $CKPT_S2 --params '{"INFERENCE_NUM_SAMPLES": 2048, "trial_seed": 2, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 100000}'
 
-# === Exp D — 4× counter-examples (NUM_COUNTER_EXAMPLES=64), seed 1 === DONE
-#uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 1, "NUM_COUNTER_EXAMPLES": 64, "TRAINING_STEPS": 100000}'
-
-# === Exp D — 4× counter-examples, seed 2 === DONE
-uv run hyperparam_search_dfo.py --run --params '{"trial_seed": 2, "NUM_COUNTER_EXAMPLES": 64, "TRAINING_STEPS": 100000}'
-
+# === Exp F — 16× inference samples (8192), seeds 1 & 2 === DONE
+#uv run hyperparam_search_dfo.py --run --reeval-checkpoint $CKPT_S1 --params '{"INFERENCE_NUM_SAMPLES": 8192, "trial_seed": 1, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 100000}'
+uv run hyperparam_search_dfo.py --run --reeval-checkpoint $CKPT_S2 --params '{"INFERENCE_NUM_SAMPLES": 8192, "trial_seed": 2, "NUM_COUNTER_EXAMPLES": 16, "TRAINING_STEPS": 100000}'
 
 
 # Q3C-IBC batch 12 — fill in seeds 2/3/4 for I.c@cp=30 and seeds 1/2/3/4 for I.c++.
