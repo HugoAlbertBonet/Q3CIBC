@@ -36,9 +36,9 @@
         "particle": {
             "data_dir": "datasets/particle",
             "env_id": "Particle-v0",
-            "n_dim": 32,
-            "state_dim": 128,
-            "action_dim": 32,
+            "n_dim": 16,
+            "state_dim": 64,
+            "action_dim": 16,
             "frame_stack": 2,
             "action_bounds": [
                 0,
