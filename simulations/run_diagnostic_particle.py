@@ -33,8 +33,10 @@ from utils.normalizations import ObservationNormalizer
 from utils.sampling import sample_langevin
 from simulations.particle_simulation import ParticleSimulation
 
-# Load config
-config_path = Path(__file__).parent.parent / "config_json" / "config.json"
+# Load config — Q3C_CONFIG_PATH overrides the default so per-checkpoint configs
+# can be used (each run dir contains the config.json it was trained with).
+default_config_path = Path(__file__).parent.parent / "config_json" / "config.json"
+config_path = Path(os.environ.get("Q3C_CONFIG_PATH", default_config_path))
 with open(config_path, "r") as f:
     config = json.load(f)
 
@@ -47,6 +49,28 @@ CONTROL_POINTS = env_config["model"]["control_points"]
 num_hidden_layers = env_config["model"]["num_hidden_layers"]
 num_neurons = env_config["model"]["num_neurons"]
 ACTION_BOUNDS = tuple(env_config.get("action_bounds", [0, 1]))
+
+
+def effective_langevin_config(env_cfg: dict) -> dict:
+    """Merge env_training.langevin_* overrides onto env_model.langevin_config defaults.
+
+    Mirrors hyperparam_search.effective_langevin_config so the diagnostic uses
+    the exact same Langevin settings as the eval that produced the checkpoint.
+    """
+    base = dict(env_cfg.get("model", {}).get("langevin_config", {}))
+    training = env_cfg.get("training", {})
+    overrides = {
+        "num_iterations": "langevin_num_iterations",
+        "lr_init": "langevin_lr_init",
+        "lr_final": "langevin_lr_final",
+        "noise_scale": "langevin_noise_scale",
+        "delta_action_clip": "langevin_delta_clip",
+        "polynomial_decay_power": "langevin_decay_power",
+    }
+    for native_key, training_key in overrides.items():
+        if training_key in training:
+            base[native_key] = training[training_key]
+    return base
 
 
 def _dim_names(n_dim: int) -> list[str]:
@@ -130,15 +154,33 @@ class StepLog:
     control_points: np.ndarray     # (N, action_dim) control point outputs
     q_values: np.ndarray           # (N,) Q-value for each control point
     best_idx: int                  # index of selected control point
-    action: np.ndarray             # final action taken
+    action: np.ndarray             # final action taken (after inference Langevin if enabled)
+    initial_action: np.ndarray     # best CP before inference Langevin (== action if disabled)
+    langevin_trajectory: np.ndarray  # (T_lv+1, action_dim); single-element if Langevin off
+    langevin_q_values: np.ndarray    # (T_lv+1,)  Q along trajectory
 
 
 class DiagnosticParticleSimulation(ParticleSimulation):
-    """Particle simulation with full diagnostic logging at each step."""
+    """Particle simulation with full diagnostic logging at each step.
 
-    def __init__(self, **kwargs):
+    Mirrors hyperparam_search.LangevinRefinedParticleSimulation: when
+    `inference_langevin_iterations > 0`, refines the highest-Q control point
+    with Langevin MCMC before acting. The trajectory is logged for Plot 11.
+    """
+
+    def __init__(
+        self,
+        inference_langevin_iterations: int = 0,
+        langevin_cfg: dict | None = None,
+        action_bounds: tuple[float, float] = (0.0, 1.0),
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.step_logs: list[StepLog] = []
+        self.inference_langevin_iterations = int(inference_langevin_iterations)
+        self.langevin_cfg = dict(langevin_cfg or {})
+        self._lv_action_min = float(action_bounds[0])
+        self._lv_action_max = float(action_bounds[1])
 
     def select_action(self, observation: np.ndarray, return_q_range: bool = False):
         """Select action and log all intermediate values."""
@@ -160,10 +202,71 @@ class DiagnosticParticleSimulation(ParticleSimulation):
             q_values = self.q_estimator(obs_expanded, cp_for_q).squeeze(-1)  # (1, N)
 
             best_idx = q_values.argmax(dim=1)
-            action = control_points[0, best_idx[0], :].cpu().numpy()
+            best_cp_np = control_points[0, best_idx[0], :].cpu().numpy()
             q_range = (q_values.min().item(), q_values.max().item())
 
-        action_clipped = np.clip(action, 0.0, 1.0)
+        # Inference Langevin refinement (matches LangevinRefinedParticleSimulation).
+        if self.inference_langevin_iterations > 0:
+            best_cp_t = control_points[0, best_idx[0], :].view(1, 1, -1).clone()
+            act_min_t = torch.full(
+                (control_points.shape[-1],), self._lv_action_min, device=self.device
+            )
+            act_max_t = torch.full(
+                (control_points.shape[-1],), self._lv_action_max, device=self.device
+            )
+
+            for p in self.q_estimator.parameters():
+                p.requires_grad_(False)
+
+            _norm_min = self._act_min_t
+            _norm_rng = self._act_rng_t
+
+            def _neg_energy_fn(obs_lv, actions_lv):
+                if _norm_min is not None:
+                    a_in = (actions_lv - _norm_min) / _norm_rng
+                else:
+                    a_in = actions_lv
+                return -self.q_estimator(obs_lv, a_in).squeeze(-1)
+
+            refined, traj_steps = sample_langevin(
+                energy_function=_neg_energy_fn,
+                observations=normalized_tensor,
+                num_samples=1,
+                action_min=act_min_t,
+                action_max=act_max_t,
+                num_iterations=self.inference_langevin_iterations,
+                lr_init=float(self.langevin_cfg.get("lr_init", 0.1)),
+                lr_final=float(self.langevin_cfg.get("lr_final", 1e-5)),
+                polynomial_decay_power=float(self.langevin_cfg.get("polynomial_decay_power", 2.0)),
+                delta_action_clip=float(self.langevin_cfg.get("delta_action_clip", 0.1)),
+                noise_scale=float(self.langevin_cfg.get("noise_scale", 1.0)),
+                initial_actions=best_cp_t,
+                return_trajectories=True,
+                device=self.device,
+            )
+
+            for p in self.q_estimator.parameters():
+                p.requires_grad_(True)
+
+            # traj_steps: list of (1, 1, action_dim) tensors, length T_lv+1
+            traj_np = torch.stack(traj_steps, dim=0).squeeze(1).squeeze(1).cpu().numpy()  # (T+1, A)
+            with torch.no_grad():
+                traj_t = torch.from_numpy(traj_np).to(self.device).unsqueeze(0)  # (1, T+1, A)
+                if self._act_min_t is not None:
+                    traj_for_q = (traj_t - self._act_min_t) / self._act_rng_t
+                else:
+                    traj_for_q = traj_t
+                obs_traj_expanded = normalized_tensor.unsqueeze(1).expand(-1, traj_t.shape[1], -1)
+                traj_q = self.q_estimator(obs_traj_expanded, traj_for_q).squeeze(-1).squeeze(0).cpu().numpy()
+
+            action_np = refined[0, 0, :].cpu().numpy()
+        else:
+            traj_np = best_cp_np[None, :].copy()
+            traj_q = np.array([float(q_values[0, best_idx[0]].item())], dtype=np.float32)
+            action_np = best_cp_np
+
+        action_clipped = np.clip(action_np, self._lv_action_min, self._lv_action_max)
+        initial_clipped = np.clip(best_cp_np, self._lv_action_min, self._lv_action_max)
 
         log = StepLog(
             step=len(self.step_logs),
@@ -173,6 +276,9 @@ class DiagnosticParticleSimulation(ParticleSimulation):
             q_values=q_values[0].cpu().numpy(),
             best_idx=best_idx[0].item(),
             action=action_clipped.copy(),
+            initial_action=initial_clipped.copy(),
+            langevin_trajectory=traj_np.astype(np.float32),
+            langevin_q_values=traj_q.astype(np.float32),
         )
         self.step_logs.append(log)
 
@@ -815,6 +921,148 @@ def generate_diagnostic_plots(
     print(f"Diagnostic plots saved to: {output_path.absolute()}")
 
 
+def generate_inference_langevin_trajectory_plot(
+    step_logs: list[StepLog],
+    output_dir: str,
+    seed: int,
+    n_dim: int,
+    action_bounds: tuple[float, float],
+    goal_distance_threshold: float,
+    snapshot_count: int = 6,
+):
+    """Plot 11 — trace the inference-Langevin refinement of the chosen control point.
+
+    For up to `snapshot_count` evenly spaced steps, show:
+      • Pairwise (x_i, x_j) projections of the per-iteration trajectory of the
+        best CP through inference Langevin, with start (red ★), final (yellow ✕),
+        and goal positions overlaid.
+      • Q-value evolution along the trajectory (one line per snapshotted step).
+      • Distance from each iterate to nearest goal evolution.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    n_steps = len(step_logs)
+    if n_steps == 0:
+        return
+
+    snap_n = min(snapshot_count, n_steps)
+    snap_idx = np.linspace(0, n_steps - 1, snap_n, dtype=int)
+
+    action_dim = step_logs[0].langevin_trajectory.shape[-1]
+    n_iters_plus_one = step_logs[0].langevin_trajectory.shape[0]
+    if n_iters_plus_one <= 1:
+        # Inference Langevin disabled or trivial — nothing to plot.
+        return
+
+    used_dims = min(action_dim, n_dim)
+    pairs = _pairwise_dims(action_dim) if action_dim >= 2 else []
+
+    low, high = float(action_bounds[0]), float(action_bounds[1])
+    dim_names = _dim_names(action_dim)
+
+    # ─── Subplot grid: top rows = pairwise projections, bottom rows = Q & dist ───
+    n_pair_cols = max(1, len(pairs))
+    fig = plt.figure(figsize=(4.0 * n_pair_cols, 3.4 * snap_n + 6.5))
+    gs = fig.add_gridspec(snap_n + 2, n_pair_cols, height_ratios=[3.0] * snap_n + [3.5, 3.5])
+    fig.suptitle(
+        f"Inference Langevin Refinement of Best CP — Seed {seed}",
+        fontsize=14, fontweight="bold",
+    )
+
+    # ─── Top rows: pairwise projections per snapshot ───
+    for r, step_idx in enumerate(snap_idx):
+        log = step_logs[step_idx]
+        traj = log.langevin_trajectory  # (T+1, A)
+        raw = log.raw_obs
+        single_frame_dim = 4 * n_dim
+        base = raw.shape[0] - single_frame_dim
+        goal1 = raw[base + 2 * n_dim: base + 3 * n_dim]
+        goal2 = raw[base + 3 * n_dim: base + 4 * n_dim]
+        agent = raw[base: base + n_dim]
+
+        for c, (d0, d1) in enumerate(pairs):
+            ax = fig.add_subplot(gs[r, c])
+            ax.plot(traj[:, d0], traj[:, d1], "-", color="white", lw=1.0, alpha=0.7, zorder=2)
+            sc = ax.scatter(
+                traj[:, d0], traj[:, d1],
+                c=np.arange(traj.shape[0]), cmap="plasma", s=18, alpha=0.9, zorder=3,
+            )
+            ax.scatter(traj[0, d0], traj[0, d1], c="red", s=140, marker="*",
+                       edgecolors="black", linewidths=0.7, zorder=10, label="start (best CP)" if (r == 0 and c == 0) else None)
+            ax.scatter(traj[-1, d0], traj[-1, d1], c="yellow", s=120, marker="X",
+                       edgecolors="black", linewidths=0.7, zorder=11, label="final (refined)" if (r == 0 and c == 0) else None)
+
+            if d0 < n_dim and d1 < n_dim:
+                ax.scatter(goal1[d0], goal1[d1], c="lime", s=110, marker="*",
+                           edgecolors="black", linewidths=0.5, zorder=8, label="goal1" if (r == 0 and c == 0) else None)
+                ax.scatter(goal2[d0], goal2[d1], c="cyan", s=110, marker="*",
+                           edgecolors="black", linewidths=0.5, zorder=8, label="goal2" if (r == 0 and c == 0) else None)
+                ax.scatter(agent[d0], agent[d1], c="white", s=55, marker="o",
+                           edgecolors="black", linewidths=0.5, zorder=8, label="agent" if (r == 0 and c == 0) else None)
+
+            ax.set_xlim(low - 0.02, high + 0.02)
+            ax.set_ylim(low - 0.02, high + 0.02)
+            ax.set_aspect("equal")
+            ax.set_facecolor("#1a1a1a")
+            ax.grid(alpha=0.15, color="white")
+            ax.set_xlabel(dim_names[d0], fontsize=9)
+            ax.set_ylabel(dim_names[d1], fontsize=9)
+            ax.set_title(f"Step {log.step}: {dim_names[d0]}-{dim_names[d1]}", fontsize=9)
+            if r == 0 and c == 0:
+                ax.legend(fontsize=7, loc="upper left")
+
+    # ─── Bottom row 1: Q evolution along Langevin trajectory ───
+    ax_q = fig.add_subplot(gs[snap_n, :])
+    cmap_steps = plt.get_cmap("viridis", snap_n)
+    for i, step_idx in enumerate(snap_idx):
+        log = step_logs[step_idx]
+        ax_q.plot(
+            np.arange(log.langevin_q_values.shape[0]),
+            log.langevin_q_values,
+            ".-", lw=1.4, markersize=4,
+            color=cmap_steps(i),
+            label=f"Step {log.step}",
+        )
+    ax_q.set_xlabel("Langevin iteration")
+    ax_q.set_ylabel("Q(s, a_k)")
+    ax_q.set_title("Q-value along inference Langevin trajectory (should monotonically increase)", fontsize=10)
+    ax_q.grid(alpha=0.3)
+    ax_q.legend(fontsize=8, loc="best", ncol=min(snap_n, 3))
+
+    # ─── Bottom row 2: distance to nearest goal along trajectory ───
+    ax_d = fig.add_subplot(gs[snap_n + 1, :])
+    for i, step_idx in enumerate(snap_idx):
+        log = step_logs[step_idx]
+        traj = log.langevin_trajectory[:, :used_dims]  # (T+1, used_dims)
+        raw = log.raw_obs
+        single_frame_dim = 4 * n_dim
+        base = raw.shape[0] - single_frame_dim
+        g1 = raw[base + 2 * n_dim: base + 2 * n_dim + used_dims]
+        g2 = raw[base + 3 * n_dim: base + 3 * n_dim + used_dims]
+        d1 = np.linalg.norm(traj - g1[None, :], axis=-1)
+        d2 = np.linalg.norm(traj - g2[None, :], axis=-1)
+        d_min = np.minimum(d1, d2)
+        ax_d.plot(
+            np.arange(d_min.shape[0]),
+            d_min,
+            ".-", lw=1.4, markersize=4,
+            color=cmap_steps(i),
+            label=f"Step {log.step}",
+        )
+    ax_d.axhline(goal_distance_threshold, color="black", linestyle="--", lw=1.2, label=f"success threshold={goal_distance_threshold:.3f}")
+    ax_d.set_xlabel("Langevin iteration")
+    ax_d.set_ylabel("min(dist to goal1, goal2)")
+    ax_d.set_title("Distance to nearest goal along inference Langevin trajectory", fontsize=10)
+    ax_d.grid(alpha=0.3)
+    ax_d.legend(fontsize=8, loc="best", ncol=min(snap_n + 1, 3))
+
+    plt.tight_layout(rect=[0, 0, 1, 0.98])
+    plt.savefig(output_path / "11_inference_langevin_trajectory.png", dpi=150)
+    plt.close()
+    print(f"  Plot 11 saved (inference Langevin trajectory).")
+
+
 def load_model(checkpoint_path: str, device: str = "cpu") -> ControlPointGenerator:
     """Load a trained control point generator from checkpoint."""
     cp_sd = torch.load(checkpoint_path, map_location=device, weights_only=True)
@@ -938,6 +1186,20 @@ def main():
     render_mode = "human" if args.render else None
 
     print(f"Running diagnostics for seeds: {seeds_to_run}")
+    print(f"Active config: {config_path}")
+
+    # Match eval-time inference Langevin (effective config = model defaults
+    # + env_training overrides), so the diagnostic exercises the exact same
+    # action-selection path used during success-rate evaluation.
+    inference_lv_iterations = int(
+        env_config.get("training", {}).get("inference_langevin_iterations", 0)
+    )
+    eff_lv_cfg = effective_langevin_config(env_config)
+    print(
+        f"Inference Langevin: iters={inference_lv_iterations} "
+        f"lr_init={eff_lv_cfg.get('lr_init')} noise={eff_lv_cfg.get('noise_scale')} "
+        f"clip={eff_lv_cfg.get('delta_action_clip')}"
+    )
 
     for seed in seeds_to_run:
         # Create a new simulation per seed so logs are isolated.
@@ -950,6 +1212,9 @@ def main():
             render_mode=render_mode,
             frame_stack=FRAME_STACK,
             norm_stats=norm_stats,
+            inference_langevin_iterations=inference_lv_iterations,
+            langevin_cfg=eff_lv_cfg,
+            action_bounds=ACTION_BOUNDS,
         )
 
         print(f"\nRunning episode with seed {seed}...")
@@ -980,6 +1245,16 @@ def main():
             show_langevin_final_positions=show_langevin_final_positions,
             goal_distance_threshold=float(env_config.get("goal_distance", 0.05)),
         )
+
+        if inference_lv_iterations > 0:
+            generate_inference_langevin_trajectory_plot(
+                step_logs=sim.step_logs,
+                output_dir=seed_output_dir,
+                seed=seed,
+                n_dim=n_dim,
+                action_bounds=ACTION_BOUNDS,
+                goal_distance_threshold=float(env_config.get("goal_distance", 0.05)),
+            )
 
         sim.close()
 

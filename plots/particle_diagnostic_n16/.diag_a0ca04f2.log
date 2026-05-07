@@ -1,0 +1,2 @@
+/home/halbertb/Q3CIBC/simulations/run_diagnostic_particle.py:529: UserWarning: This figure includes Axes that are not compatible with tight_layout, so results might be incorrect.
+  plt.tight_layout()

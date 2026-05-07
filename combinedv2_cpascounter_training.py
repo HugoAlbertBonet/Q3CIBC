@@ -165,6 +165,19 @@ control_points = env_model.get("control_points", 50)
 num_hidden_layers = env_model.get("num_hidden_layers", 8)
 num_neurons = env_model.get("num_neurons", 512)
 
+# Per-net architecture overrides. If a *_network_kind is set, that net uses
+# the new (kind, width, depth) plumbing; otherwise it falls back to the legacy
+# plain MLP defined by hidden_dims=[num_neurons]*num_hidden_layers.
+q_network_kind = env_model.get("q_network_kind", "mlp")
+q_width = env_model.get("q_width", num_neurons)
+q_depth = env_model.get("q_depth", num_hidden_layers)
+q_use_spectral_norm = env_model.get("q_use_spectral_norm", use_spectral_norm)
+
+cp_network_kind = env_model.get("cp_network_kind", "mlp")
+cp_width = env_model.get("cp_width", num_neurons)
+cp_depth = env_model.get("cp_depth", num_hidden_layers)
+cp_use_spectral_norm = env_model.get("cp_use_spectral_norm", False)
+
 # Environment parameters
 env_id = env_config["env_id"]
 state_dim = env_config["state_dim"]
@@ -259,19 +272,28 @@ def main():
             )
     
     # Create models
+    print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
     control_point_generator = ControlPointGenerator(
-        input_dim=dataset.state_shape, 
-        output_dim=dataset.action_shape, 
-        control_points=control_points, 
-        hidden_dims=[num_neurons for _ in range(num_hidden_layers)],
+        input_dim=dataset.state_shape,
+        output_dim=dataset.action_shape,
+        control_points=control_points,
+        hidden_dims=[cp_width for _ in range(cp_depth)],
         action_bounds=(action_bounds[0], action_bounds[1]),
+        network_kind=cp_network_kind,
+        width=cp_width,
+        depth=cp_depth,
+        use_spectral_norm=cp_use_spectral_norm,
     ).to(device)
-    
+
+    print(f"Q estimator:  kind={q_network_kind} width={q_width} depth={q_depth} sn={q_use_spectral_norm}")
     estimator = QEstimator(
         state_dim=dataset.state_shape,
         action_dim=dataset.action_shape,
-        hidden_dims=[num_neurons for _ in range(num_hidden_layers)],
-        use_spectral_norm=use_spectral_norm,
+        hidden_dims=[q_width for _ in range(q_depth)],
+        use_spectral_norm=q_use_spectral_norm,
+        network_kind=q_network_kind,
+        width=q_width,
+        depth=q_depth,
     ).to(device)
     
     optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)

@@ -162,6 +162,48 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "bool",
         "location": "env_model",
     },
+    # Per-net architecture (added 2026-05-07 — Q-estimator capacity probe).
+    # Mirrors IBC paper's ResNetPreActivation. "mlp" preserves legacy behavior.
+    "q_network_kind": {
+        "values": ["mlp", "resnet"],
+        "type": "str",
+        "location": "env_model",
+    },
+    "q_width": {
+        "values": [128, 256, 512, 1024, 2048],
+        "type": "int",
+        "location": "env_model",
+    },
+    "q_depth": {
+        "values": [2, 4, 8, 16],
+        "type": "int",
+        "location": "env_model",
+    },
+    "q_use_spectral_norm": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env_model",
+    },
+    "cp_network_kind": {
+        "values": ["mlp", "resnet"],
+        "type": "str",
+        "location": "env_model",
+    },
+    "cp_width": {
+        "values": [128, 256, 512, 1024],
+        "type": "int",
+        "location": "env_model",
+    },
+    "cp_depth": {
+        "values": [2, 4, 8],
+        "type": "int",
+        "location": "env_model",
+    },
+    "cp_use_spectral_norm": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env_model",
+    },
     "cosine_t_max": {
         "values": [100000, 150000, 200000],
         "type": "int",
@@ -491,11 +533,21 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     frame_stack = env_config.get("frame_stack", 1)
     action_bounds = tuple(env_config.get("action_bounds", [0, 1]))
     n_dim = env_config.get("n_dim", 2)
-    control_points = env_config["model"]["control_points"]
-    num_hidden_layers = env_config["model"]["num_hidden_layers"]
-    num_neurons = env_config["model"]["num_neurons"]
-    use_spectral_norm = env_config["model"].get("use_spectral_norm", False)
+    em = env_config["model"]
+    control_points = em["control_points"]
+    num_hidden_layers = em["num_hidden_layers"]
+    num_neurons = em["num_neurons"]
+    use_spectral_norm = em.get("use_spectral_norm", False)
     hidden_dims = [num_neurons] * num_hidden_layers
+    # Per-net architecture (mirrors combinedv2_cpascounter_training.py).
+    q_network_kind = em.get("q_network_kind", "mlp")
+    q_width = em.get("q_width", num_neurons)
+    q_depth = em.get("q_depth", num_hidden_layers)
+    q_use_spectral_norm = em.get("q_use_spectral_norm", use_spectral_norm)
+    cp_network_kind = em.get("cp_network_kind", "mlp")
+    cp_width = em.get("cp_width", num_neurons)
+    cp_depth = em.get("cp_depth", num_hidden_layers)
+    cp_use_spectral_norm = em.get("cp_use_spectral_norm", False)
     max_episode_steps = sim_config.get("max_episode_steps", 50)
     num_seeds = int(sim_config.get("num_seeds", len(sim_config.get("default_seeds", [0]))))
     if num_seeds <= 0:
@@ -531,8 +583,12 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         input_dim=state_dim * frame_stack,
         output_dim=action_dim,
         control_points=control_points,
-        hidden_dims=hidden_dims,
+        hidden_dims=[cp_width] * cp_depth,
         action_bounds=action_bounds,
+        network_kind=cp_network_kind,
+        width=cp_width,
+        depth=cp_depth,
+        use_spectral_norm=cp_use_spectral_norm,
     )
     cp_gen.load_state_dict(
         torch.load(cp_path, map_location=device, weights_only=True)
@@ -542,8 +598,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     q_est = QEstimator(
         state_dim=state_dim * frame_stack,
         action_dim=action_dim,
-        hidden_dims=hidden_dims,
-        use_spectral_norm=use_spectral_norm,
+        hidden_dims=[q_width] * q_depth,
+        use_spectral_norm=q_use_spectral_norm,
+        network_kind=q_network_kind,
+        width=q_width,
+        depth=q_depth,
     )
     q_est.load_state_dict(
         torch.load(q_path, map_location=device, weights_only=True)
