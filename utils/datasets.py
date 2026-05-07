@@ -11,7 +11,16 @@ from torch.utils.data import Dataset
 import minari
 
 try:
+    # TFRecord parsing is the only thing we use TF for — pure CPU work.
+    # Hide the GPU from TF so it doesn't preallocate the entire device and
+    # starve PyTorch (TF grabs all GPU memory at first GPU touch by default).
+    os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+    os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
     import tensorflow as tf
+    try:
+        tf.config.set_visible_devices([], "GPU")
+    except Exception:
+        pass
     TF_AVAILABLE = True
 except ImportError:
     TF_AVAILABLE = False
