@@ -262,6 +262,35 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_training",
     },
+    # Langevin negative starting distribution. "uniform" = paper-faithful;
+    # "cps" = start from CP cloud, find Q-peaks in CP neighbourhoods.
+    "langevin_init_kind": {
+        "values": ["uniform", "cps"],
+        "type": "str",
+        "location": "env_training",
+    },
+    "langevin_init_jitter": {
+        "values": [0.0, 0.01, 0.03, 0.05, 0.1],
+        "type": "float",
+        "location": "env_training",
+    },
+    # Noisy-expert hard negatives (estimator-only). σ linearly interpolates
+    # from sigma_start to sigma_final over training.
+    "noisy_expert_count": {
+        "values": [0, 8, 16, 32, 64],
+        "type": "int",
+        "location": "training_shared",
+    },
+    "noisy_expert_sigma_start": {
+        "values": [0.05, 0.1, 0.2, 0.3, 0.5],
+        "type": "float",
+        "location": "training_shared",
+    },
+    "noisy_expert_sigma_final": {
+        "values": [0.005, 0.01, 0.02, 0.05],
+        "type": "float",
+        "location": "training_shared",
+    },
     # IBC gradient penalty (Florence et al., 2021, App. B).
     "gradient_penalty_weight": {
         "values": [0.0, 0.1, 1.0, 10.0],

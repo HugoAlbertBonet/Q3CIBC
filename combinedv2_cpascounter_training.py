@@ -94,6 +94,48 @@ num_langevin_negatives = env_training.get(
     "num_langevin_negatives", training_shared.get("num_langevin_negatives", 32)
 )
 
+# Langevin negative starting distribution. "uniform" (default, paper-faithful)
+# starts each chain at a uniformly-random action and ascends Q. "cps" starts
+# each chain at a randomly-picked CP from the generator output (with optional
+# Gaussian jitter) and ascends Q — finds high-Q points in the *neighborhood
+# of CPs* rather than anywhere in the action box.
+langevin_init_kind = env_training.get(
+    "langevin_init_kind", training_shared.get("langevin_init_kind", "uniform")
+)
+if langevin_init_kind not in ("uniform", "cps"):
+    raise ValueError(
+        f"langevin_init_kind must be 'uniform' or 'cps', got {langevin_init_kind!r}"
+    )
+langevin_init_jitter = float(
+    env_training.get("langevin_init_jitter", training_shared.get("langevin_init_jitter", 0.0))
+)
+
+# Noisy-expert hard negatives (estimator-only — kept out of generator's
+# InfoNCE because expert+noise would conflict with the generator's MSE pull).
+# Curriculum: σ linearly interpolates from σ_start (broad, gross structure)
+# at step 0 to σ_final (precise) at step=training_steps. Floor at σ_final
+# avoids degeneracy as training nears completion.
+noisy_expert_count = int(
+    training_shared.get(
+        "noisy_expert_count", env_training.get("noisy_expert_count", 0)
+    )
+)
+noisy_expert_sigma_start = float(
+    training_shared.get(
+        "noisy_expert_sigma_start",
+        env_training.get(
+            "noisy_expert_sigma_start",
+            training_shared.get("noisy_expert_std", env_training.get("noisy_expert_std", 0.1)),
+        ),
+    )
+)
+noisy_expert_sigma_final = float(
+    training_shared.get(
+        "noisy_expert_sigma_final",
+        env_training.get("noisy_expert_sigma_final", 0.02),
+    )
+)
+
 # IBC gradient penalty (Florence et al., 2021, App. B; Gulrajani et al., 2017).
 # Bounds ||∇_a E(s,a)|| around a margin to give the energy local curvature.
 # - "hinge" (IBC paper): max(0, ||grad|| - margin)^2  — bounds gradients above margin.
@@ -235,7 +277,10 @@ def main():
     print(f"Top-k control points as counter examples: {top_k_control_points}")
     print(f"IBC uniform negatives: {num_uniform_negatives}")
     print(f"IBC Langevin negatives: {num_langevin_negatives} (iters={langevin_num_iterations}, "
-          f"lr={langevin_lr_init}, noise={langevin_noise_scale}, clip={langevin_delta_clip})")
+          f"lr={langevin_lr_init}, noise={langevin_noise_scale}, clip={langevin_delta_clip}, "
+          f"init_kind={langevin_init_kind}, init_jitter={langevin_init_jitter})")
+    print(f"Noisy expert (estimator-only): count={noisy_expert_count} "
+          f"sigma_start={noisy_expert_sigma_start} sigma_final={noisy_expert_sigma_final}")
     print(f"Gradient penalty: weight={gradient_penalty_weight}, margin={gradient_penalty_margin}, form={gradient_penalty_form}")
     print(f"NaN abort threshold (consecutive bad batches): {nan_abort_threshold}")
     print(f"Frame stack: {frame_stack}")
@@ -402,6 +447,24 @@ def main():
                     # Q ascent ≡ descent on -Q (sample_langevin descends).
                     return -estimator(obs_expanded_lv, actions_batch).squeeze(-1)
 
+                # Build the chain's starting distribution: uniform (paper) or CP-anchored.
+                if langevin_init_kind == "cps":
+                    # Sample one starting CP per chain, with replacement; optional
+                    # Gaussian jitter so chains starting at the same CP diverge.
+                    pool = predicted_actions_detached  # (B, N_cp, A)
+                    pick_idx = torch.randint(
+                        0, pool.shape[1], (B, num_langevin_negatives), device=device
+                    )
+                    pick_idx_exp = pick_idx.unsqueeze(-1).expand(-1, -1, pool.shape[2])
+                    initial_actions = torch.gather(pool, dim=1, index=pick_idx_exp)
+                    if langevin_init_jitter > 0.0:
+                        initial_actions = initial_actions + torch.randn_like(initial_actions) * langevin_init_jitter
+                    initial_actions = torch.clamp(
+                        initial_actions, action_min_tensor.squeeze(0), action_max_tensor.squeeze(0)
+                    )
+                else:
+                    initial_actions = None  # sample_langevin will draw uniform starts
+
                 langevin_neg = sample_langevin(
                     energy_function=_neg_energy_fn,
                     observations=states,
@@ -414,6 +477,7 @@ def main():
                     polynomial_decay_power=langevin_decay_power,
                     delta_action_clip=langevin_delta_clip,
                     noise_scale=langevin_noise_scale,
+                    initial_actions=initial_actions,
                     device=device,
                 )
 
@@ -422,8 +486,28 @@ def main():
 
                 extra_neg_chunks.append(langevin_neg.detach())
 
-            if extra_neg_chunks:
-                counter_samples = torch.cat([cp_counter_samples] + extra_neg_chunks, dim=1)
+            # ─── Estimator-only hard negatives (#4 noisy expert curriculum) ────
+            # Kept in a SEPARATE list so they don't leak into the generator's
+            # InfoNCE: the generator should still see only [expert, CPs], otherwise
+            # the noisy-expert "negatives" would push CPs away from the very
+            # region MSE is trying to land them in.
+            estimator_only_neg_chunks: list[torch.Tensor] = []
+            if noisy_expert_count > 0:
+                # Linear σ curriculum: broad early (learn gross structure),
+                # precise late (learn sharp peaks at expert).
+                progress = min(1.0, max(0.0, step / max(1, training_steps - 1)))
+                sigma = noisy_expert_sigma_start + progress * (noisy_expert_sigma_final - noisy_expert_sigma_start)
+                expert_expanded = actions.unsqueeze(1).expand(-1, noisy_expert_count, -1)
+                noisy_expert = expert_expanded + torch.randn_like(expert_expanded) * sigma
+                noisy_expert = torch.clamp(
+                    noisy_expert, action_min_tensor.squeeze(0), action_max_tensor.squeeze(0)
+                )
+                estimator_only_neg_chunks.append(noisy_expert)
+
+            if extra_neg_chunks or estimator_only_neg_chunks:
+                counter_samples = torch.cat(
+                    [cp_counter_samples] + extra_neg_chunks + estimator_only_neg_chunks, dim=1
+                )
             else:
                 counter_samples = cp_counter_samples
 
@@ -467,6 +551,9 @@ def main():
             # Generator receives InfoNCE with opposite sign.
             # Rebuild counter samples from non-detached control points so gradients reach generator,
             # while freezing estimator parameters so this branch updates only the generator.
+            # IMPORTANT: noisy-expert (estimator_only_neg_chunks) is intentionally
+            # excluded here — see comment above. We re-expand states to match the
+            # smaller action set since states_expanded was sized for the estimator path.
             cp_counter_samples_for_generator = torch.gather(predicted_actions, dim=1, index=gather_idx)
             if extra_neg_chunks:
                 counter_samples_for_generator = torch.cat(
@@ -476,9 +563,12 @@ def main():
                 counter_samples_for_generator = cp_counter_samples_for_generator
 
             all_actions_for_generator = torch.cat([actions.unsqueeze(1), counter_samples_for_generator], dim=1)
+            states_expanded_for_generator = states.unsqueeze(1).expand(
+                -1, all_actions_for_generator.shape[1], -1
+            )
             for param in estimator.parameters():
                 param.requires_grad_(False)
-            energies_for_generator = estimator(states_expanded, all_actions_for_generator).squeeze(-1)
+            energies_for_generator = estimator(states_expanded_for_generator, all_actions_for_generator).squeeze(-1)
             loss_infonce_generator = lossInfoNCE(energies_for_generator, logit_clamp=infonce_logit_clamp)
             for param in estimator.parameters():
                 param.requires_grad_(True)
@@ -530,12 +620,30 @@ def main():
             # Logging
             if step % log_interval == 0:
                 current_lr = scheduler_generator.get_last_lr()[0]
-                
-                # Compute accuracy of estimator
+
+                # Compute accuracy of estimator + CP-cloud / Q-ranking diagnostics
                 with torch.no_grad():
                     best_idx = energies.argmax(dim=1)
                     accuracy = (best_idx == 0).float().mean().item()
-                    
+
+                    # ─── CP coverage / Q ranking diagnostics ────────────────
+                    # Decomposes the failure mode into:
+                    #   - cp_to_expert_min:   does the CP cloud reach the expert?
+                    #     (large = generator coverage problem)
+                    #   - cp_to_expert_qbest: does Q's argmax pick a near-expert CP?
+                    #     (large while min is small = Q ranking problem)
+                    #   - cp_ranking_gap:     qbest - closest, the part Q gets wrong
+                    #   - q_pick_closest_frac: fraction where Q's argmax IS the
+                    #     closest-to-expert CP (1.0 means perfect ranking)
+                    cp_to_expert = (predicted_actions_detached - actions.unsqueeze(1)).norm(dim=-1)  # (B, N_cp)
+                    closest_cp_idx = cp_to_expert.argmin(dim=1)  # (B,)
+                    closest_cp_to_expert = cp_to_expert.min(dim=1).values.mean().item()
+                    q_argmax_idx = cp_q_values.argmax(dim=1)  # (B,)
+                    qbest_cp_to_expert = cp_to_expert.gather(
+                        1, q_argmax_idx.unsqueeze(-1)
+                    ).squeeze(-1).mean().item()
+                    q_pick_closest_frac = (q_argmax_idx == closest_cp_idx).float().mean().item()
+
                 elapsed = time.time() - start_time
                 print(f"Step {step}/{training_steps} | Total: {total_loss.item():.4f} "
                       f"(MSE: {loss_mse.item():.4f}, "
@@ -543,7 +651,11 @@ def main():
                       f"EST: {loss_estimator.item():.4f}, "
                       f"GP: {loss_gradient_penalty.item():.4f}, "
                       f"GEN_INF_ONCE(-): {loss_infonce_generator.item():.4f}, "
-                      f"Acc: {accuracy:.3f}) | LR: {current_lr:.2e} | {elapsed:.1f}s")
+                      f"Acc: {accuracy:.3f}) | "
+                      f"cp→a*: closest={closest_cp_to_expert:.4f} "
+                      f"qbest={qbest_cp_to_expert:.4f} "
+                      f"pick={q_pick_closest_frac:.3f} | "
+                      f"LR: {current_lr:.2e} | {elapsed:.1f}s")
 
                 log_dict = {
                     "step": step,
@@ -555,6 +667,10 @@ def main():
                     "loss/mse": loss_mse.item(),
                     "loss/separation": loss_sep.item(),
                     "metric/accuracy": accuracy,
+                    "metric/cp_to_expert_min": closest_cp_to_expert,
+                    "metric/cp_to_expert_qbest": qbest_cp_to_expert,
+                    "metric/cp_ranking_gap": qbest_cp_to_expert - closest_cp_to_expert,
+                    "metric/q_pick_closest_frac": q_pick_closest_frac,
                     "learning_rate": current_lr,
                 }
                 wandb.log(log_dict)
