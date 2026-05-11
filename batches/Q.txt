@@ -1,0 +1,41 @@
+# Batch Q — Lever decomposition.
+#
+# P4 winner was: noisy_expert (count=16, σ 0.3→0.02) + Langevin-from-CPs
+# (16 chains, 25 iters, jitter=0.0).  We don't know which lever is doing
+# the work or whether the combination is necessary.  Q1–Q5 disentangle.
+#
+# 5 configs × 2 seeds (trial_seed=1, 2).  All start from the P4 baseline
+# and change ONE thing.
+#
+#   Q1: Langevin-from-CPs ONLY (no noisy expert)   — is Langevin sufficient?
+#   Q2: Noisy expert ONLY (no Langevin from CPs)   — is noisy expert sufficient?
+#   Q3: Both, σ_final=0.005 (sharper curriculum)   — push precision pressure harder
+#   Q4: Both, σ_final=0.05 (gentler curriculum)    — relax precision pressure
+#   Q5: Both, 8 Langevin chains instead of 16      — does scaling down hurt?
+#
+# Predictions:
+#   - If Q1 ≈ P4 success (~30%) → noisy expert is redundant, drop it
+#   - If Q2 ≈ P4 success         → Langevin-from-CPs is redundant, drop it
+#   - Both > 0 but neither ≈ P4 → both are needed; combination is real
+#   - Q3 > P4 → push σ_final even lower in next batch
+#   - Q4 > P4 → curriculum was over-tightening, use looser floor
+
+# ── Q1: Langevin-from-CPs ONLY (no noisy expert)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":1,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":2,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":0}'
+
+# ── Q2: Noisy expert ONLY (no Langevin from CPs)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":1,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":2,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02}'
+
+# ── Q3: Both ON, sharper noisy curriculum (σ_final=0.005)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":1,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.005}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":2,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.005}'
+
+# ── Q4: Both ON, gentler noisy curriculum (σ_final=0.05)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":1,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.05}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":2,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.05}'
+
+# ── Q5: Both ON, 8 Langevin chains (half the winner's count) — does scaling down hurt?
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":1,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":2,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"cps","langevin_init_jitter":0.0,"langevin_num_iterations":25,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02}'
