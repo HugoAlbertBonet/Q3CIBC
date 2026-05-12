@@ -384,3 +384,114 @@ class DummyDataset(Dataset):
 
     def __len__(self):
         return len(self.observations)
+
+
+class PushingDataset(Dataset):
+    """Synthetic dataset for Simulated Pushing (IBC paper §5).
+
+    Rolls out the expert oracle in `PushingEnv` to produce (state, action)
+    transitions. We bias toward HIGH-QUALITY trajectories — episodes where the
+    block ended within `quality_threshold` of the target are kept; others are
+    discarded. This handles the imperfect oracle the same way the IBC paper
+    handled noisy oracle data (Florence et al., 2021): demonstrations are
+    filtered for task success.
+
+    State (6 * n_dim before stacking):
+        [pos_agent, vel_agent, pos_block, vel_block, pos_target, pos_target_dup]
+    Action (n_dim): position setpoint in [0, 1]^n.
+    """
+
+    def __init__(
+        self,
+        size: int = 20000,
+        n_dim: int = 2,
+        frame_stack: int = 1,
+        quality_threshold: float = 0.20,
+        max_attempts_multiplier: int = 4,
+        seed: int = 42,
+    ):
+        # Local import keeps this dataset usable even if the simulations
+        # package isn't yet on sys.path at import time.
+        from simulations.pushing_env import PushingEnv, pushing_expert_action
+
+        self.frame_stack = frame_stack
+        self.n_dim = n_dim
+        rng = np.random.default_rng(seed=seed)
+        # Cap attempts so a too-strict quality_threshold can't loop forever.
+        max_episodes = max_attempts_multiplier * (size // 50 + 1)
+
+        env = PushingEnv(n_dim=n_dim)
+        all_observations: list[np.ndarray] = []
+        all_actions: list[np.ndarray] = []
+        episode_starts: list[np.ndarray] = []
+
+        total_samples = 0
+        attempts = 0
+        accepted = 0
+        while total_samples < size and attempts < max_episodes:
+            attempts += 1
+            ep_seed = int(rng.integers(0, 2**31 - 1))
+            obs, _ = env.reset(seed=ep_seed)
+
+            ep_obs: list[np.ndarray] = [obs]
+            ep_acts: list[np.ndarray] = []
+
+            term = False
+            trunc = False
+            info: dict = {}
+            while not (term or trunc):
+                o = env.obs_log[-1]
+                action = pushing_expert_action(
+                    o["pos_agent"],
+                    o["pos_block"],
+                    o["pos_target"],
+                    env.contact_radius,
+                    vel_block=o["vel_block"],
+                )
+                action = np.clip(action, 0.0, 1.0).astype(np.float32)
+                obs, _, term, trunc, info = env.step(action)
+                ep_acts.append(action)
+                if not (term or trunc):
+                    ep_obs.append(obs)
+
+            final_dist = float(info.get("final_dist_block_to_target", np.inf))
+            if final_dist > quality_threshold:
+                continue
+
+            ep_obs_arr = np.array(ep_obs[: len(ep_acts)], dtype=np.float32)
+            ep_acts_arr = np.array(ep_acts, dtype=np.float32)
+            starts = np.zeros(len(ep_obs_arr), dtype=bool)
+            starts[0] = True
+
+            all_observations.append(ep_obs_arr)
+            all_actions.append(ep_acts_arr)
+            episode_starts.append(starts)
+            total_samples += len(ep_obs_arr)
+            accepted += 1
+
+        if total_samples == 0:
+            raise RuntimeError(
+                f"PushingDataset got 0 accepted episodes in {attempts} attempts "
+                f"(quality_threshold={quality_threshold}). Relax the threshold "
+                f"or check the oracle."
+            )
+
+        self._n_episodes = accepted
+        self._n_attempts = attempts
+        self.observations = np.concatenate(all_observations)[:size]
+        self.actions = np.concatenate(all_actions)[:size]
+        self._episode_starts = np.concatenate(episode_starts)[:size]
+
+        if frame_stack > 1:
+            self.observations = stack_frames(
+                self.observations, self._episode_starts, frame_stack
+            )
+
+        self.state_shape = self.observations.shape[1]
+        self.action_shape = self.actions.shape[1]
+
+    def __getitem__(self, index):
+        return {"state": self.observations[index], "action": self.actions[index]}
+
+    def __len__(self):
+        return len(self.observations)
