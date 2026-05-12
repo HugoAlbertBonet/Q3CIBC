@@ -5,16 +5,25 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "gym==0.26.2",
     "gymnasium-robotics>=1.4.2",
     "matplotlib>=3.10.8",
     "minari[all]>=0.5.3",
     "numpy>=2.4.1",
-    "pybullet==3.1.6",
     "tensorflow>=2.20.0",
     "tfrecord>=1.14.6",
     "torch>=2.9.1",
     "wandb>=0.18.0",
+]
+
+# Pushing-env-only deps. Kept OUT of the main dependency list so SLURM nodes
+# running particle/dummy/pen trials don't have to source-build pybullet —
+# pybullet has no cp312 wheels and the SLURM gcc-13.3.0 toolchain fails the
+# bullet legacy source with -Werror=maybe-uninitialized. Install locally with
+# `uv sync --extra pushing` when working on the IBC Simulated Pushing env.
+[project.optional-dependencies]
+pushing = [
+    "gym==0.26.2",
+    "pybullet==3.1.6",
 ]
 
 [dependency-groups]

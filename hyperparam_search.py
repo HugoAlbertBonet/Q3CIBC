@@ -550,21 +550,21 @@ def extract_final_metrics(stdout: str) -> dict:
 def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     """Load Q3C models from *checkpoint_dir* and measure success rate."""
     from utils.models import ControlPointGenerator, QEstimator
-    from simulations.particle_simulation import ParticleSimulation
-    from simulations.pushing_simulation import PushingSimulation
     from utils.sampling import sample_langevin
 
     active_env = config.get("active_env", "particle")
     env_config = config["environments"][active_env]
     sim_config = config.get("simulation", {})
 
-    # Pick the right simulation class. `pushing` uses the vendored IBC env;
-    # `particle` is the existing path. `dummy`/`pen` aren't currently routed
-    # through evaluate_q3c so we leave that fallback as ParticleSimulation
-    # for backward compatibility.
+    # Pick the right simulation class. `pushing` uses the vendored IBC env
+    # (PyBullet + gym), which lives behind the `pushing` optional-extras and
+    # is NOT installed on SLURM nodes running particle/dummy/pen trials. Keep
+    # the import lazy so a particle SLURM job never touches pushing deps.
     if active_env == "pushing":
+        from simulations.pushing_simulation import PushingSimulation
         SimulationCls = PushingSimulation
     else:
+        from simulations.particle_simulation import ParticleSimulation
         SimulationCls = ParticleSimulation
 
     state_dim = env_config["state_dim"]
