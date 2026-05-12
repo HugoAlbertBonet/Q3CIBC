@@ -81,6 +81,53 @@
                 }
             }
         },
+        "pushing": {
+            "data_dir": "datasets/block_push/block_push_states_location",
+            "env_id": "Pushing-v0",
+            "state_dim": 10,
+            "action_dim": 2,
+            "frame_stack": 2,
+            "action_bounds": [
+                -0.0255,
+                0.0428
+            ],
+            "training": {
+                "training_steps": 100000,
+                "learning_rate": 0.001,
+                "batch_size": 512,
+                "sampling_method": "langevin",
+                "counter_examples": 64,
+                "separation_loss": "entropy",
+                "separation_epsilon": 0.02,
+                "entropy_bandwidth": 0.01,
+                "gradient_penalty_margin": 1.0,
+                "gradient_penalty_weight": 1.0,
+                "top_k_control_points": 10,
+                "wirefit_top_k_control_points": 20,
+                "wirefit_distribution_weight": 1.0,
+                "wirefit_distribution_temperature": 1.0,
+                "wirefit_smoothing_param": 0.1,
+                "infonce_logit_clamp": 20.0,
+                "scheduler_type": "cosine",
+                "cosine_t0": 50000,
+                "estimator_learning_rate": 0.001,
+                "langevin_num_iterations": 0,
+                "inference_langevin_iterations": 0
+            },
+            "model": {
+                "control_points": 20,
+                "num_hidden_layers": 2,
+                "num_neurons": 256,
+                "langevin_config": {
+                    "num_iterations": 100,
+                    "lr_init": 0.005,
+                    "lr_final": 1e-05,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.005,
+                    "noise_scale": 0.1
+                }
+            }
+        },
         "dummy": {
             "n_dim": 2,
             "env_id": "Dummy-v0",

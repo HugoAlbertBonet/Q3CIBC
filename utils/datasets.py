@@ -6,6 +6,7 @@ state vector to give the model temporal context.
 
 import os
 import glob
+from typing import Optional
 import numpy as np
 from torch.utils.data import Dataset
 import minari
@@ -387,100 +388,59 @@ class DummyDataset(Dataset):
 
 
 class PushingDataset(Dataset):
-    """Synthetic dataset for Simulated Pushing (IBC paper §5).
+    """Dataset for the IBC paper's Simulated Pushing task (single target).
 
-    Rolls out the expert oracle in `PushingEnv` to produce (state, action)
-    transitions. We bias toward HIGH-QUALITY trajectories — episodes where the
-    block ended within `quality_threshold` of the target are kept; others are
-    discarded. This handles the imperfect oracle the same way the IBC paper
-    handled noisy oracle data (Florence et al., 2021): demonstrations are
-    filtered for task success.
+    Loads the official `block_push_states_location` TFRecord oracle dataset
+    published with Florence et al. 2021 (Implicit Behavioral Cloning) —
+    download instructions in the IBC README:
+        https://storage.googleapis.com/brain-reach-public/ibc_data/block_push_states_location.zip
 
-    State (6 * n_dim before stacking):
-        [pos_agent, vel_agent, pos_block, vel_block, pos_target, pos_target_dup]
-    Action (n_dim): position setpoint in [0, 1]^n.
+    State layout (10D before frame-stacking) — MUST stay aligned with the
+    canonical ordering used by `simulations.pushing_env.OBS_KEYS_AND_DIMS`:
+        [block_translation (2), block_orientation (1),
+         effector_translation (2), effector_target_translation (2),
+         target_translation (2), target_orientation (1)]
+    Action (2D): xArm planar position delta (data-driven range
+        [-0.0255, -0.0209] → [0.0287, 0.0427]).
     """
+
+    # Canonical key order. Sync with simulations.pushing_env.OBS_KEYS_AND_DIMS.
+    _FEATURE_KEYS = (
+        ("observation/block_translation", 2),
+        ("observation/block_orientation", 1),
+        ("observation/effector_translation", 2),
+        ("observation/effector_target_translation", 2),
+        ("observation/target_translation", 2),
+        ("observation/target_orientation", 1),
+    )
 
     def __init__(
         self,
-        size: int = 20000,
-        n_dim: int = 2,
+        data_dir: str = "datasets/block_push/block_push_states_location",
         frame_stack: int = 1,
-        quality_threshold: float = 0.20,
-        max_attempts_multiplier: int = 4,
-        seed: int = 42,
+        max_samples: Optional[int] = None,
     ):
-        # Local import keeps this dataset usable even if the simulations
-        # package isn't yet on sys.path at import time.
-        from simulations.pushing_env import PushingEnv, pushing_expert_action
-
-        self.frame_stack = frame_stack
-        self.n_dim = n_dim
-        rng = np.random.default_rng(seed=seed)
-        # Cap attempts so a too-strict quality_threshold can't loop forever.
-        max_episodes = max_attempts_multiplier * (size // 50 + 1)
-
-        env = PushingEnv(n_dim=n_dim)
-        all_observations: list[np.ndarray] = []
-        all_actions: list[np.ndarray] = []
-        episode_starts: list[np.ndarray] = []
-
-        total_samples = 0
-        attempts = 0
-        accepted = 0
-        while total_samples < size and attempts < max_episodes:
-            attempts += 1
-            ep_seed = int(rng.integers(0, 2**31 - 1))
-            obs, _ = env.reset(seed=ep_seed)
-
-            ep_obs: list[np.ndarray] = [obs]
-            ep_acts: list[np.ndarray] = []
-
-            term = False
-            trunc = False
-            info: dict = {}
-            while not (term or trunc):
-                o = env.obs_log[-1]
-                action = pushing_expert_action(
-                    o["pos_agent"],
-                    o["pos_block"],
-                    o["pos_target"],
-                    env.contact_radius,
-                    vel_block=o["vel_block"],
-                )
-                action = np.clip(action, 0.0, 1.0).astype(np.float32)
-                obs, _, term, trunc, info = env.step(action)
-                ep_acts.append(action)
-                if not (term or trunc):
-                    ep_obs.append(obs)
-
-            final_dist = float(info.get("final_dist_block_to_target", np.inf))
-            if final_dist > quality_threshold:
-                continue
-
-            ep_obs_arr = np.array(ep_obs[: len(ep_acts)], dtype=np.float32)
-            ep_acts_arr = np.array(ep_acts, dtype=np.float32)
-            starts = np.zeros(len(ep_obs_arr), dtype=bool)
-            starts[0] = True
-
-            all_observations.append(ep_obs_arr)
-            all_actions.append(ep_acts_arr)
-            episode_starts.append(starts)
-            total_samples += len(ep_obs_arr)
-            accepted += 1
-
-        if total_samples == 0:
-            raise RuntimeError(
-                f"PushingDataset got 0 accepted episodes in {attempts} attempts "
-                f"(quality_threshold={quality_threshold}). Relax the threshold "
-                f"or check the oracle."
+        if not TF_AVAILABLE:
+            raise ImportError(
+                "TensorFlow is required to load IBC block_push TFRecord files. "
+                "Install with: uv add tensorflow"
             )
 
-        self._n_episodes = accepted
-        self._n_attempts = attempts
-        self.observations = np.concatenate(all_observations)[:size]
-        self.actions = np.concatenate(all_actions)[:size]
-        self._episode_starts = np.concatenate(episode_starts)[:size]
+        self.frame_stack = frame_stack
+        self.data_dir = data_dir
+        self._base_obs_dim = sum(d for _, d in self._FEATURE_KEYS)  # 10
+
+        pattern = os.path.join(data_dir, "oracle_push_*.tfrecord")
+        self.tfrecord_files = sorted(glob.glob(pattern))
+        if not self.tfrecord_files:
+            raise FileNotFoundError(
+                f"No TFRecord files match {pattern}. Did you download "
+                f"block_push_states_location.zip?"
+            )
+
+        self.observations, self.actions, self._episode_starts = self._load_all_data(
+            max_samples=max_samples
+        )
 
         if frame_stack > 1:
             self.observations = stack_frames(
@@ -489,6 +449,78 @@ class PushingDataset(Dataset):
 
         self.state_shape = self.observations.shape[1]
         self.action_shape = self.actions.shape[1]
+
+    @staticmethod
+    def _decode_step_type(feature) -> Optional[int]:
+        """Decode tf-agents step_type, which is stored as 1-byte raw bytes."""
+        try:
+            if feature.int64_list.value:
+                return int(feature.int64_list.value[0])
+            if feature.bytes_list.value:
+                raw = feature.bytes_list.value[0]
+                return int.from_bytes(raw, byteorder="little", signed=False)
+        except Exception:
+            return None
+        return None
+
+    def _load_all_data(self, max_samples: Optional[int] = None):
+        all_obs: list[np.ndarray] = []
+        all_acts: list[np.ndarray] = []
+        ep_starts: list[bool] = []
+        total = 0
+
+        for tfrecord_file in self.tfrecord_files:
+            raw_dataset = tf.data.TFRecordDataset(tfrecord_file)
+            is_first_in_file = True
+            for raw_record in raw_dataset:
+                try:
+                    example = tf.train.Example()
+                    example.ParseFromString(raw_record.numpy())
+                    features = example.features.feature
+
+                    chunks = []
+                    for key, dim in self._FEATURE_KEYS:
+                        vals = np.asarray(
+                            features[key].float_list.value, dtype=np.float32
+                        )
+                        if vals.shape[0] != dim:
+                            raise ValueError(
+                                f"Feature {key} has shape {vals.shape}, expected ({dim},)"
+                            )
+                        chunks.append(vals)
+                    obs = np.concatenate(chunks)
+                    action = np.asarray(
+                        features["action"].float_list.value, dtype=np.float32
+                    )
+
+                    # Episode boundary detection. tf-agents step_type:
+                    # 0=FIRST, 1=MID, 2=LAST. Treat 0 as start.
+                    is_start = is_first_in_file
+                    if "step_type" in features:
+                        st = self._decode_step_type(features["step_type"])
+                        if st is not None:
+                            is_start = (st == 0)
+                    is_first_in_file = False
+
+                    all_obs.append(obs)
+                    all_acts.append(action)
+                    ep_starts.append(is_start)
+                    total += 1
+                    if max_samples is not None and total >= max_samples:
+                        break
+                except Exception:
+                    continue
+            if max_samples is not None and total >= max_samples:
+                break
+
+        if not all_obs:
+            raise ValueError(f"No valid records found in {self.tfrecord_files}")
+
+        return (
+            np.array(all_obs, dtype=np.float32),
+            np.array(all_acts, dtype=np.float32),
+            np.array(ep_starts, dtype=bool),
+        )
 
     def __getitem__(self, index):
         return {"state": self.observations[index], "action": self.actions[index]}

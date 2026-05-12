@@ -239,6 +239,10 @@ def load_dataset():
         data_dir = env_config["data_dir"]
         n_dim = env_config.get("n_dim", 2)
         return ParticleDataset(data_dir, n_dim=n_dim, frame_stack=frame_stack)
+    elif active_env == "pushing":
+        from utils.datasets import PushingDataset
+        data_dir = env_config["data_dir"]
+        return PushingDataset(data_dir=data_dir, frame_stack=frame_stack)
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
         return DummyDataset(

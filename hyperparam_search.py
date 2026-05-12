@@ -551,11 +551,21 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     """Load Q3C models from *checkpoint_dir* and measure success rate."""
     from utils.models import ControlPointGenerator, QEstimator
     from simulations.particle_simulation import ParticleSimulation
+    from simulations.pushing_simulation import PushingSimulation
     from utils.sampling import sample_langevin
 
     active_env = config.get("active_env", "particle")
     env_config = config["environments"][active_env]
     sim_config = config.get("simulation", {})
+
+    # Pick the right simulation class. `pushing` uses the vendored IBC env;
+    # `particle` is the existing path. `dummy`/`pen` aren't currently routed
+    # through evaluate_q3c so we leave that fallback as ParticleSimulation
+    # for backward compatibility.
+    if active_env == "pushing":
+        SimulationCls = PushingSimulation
+    else:
+        SimulationCls = ParticleSimulation
 
     state_dim = env_config["state_dim"]
     action_dim = env_config["action_dim"]
@@ -639,7 +649,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     q_est.to(device).eval()
 
     if inference_langevin_iterations > 0:
-        class LangevinRefinedParticleSimulation(ParticleSimulation):
+        class LangevinRefinedParticleSimulation(SimulationCls):
             """Refines the highest-Q control point with Langevin MCMC before acting."""
 
             def select_action(self, observation, return_q_range: bool = False):
@@ -713,18 +723,21 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
         sim_cls = LangevinRefinedParticleSimulation
     else:
-        sim_cls = ParticleSimulation
+        sim_cls = SimulationCls
 
-    sim = sim_cls(
+    # PushingSimulation has no n_dim arg (1-block/1-target, fixed schema).
+    sim_kwargs: dict = dict(
         control_point_generator=cp_gen,
         q_estimator=q_est,
-        n_dim=n_dim,
         device=device,
         max_episode_steps=max_episode_steps,
         render_mode=None,
         frame_stack=frame_stack,
         norm_stats=norm_stats,
     )
+    if active_env != "pushing":
+        sim_kwargs["n_dim"] = n_dim
+    sim = sim_cls(**sim_kwargs)
 
     all_results = []
     for seed in seeds:
@@ -739,11 +752,36 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
     successes = [bool(r.get("success", False)) for r in all_results]
     rewards = [float(r.get("total_reward", 0.0)) for r in all_results]
-    dists_first = [float(r.get("min_dist_to_first_goal", np.inf)) for r in all_results]
-    dists_second = [float(r.get("min_dist_to_second_goal", np.inf)) for r in all_results]
     ep_lengths = [int(r.get("episode_length", 0)) for r in all_results]
     terminated_flags = [bool(r.get("terminated", False)) for r in all_results]
 
+    if active_env == "pushing":
+        # Pushing has a single goal — surface block→target distance under the
+        # same key names the analyzer/table use so trial logs stay searchable.
+        dists_target = [float(r.get("min_dist_to_target", np.inf)) for r in all_results]
+        finite_target = [d for d in dists_target if np.isfinite(d)]
+        return {
+            "success_rate": float(np.mean(successes)),
+            "avg_reward": float(np.mean(rewards)),
+            "avg_min_dist_to_target": float(np.mean(finite_target)) if finite_target else None,
+            "median_min_dist_to_target": float(np.median(finite_target)) if finite_target else None,
+            "avg_episode_length": float(np.mean(ep_lengths)),
+            "num_seeds": len(seeds),
+            "per_seed": [
+                {
+                    "seed": seeds[i],
+                    "success": successes[i],
+                    "reward": rewards[i],
+                    "min_dist_to_target": _finite(dists_target[i]),
+                    "episode_length": ep_lengths[i],
+                    "terminated": terminated_flags[i],
+                }
+                for i in range(len(seeds))
+            ],
+        }
+
+    dists_first = [float(r.get("min_dist_to_first_goal", np.inf)) for r in all_results]
+    dists_second = [float(r.get("min_dist_to_second_goal", np.inf)) for r in all_results]
     finite_first = [d for d in dists_first if np.isfinite(d)]
     finite_second = [d for d in dists_second if np.isfinite(d)]
 

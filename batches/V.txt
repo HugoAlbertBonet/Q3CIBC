@@ -1,0 +1,64 @@
+# Batch V — First trials on IBC Simulated Pushing (BlockPush, single target).
+#
+# Why this batch:
+#   We just wired up the IBC paper's Simulated Pushing task: vendored
+#   environments/block_pushing/block_pushing.py (PyBullet xArm + block +
+#   workspace) and the official block_push_states_location TFRecord oracle
+#   dataset (~76k transitions). State 10D (block_translation + orientation,
+#   effector_translation, effector_target_translation, target_translation +
+#   orientation), action 2D (xArm position delta).
+#
+#   This is the first time combinedv2_cpascounter_training runs on a real
+#   robotics-style env (we've only trained it on the synthetic particle env
+#   so far). We need to know:
+#     (a) Does training converge without NaN/divergence?
+#     (b) Is success rate >0 with our default hyperparameters?
+#     (c) Does the IBC-specific knob (Langevin training negatives) help here
+#         the way it sometimes helped on particle?
+#
+# Layout:
+#   V1     : baseline — defaults from config_json/config.json, seed=0
+#   V2,V3  : same as V1 but seeds=1,2 — variance check
+#   V4     : V1 + 16 Langevin negatives + 25 iters during training, paper-
+#            faithful counter-example mixture
+#   V5     : V1 + longer training (150k) to see if convergence is the
+#            bottleneck on this harder env
+#   V6     : V1 + more control points (30 instead of 20) — CP coverage probe,
+#            mirrors what helped on particle
+#   V7     : V1 + inference Langevin refinement (75 iters at action scale
+#            ~0.025) — closest to what the IBC paper actually deploys
+#   V8     : V1 + everything from V4+V6+V7 combined — best-guess recipe
+#
+# Predictions:
+#   - V1 success_rate > 0 (training loop is sound)
+#   - V2 ≈ V3 ≈ V1 within ±5 percentage points (low run-to-run noise)
+#   - V4 > V1 (paper-faithful negatives generally help)
+#   - V5 ≈ V1 (100k is already past convergence on similar-size envs)
+#   - V7 > V4 (inference refinement is the single biggest IBC paper trick)
+#   - V8 best of the lot
+
+# ── V1: baseline (defaults)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":10,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"noisy_expert_count":0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── V2: variance check, seed=1
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":10,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"noisy_expert_count":0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── V3: variance check, seed=2
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":10,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"noisy_expert_count":0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── V4: V1 + IBC Langevin training negatives. Langevin lr/clip scaled to the
+#       pushing env's action box (~0.025) — 1/4 of the value used on particle.
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":10,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.005,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.005,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── V5: V1 + 150k training steps — does convergence saturate at 100k?
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":10,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"noisy_expert_count":0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── V6: V1 + 30 control points (was 20) — generator coverage probe.
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":0,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"noisy_expert_count":0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── V7: V1 + inference-time Langevin refinement (75 iters). The IBC paper's
+#       core trick: refine the best CP's action via MCMC on the learned Q.
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":10,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.005,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.005,"langevin_decay_power":2.0,"inference_langevin_iterations":75,"noisy_expert_count":0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── V8: best-guess recipe — V4 + V6 + V7 stacked.
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":0,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.005,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.005,"langevin_decay_power":2.0,"inference_langevin_iterations":75,"noisy_expert_count":0,"training_steps":100000,"cosine_t_max":100000}'
