@@ -3,7 +3,7 @@ name = "q3cibc"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "gymnasium-robotics>=1.4.2",
     "matplotlib>=3.10.8",
@@ -30,3 +30,9 @@ pushing = [
 dev = [
     "pytest>=9.0.2",
 ]
+
+# On SLURM the node's default python is 3.14, but tensorflow 2.20.0 only
+# publishes cp312/cp313 wheels. Tell uv to grab its own managed 3.12 rather
+# than reuse whatever interpreter happens to be on PATH.
+[tool.uv]
+python-preference = "managed"
