@@ -120,11 +120,17 @@ A near-faithful reimplementation of the IBC paper's "Simulated Pushing, single t
 **Setup.** Pushing requires extra dependencies (PyBullet + legacy `gym` for the vendored env) that the rest of the project doesn't need. They live in the `pushing` PEP 621 optional-extra:
 
 ```bash
-uv sync --extra pushing                    # local dev
-uv run --extra pushing python ...          # one-off command
+uv sync --extra pushing                                        # local dev
+uv run --managed-python --extra pushing python ...             # one-off command (SLURM-safe)
 ```
 
-SLURM batches submitting pushing trials should prefix their command with `uv run --extra pushing` (see `batches/pushingA.txt`).
+`pybullet` has no Python 3.12 prebuilt wheel so it source-builds. The build needs `Python.h`, which is often missing on SLURM compute nodes (system Python is installed without `python3-dev`). The `--managed-python` flag tells `uv` to use its **own standalone CPython distribution** (downloaded into `~/.local/share/uv/python/` and cached) — which ships with the dev headers — instead of the system Python. Without it the SLURM pushing jobs crash with:
+
+```
+fatal error: Python.h: No such file or directory
+```
+
+SLURM batches submitting pushing trials prefix their command with `uv run --managed-python --extra pushing` (see `batches/pushingA.txt`).
 
 **Vendored code.** The env source lives in `simulations/ibc_block_pushing/`, copied from [google-research/ibc](https://github.com/google-research/ibc/tree/master/environments/block_pushing) (Apache 2.0). Two small adaptations vs. upstream:
 
@@ -192,7 +198,7 @@ uv sync                       # core deps: torch, tensorflow, minari, gymnasium-
 uv sync --extra pushing       # only if you'll run the pushing env (adds pybullet + legacy gym)
 ```
 
-The pushing extras are gated behind a PEP 621 optional-dependency group because they require a PyBullet source build (no prebuilt cp312 wheel for `pybullet==3.1.6`), which fails on stricter SLURM toolchains. Particle / dummy / pen trials install cleanly without them.
+The pushing extras are gated behind a PEP 621 optional-dependency group because they require a PyBullet **source build** (no prebuilt cp312 wheel for `pybullet==3.1.6`). The build needs `Python.h`, which is often missing on cluster compute nodes (system Python installed without `python3-dev`). When running on SLURM, prepend `uv run --managed-python` to force uv to use its bundled standalone CPython (ships with headers) — see the [pushing env section](#pushing--ibc-simulated-pushing-single-target) below. Particle / dummy / pen trials install cleanly without these extras.
 
 ### Datasets
 

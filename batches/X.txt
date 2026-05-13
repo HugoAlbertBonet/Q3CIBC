@@ -1,0 +1,42 @@
+# Batch X — Push beyond the 66% ceiling at the locked Q2 recipe.
+#
+# Findings from W:
+#   - nec=32 catastrophically breaks training (4/4 centroid lock). Locked nec=16.
+#   - seed=3 stays ~20 pts above seed=5 in working-run height (real per-seed bias).
+#   - The 66% best result (U8) is still unbroken across ~10 replicates at this config.
+#
+# This batch tests two orthogonal levers, each as 4 replicates at the locked
+# base recipe (Q2 + 200k + seed=3 + nec=16 + cosine_warm_restarts + gentle
+# inference Langevin):
+#
+#   X1–X4: inference_langevin_iterations 75 → 150
+#          Hypothesis: more inference refinement closes the goal-2 precision
+#          floor. Goal-2 distance was the bottleneck in U batch (when policy
+#          worked, d_g2 ≈ 0.07–0.08, just inside success threshold of 0.05).
+#          More inference iters should tighten d_g2 further.
+#
+#   X5–X8: estimator_learning_rate 1e-3 → 5e-4
+#          Hypothesis: a smaller estimator-side lr produces a smoother Q
+#          training trajectory, reducing the 0%/10% outlier runs. Targets
+#          the "raise the floor" axis, not the "raise the ceiling" axis.
+#
+# Decision rules:
+#   - X1–X4 mean > 50% and at least one run > 70%   → inference iters lever wins
+#   - X5–X8 floor lifts (no 0%/10% outliers)         → estimator_lr lever wins
+#   - Both improve                                    → combine in next batch
+#   - Neither improves                                → we're at the recipe's
+#                                                       intrinsic ceiling; next
+#                                                       lever has to be structural
+#                                                       (frame stack, dataset, etc.)
+
+# ── X1–X4: locked recipe + inference_langevin_iterations=150, 4 replicates
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":150,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":150,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":150,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":150,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── X5–X8: locked recipe + estimator_learning_rate=5e-4, 4 replicates
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000,"estimator_learning_rate":0.0005}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000,"estimator_learning_rate":0.0005}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000,"estimator_learning_rate":0.0005}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000,"estimator_learning_rate":0.0005}'
