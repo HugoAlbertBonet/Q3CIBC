@@ -80,6 +80,11 @@ class PushingEnv(gym.Env):
         n_steps: int = 100,
         seed: Optional[int] = None,
         render_mode: Optional[str] = None,
+        # IBC paper's `pushing_states/mlp_ebm_langevin.gin` sets
+        # `train_eval.goal_tolerance = 0.02`. The env class default is the
+        # stricter 0.01 (`block_pushing.py` line 178). We surface this here
+        # and default to the paper value so Q3CIBC eval matches Table 3.
+        goal_dist_tolerance: float = 0.02,
     ):
         super().__init__()
         self.n_steps = n_steps
@@ -87,7 +92,10 @@ class PushingEnv(gym.Env):
 
         # Underlying IBC env. control_frequency / step_frequency / abs_action
         # are at their published defaults.
-        self._env = BlockPush(task=BlockTaskVariant.PUSH)
+        self._env = BlockPush(
+            task=BlockTaskVariant.PUSH,
+            goal_dist_tolerance=goal_dist_tolerance,
+        )
         if seed is not None:
             self._env.seed(seed)
 

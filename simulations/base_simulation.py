@@ -67,6 +67,18 @@ class BaseSimulation(ABC):
         """Callback for rendering custom overlays (optional)."""
         pass
 
+    def _denormalize_action(self, action: np.ndarray) -> np.ndarray:
+        """Linearly map a model-space action to the env's native action box.
+
+        Default: no-op (the model already emits raw env actions). Subclasses
+        that train in a normalized action space (e.g. PushingSimulation when
+        norm_stats are present) override this to apply the inverse map.
+
+        Called by paths that produce actions outside `select_action`,
+        notably the Langevin-refined eval wrapper.
+        """
+        return action
+
     def select_action(self, observation: np.ndarray) -> np.ndarray:
         """Select action from control points based on Q-values.
         

@@ -367,14 +367,35 @@ def main():
     
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
-    # Observation normalizer
+    # Observation normalizer.
+    # For pushing we run in IBC-paper-faithful "standardize" mode using
+    # per-dim mean/std computed from the dataset (matches `get_normalizers.py`
+    # in google-research/ibc). Other envs keep their hand-authored min-max
+    # bounds. The pushing stats also feed `norm_stats.pt` so the eval-time
+    # PushingSimulation can recreate the exact same normalizer.
     particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
-    obs_normalizer = ObservationNormalizer(
-        env_id=env_id,
-        device=device,
-        frame_stack=frame_stack,
-        particle_n_dim=particle_n_dim,
-    )
+    if active_env == "pushing":
+        if not hasattr(dataset, "obs_mean") or not hasattr(dataset, "obs_std"):
+            raise RuntimeError(
+                "Pushing dataset must expose `obs_mean`/`obs_std` for standardize "
+                "normalization. Refresh utils/datasets.py:PushingDataset."
+            )
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_id,
+            device=device,
+            frame_stack=frame_stack,
+            obs_mean=dataset.obs_mean,
+            obs_std=dataset.obs_std,
+        )
+        print(f"Observation normalizer: standardize (per-dim mean/std from dataset)")
+    else:
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_id,
+            device=device,
+            frame_stack=frame_stack,
+            particle_n_dim=particle_n_dim,
+        )
+        print(f"Observation normalizer: minmax")
     
     # Number of generated control points used as counter examples.
     k_cp_counter_examples = max(1, min(top_k_control_points, control_points))
@@ -696,13 +717,30 @@ def main():
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     torch.save(control_point_generator.state_dict(), os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
     torch.save(estimator.state_dict(), os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
-    
+
+    # Persist normalization stats for pushing — the eval-time PushingSimulation
+    # uses these to recreate the exact same obs-standardize + action-denorm
+    # transforms that training used. Mirrors `get_normalizers.py` in
+    # google-research/ibc (stats computed from data, frozen, applied at eval).
+    if active_env == "pushing":
+        norm_stats = {
+            "act_min": dataset.act_min,
+            "act_max": dataset.act_max,
+            "action_norm_range": getattr(dataset, "action_norm_range", (-1.0, 1.0)),
+            "obs_mean": dataset.obs_mean,
+            "obs_std": dataset.obs_std,
+            "frame_stack": frame_stack,
+            "env_id": env_id,
+        }
+        torch.save(norm_stats, os.path.join(MODEL_SAVE_DIR, "norm_stats.pt"))
+        print(f"norm_stats.pt saved (act range {dataset.act_min} → {dataset.act_max})")
+
     # Remove stale smoothing param if exists
     smoothing_param_path = os.path.join(MODEL_SAVE_DIR, "smoothing_param.pt")
     if os.path.exists(smoothing_param_path):
         os.remove(smoothing_param_path)
         print(f"Removed stale {smoothing_param_path}")
-    
+
     print(f"Models saved to {MODEL_SAVE_DIR}/")
     
     # Log model artifacts to W&B

@@ -1,0 +1,33 @@
+# Batch W — Confirm Q2 across seeds + push noisy_expert_count.
+#
+# Findings from U that this batch builds on:
+#   - P4 (Langevin-from-CPs): 1/5 runs at 66%, 4/5 at 0%. DROPPED.
+#   - Q2 (noisy expert only) at seed=3, 200k: 5 replicates gave
+#     0, 10, 46, 58, 60, 66% — mean ~48%, mode 50-60%.
+#   - CUDA nondeterminism still dominates run-to-run variance even at
+#     fixed trial_seed, so we need ≥4 replicates per config.
+#
+# This batch tests two things in parallel:
+#
+#   W1–W4 : Q2 + 200k at seed=5 (4 replicates)
+#           Confirm Q2 generalizes off seed=3. If seed=5 also reaches
+#           50%+ on average, the recipe is robust across seeds. If seed=5
+#           lands consistently at 30% or lower, the per-seed variance is
+#           real and seed=3 sits in a favorable basin.
+#
+#   W5–W8 : Q2 + 200k + noisy_expert_count=32 at seed=3 (4 replicates)
+#           Push the noisy-expert lever. Double the negatives → does mean
+#           success climb beyond ~48%? If yes, count is undertuned.
+#           If no/worse, 16 is the right value.
+
+# ── W1–W4: Q2 + 200k + seed=5, 4 replicates (cross-seed validation)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":5,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":5,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":5,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":5,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── W5–W8: Q2 + 200k + noisy_expert_count=32 + seed=3, 4 replicates (push the lever)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":75,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":200000,"cosine_t_max":200000}'

@@ -422,33 +422,33 @@
         }
     },
     "Pushing-v0": {
-        "description": "Observation bounds for Pushing-v0 (IBC paper's single-target block push, vendored from google-research/ibc). State layout (10D): [block_translation (2), block_orientation (1), effector_translation (2), effector_target_translation (2), target_translation (2), target_orientation (1)]. Bounds approximate the data-driven statistics from the official block_push_states_location oracle TFRecord dataset, padded slightly.",
-        "source": "Florence et al. 2021 IBC, derived from oracle dataset min/max",
+        "description": "Observation bounds for Pushing-v0 (IBC paper's single-target block push, vendored from google-research/ibc). State layout (10D): [block_translation (2), block_orientation (1), effector_translation (2), effector_target_translation (2), target_translation (2), target_orientation (1)]. Bounds derived from full official block_push_states_location oracle TFRecord (76,626 transitions) — each per-dim bound is max(data_extreme, IBC workspace) with a small safety margin so normalizer doesn't clip during eval.",
+        "source": "Florence et al. 2021 IBC, empirical min/max over the published 1400-episode oracle dataset",
         "observation_dim": 10,
         "flat_bounds": {
             "min": [
-                -0.6,
-                -0.6,
-                -3.15,
+                0.13,
+                -0.45,
+                -3.1416,
                 0.05,
-                -0.6,
-                -0.6,
-                -0.6,
-                -0.6,
-                -0.6,
-                -3.15
+                -0.55,
+                0.05,
+                -0.55,
+                0.25,
+                0.00,
+                -3.1416
             ],
             "max": [
-                0.6,
-                0.6,
-                3.15,
-                0.8,
-                0.6,
-                0.8,
-                0.6,
-                0.6,
-                0.6,
-                3.15
+                0.72,
+                0.50,
+                3.1416,
+                0.80,
+                0.55,
+                0.80,
+                0.55,
+                0.55,
+                0.40,
+                3.1416
             ]
         }
     },

@@ -352,10 +352,26 @@ def load_config() -> dict:
 
 # ─── Trials I/O ──────────────────────────────────────────────────────────────
 
-def _results_dir(script_name: str) -> Path:
-    config = load_config()
-    active_env = config.get("active_env", "particle")
-    env_cfg = config.get("environments", {}).get(active_env, {})
+def _results_dir(script_name: str, active_env: str | None = None) -> Path:
+    """Resolve the trials directory for a (script, env) pair.
+
+    When `active_env` is provided (the CLI override path) we use it directly
+    and DO NOT touch config.json. This avoids the long-standing race where
+    config.json was flipped between trial submit and trial record, which
+    caused pushing trials to be logged into the particle folder and vice
+    versa. The disk-read fallback is kept so old call paths (`--analyze`
+    without --active-env) still work.
+    """
+    if active_env is None:
+        config = load_config()
+        active_env = config.get("active_env", "particle")
+        env_cfg = config.get("environments", {}).get(active_env, {})
+    else:
+        # Still need env_cfg to detect particle n_dim partitioning; read from
+        # disk but use the override for the env selection.
+        config = load_config()
+        env_cfg = config.get("environments", {}).get(active_env, {})
+
     results_dir = RESULTS_BASE_DIR / Path(script_name).stem / active_env
 
     # For particle experiments, partition trials by n_dim to avoid mixing runs.
@@ -365,12 +381,12 @@ def _results_dir(script_name: str) -> Path:
     return results_dir
 
 
-def _trials_path(script_name: str) -> Path:
-    return _results_dir(script_name) / "trials.jsonl"
+def _trials_path(script_name: str, active_env: str | None = None) -> Path:
+    return _results_dir(script_name, active_env=active_env) / "trials.jsonl"
 
 
-def load_trials(script_name: str) -> list[dict]:
-    path = _trials_path(script_name)
+def load_trials(script_name: str, active_env: str | None = None) -> list[dict]:
+    path = _trials_path(script_name, active_env=active_env)
     if not path.exists():
         return []
     trials = []
@@ -382,13 +398,13 @@ def load_trials(script_name: str) -> list[dict]:
     return trials
 
 
-def append_trial(script_name: str, record: dict) -> int:
+def append_trial(script_name: str, record: dict, active_env: str | None = None) -> int:
     """Atomically assign a monotonically-increasing trial_id and append the record.
 
     Uses fcntl.flock for an exclusive lock over the jsonl for the short read-max +
     write-line section. Safe under parallel sbatch submissions. Returns the id.
     """
-    path = _trials_path(script_name)
+    path = _trials_path(script_name, active_env=active_env)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, "a") as f:
@@ -587,7 +603,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     cp_width = em.get("cp_width", num_neurons)
     cp_depth = em.get("cp_depth", num_hidden_layers)
     cp_use_spectral_norm = em.get("cp_use_spectral_norm", False)
-    max_episode_steps = sim_config.get("max_episode_steps", 50)
+    # Per-env override wins over the shared simulation.max_episode_steps.
+    # Pushing needs 100 (IBC paper BlockPush-v0); particle uses the global 50.
+    max_episode_steps = env_config.get(
+        "max_episode_steps", sim_config.get("max_episode_steps", 50)
+    )
     num_seeds = int(sim_config.get("num_seeds", len(sim_config.get("default_seeds", [0]))))
     if num_seeds <= 0:
         raise ValueError("simulation.num_seeds must be >= 1")
@@ -717,6 +737,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
                 action = refined[0, 0, :].cpu().numpy()
                 action = np.clip(action, action_bounds[0], action_bounds[1])
+                # Denormalize to the env's native action box when the
+                # simulation declares a non-identity inverse (Pushing). For
+                # ParticleSimulation this is a no-op (action_bounds = [0, 1]
+                # is already the env action box).
+                action = self._denormalize_action(action)
                 if return_q_range:
                     return action, q_range
                 return action
@@ -725,7 +750,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     else:
         sim_cls = SimulationCls
 
-    # PushingSimulation has no n_dim arg (1-block/1-target, fixed schema).
+    # PushingSimulation has no n_dim arg (1-block/1-target, fixed schema)
+    # but has its own goal_dist_tolerance knob (IBC paper used 0.02).
     sim_kwargs: dict = dict(
         control_point_generator=cp_gen,
         q_estimator=q_est,
@@ -735,7 +761,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         frame_stack=frame_stack,
         norm_stats=norm_stats,
     )
-    if active_env != "pushing":
+    if active_env == "pushing":
+        sim_kwargs["goal_dist_tolerance"] = float(
+            env_config.get("goal_dist_tolerance", 0.02)
+        )
+    else:
         sim_kwargs["n_dim"] = n_dim
     sim = sim_cls(**sim_kwargs)
 
@@ -895,6 +925,7 @@ def run_single_trial(
     params: dict,
     training_steps_override: int | None = None,
     timeout: int | None = None,
+    active_env_override: str | None = None,
 ) -> dict:
     """Write a per-run config, train, evaluate, and atomically append the trial record.
 
@@ -902,6 +933,10 @@ def run_single_trial(
     training subprocess reads it via Q3C_CONFIG_PATH. The checkpoint directory is also
     run-id-scoped. No shared config.json mutation occurs, so parallel sbatch jobs do
     not collide on either config state or checkpoint files.
+
+    `active_env_override`, when set, pins the env for this trial across training,
+    evaluation, AND result-logging. This is the supported way to dispatch envs
+    from the CLI — flipping config.json's active_env is racy.
     """
     script_name = script_path.name
     run_id = _new_run_id()
@@ -912,6 +947,14 @@ def run_single_trial(
     print(f"Parameters:\n{json.dumps(params, indent=2)}")
 
     config = load_config()
+    if active_env_override is not None:
+        if active_env_override not in config.get("environments", {}):
+            raise ValueError(
+                f"--active-env {active_env_override!r} is not in config.json's "
+                f"environments. Known: {list(config.get('environments', {}).keys())}"
+            )
+        config["active_env"] = active_env_override
+        print(f"  active_env override → {active_env_override}")
     config = apply_params_to_config(config, params)
     checkpoint_dir = set_run_checkpoint_dir(config, run_id)
 
@@ -951,6 +994,7 @@ def run_single_trial(
         record = {
             "run_id": run_id,
             "script": script_name,
+            "active_env": active_env,
             "params": params,
             "training_steps": actual_steps,
             "duration_seconds": round(duration, 1),
@@ -961,7 +1005,7 @@ def run_single_trial(
             "checkpoint_dir": checkpoint_dir,
             "timestamp": timestamp,
         }
-        trial_id = append_trial(script_name, record)
+        trial_id = append_trial(script_name, record, active_env=active_env)
         print(f"  Recorded as trial #{trial_id}")
         return record
 
@@ -981,26 +1025,32 @@ def run_single_trial(
         }
         print(f"  Evaluation failed: {exc}")
 
+    # Env-agnostic record schema. Particle eval returns `*_first_goal` /
+    # `*_second_goal` keys; pushing returns `*_to_target` keys. We spread
+    # ALL non-private eval scalars into the top level so analyzers don't
+    # silently drop env-specific metrics. Particle-style keys are kept as
+    # explicit fields for backward compatibility with the legacy analyzer.
+    env_specific = {
+        k: v for k, v in eval_results.items()
+        if k not in ("per_seed", "error", "success_rate", "avg_reward")
+    }
     record = {
         "run_id": run_id,
         "script": script_name,
+        "active_env": active_env,
         "params": params,
         "training_steps": actual_steps,
         "duration_seconds": round(duration, 1),
         "success_rate": eval_results.get("success_rate", 0.0),
         "avg_reward": eval_results.get("avg_reward", 0.0),
-        "avg_min_dist_first_goal": eval_results.get("avg_min_dist_first_goal"),
-        "avg_min_dist_second_goal": eval_results.get("avg_min_dist_second_goal"),
-        "median_min_dist_first_goal": eval_results.get("median_min_dist_first_goal"),
-        "median_min_dist_second_goal": eval_results.get("median_min_dist_second_goal"),
-        "avg_episode_length": eval_results.get("avg_episode_length"),
+        **env_specific,
         **train_metrics,
         "eval_details": eval_results.get("per_seed", []),
         "eval_error": eval_results.get("error"),
         "checkpoint_dir": checkpoint_dir,
         "timestamp": timestamp,
     }
-    trial_id = append_trial(script_name, record)
+    trial_id = append_trial(script_name, record, active_env=active_env)
 
     sr = record["success_rate"]
     rw = record["avg_reward"]
@@ -1010,9 +1060,9 @@ def run_single_trial(
 
 # ─── Analyze / summary ───────────────────────────────────────────────────────
 
-def print_analysis(script_name: str) -> None:
+def print_analysis(script_name: str, active_env: str | None = None) -> None:
     """Print a formatted results table sorted by success rate."""
-    trials = load_trials(script_name)
+    trials = load_trials(script_name, active_env=active_env)
     if not trials:
         print(f"No trials found for {script_name}.")
         return
@@ -1157,6 +1207,17 @@ def main() -> None:
             " Use this to measure variance honestly (default: 1)."
         ),
     )
+    parser.add_argument(
+        "--active-env",
+        type=str,
+        default=None,
+        help=(
+            "Override `active_env` from config.json for this invocation only. "
+            "When set, the trial trains, evaluates, AND is logged under this "
+            "env — no race with concurrent config.json edits. Recommended for "
+            "all SLURM batches. Choices: any key under environments.* in config.json."
+        ),
+    )
     args = parser.parse_args()
 
     fixed_params: dict = {}
@@ -1170,9 +1231,11 @@ def main() -> None:
 
     script_name = Path(args.script).name
 
+    active_env_cli = args.active_env
+
     # ── Analyze mode ──────────────────────────────────────────────────────
     if args.analyze:
-        print_analysis(script_name)
+        print_analysis(script_name, active_env=active_env_cli)
         return
 
     # ── Detect params and baseline ────────────────────────────────────────
@@ -1186,6 +1249,17 @@ def main() -> None:
             print(f"  - {p}  (search space: {SEARCH_SPACE[p]['values']})")
 
     config = load_config()
+    if active_env_cli is not None:
+        # Make baseline reflect the override so the baseline params come from
+        # the right env's training/model blocks.
+        if active_env_cli not in config.get("environments", {}):
+            print(
+                f"Error: --active-env {active_env_cli!r} not found in config.json. "
+                f"Known: {list(config.get('environments', {}).keys())}"
+            )
+            sys.exit(1)
+        config["active_env"] = active_env_cli
+        print(f"Active env override (CLI): {active_env_cli}")
     baseline = get_baseline_params(config, detected_params)
     print(f"\nBaseline (current config):")
     for k, v in baseline.items():
@@ -1199,7 +1273,7 @@ def main() -> None:
             params = baseline.copy()
             params.update(user_params)
         else:
-            trials = load_trials(script_name)
+            trials = load_trials(script_name, active_env=active_env_cli)
             params, reason = suggest_next_params(trials, detected_params, baseline)
             print(f"Auto-suggested ({reason})")
 
@@ -1219,13 +1293,14 @@ def main() -> None:
                 params=rep_params,
                 training_steps_override=args.reduced_steps,
                 timeout=args.timeout,
+                active_env_override=active_env_cli,
             )
         return
 
     # ── Auto mode ─────────────────────────────────────────────────────────
     if args.auto:
         for i in range(args.max_trials):
-            trials = load_trials(script_name)
+            trials = load_trials(script_name, active_env=active_env_cli)
             params, reason = suggest_next_params(trials, detected_params, baseline)
             print(f"\n[Auto {i + 1}/{args.max_trials}] Strategy: {reason}")
 
@@ -1245,10 +1320,11 @@ def main() -> None:
                     params=rep_params,
                     training_steps_override=args.reduced_steps,
                     timeout=args.timeout,
+                    active_env_override=active_env_cli,
                 )
 
         print("\n\nAuto-exploration complete. Full results:")
-        print_analysis(script_name)
+        print_analysis(script_name, active_env=active_env_cli)
 
 
 if __name__ == "__main__":

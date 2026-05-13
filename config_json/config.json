@@ -88,9 +88,11 @@
             "action_dim": 2,
             "frame_stack": 2,
             "action_bounds": [
-                -0.0255,
-                0.0428
+                -1.0,
+                1.0
             ],
+            "max_episode_steps": 100,
+            "goal_dist_tolerance": 0.02,
             "training": {
                 "training_steps": 100000,
                 "learning_rate": 0.001,

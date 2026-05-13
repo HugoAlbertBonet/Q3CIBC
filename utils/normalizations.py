@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 
 def wireFittingNorm(
         control_points: torch.Tensor,           # (B, N, D)
@@ -84,10 +86,18 @@ def wireFittingInterpolation(
 
 
 class ObservationNormalizer:
-    """Normalizes observations to [0, 1] range using predefined bounds.
-    
-    Loads bounds from a JSON file and provides methods to normalize
-    and denormalize observations.
+    """Normalizes observations either by min-max to [0,1] or by standardization.
+
+    Two modes:
+      - "minmax" (default, used by particle/dummy/pen): linear map per-dim
+        from a hand-authored JSON bounds file → [0, 1], clamped at edges.
+      - "standardize" (paper-faithful for pushing): per-dim (x - mean) / std.
+        Match IBC's `get_normalizers.py` + `stats.compute_dataset_statistics`,
+        which compute mean/std from 5000 samples and normalize without
+        clipping. Pass `obs_mean` and `obs_std` from your dataset to enable.
+
+    Both modes support frame stacking by tiling the per-frame stats
+    `frame_stack` times.
     """
 
     def __init__(
@@ -97,29 +107,59 @@ class ObservationNormalizer:
         device: str = "cpu",
         frame_stack: int = 1,
         particle_n_dim: Optional[int] = None,
+        obs_mean: Optional[np.ndarray] = None,
+        obs_std: Optional[np.ndarray] = None,
     ) -> None:
-        """Initialize the normalizer with bounds for a specific environment.
-        
+        """Initialize the normalizer.
+
         Args:
             env_id: The environment ID (e.g., 'AdroitHandPen-v1').
             bounds_file: Path to the JSON file containing observation bounds.
-                        Defaults to 'observation_bounds.json' in the project root.
+                Defaults to 'observation_bounds.json' in the project root.
+                Only consulted when obs_mean/obs_std are not provided.
             device: Device for tensors ('cpu' or 'cuda').
+            frame_stack: Number of stacked frames; the stats vector is tiled
+                that many times.
+            particle_n_dim: For Particle-v0, dimensionality used to build
+                per-dim bounds dynamically.
+            obs_mean: Per-dim mean of the dataset's UNSTACKED observations.
+                Triggers `standardize` mode when paired with `obs_std`.
+            obs_std: Per-dim std; passed alongside `obs_mean`.
         """
+        self.env_id = env_id
+
+        # If stats are provided, run in standardize mode and skip the JSON.
+        if obs_mean is not None and obs_std is not None:
+            self.mode = "standardize"
+            mean = np.asarray(obs_mean, dtype=np.float32)
+            std = np.asarray(obs_std, dtype=np.float32)
+            # Defensive: never divide by zero. The dataset already adds a
+            # small floor, but new datasets might not.
+            std = np.where(std == 0, np.ones_like(std), std)
+            self.observation_dim = int(mean.shape[0])
+            self.obs_mean = torch.tensor(mean, dtype=torch.float32, device=device)
+            self.obs_std = torch.tensor(std, dtype=torch.float32, device=device)
+            if frame_stack > 1:
+                self.obs_mean = self.obs_mean.repeat(frame_stack)
+                self.obs_std = self.obs_std.repeat(frame_stack)
+            self.device = device
+            return
+
+        # ── minmax path (legacy, used by particle/dummy/pen) ───────────────
+        self.mode = "minmax"
         if bounds_file is None:
             bounds_file = Path(__file__).parent.parent / "config_json" / "observation_bounds.json"
-        
+
         with open(bounds_file, "r") as f:
             all_bounds = json.load(f)
-        
+
         if env_id not in all_bounds:
             raise ValueError(
                 f"Environment '{env_id}' not found in bounds file. "
                 f"Available: {list(all_bounds.keys())}"
             )
-        
+
         env_bounds = all_bounds[env_id]
-        self.env_id = env_id
 
         # Particle bounds are dimension-dependent (2D/3D/...) while env_id remains Particle-v0.
         # Build bounds dynamically when particle_n_dim is provided.
@@ -132,12 +172,10 @@ class ObservationNormalizer:
             self.obs_max = torch.tensor(obs_max, dtype=torch.float32, device=device)
         else:
             self.observation_dim = env_bounds["observation_dim"]
-            
-            # Load flat bounds as tensors
             flat_bounds = env_bounds["flat_bounds"]
             self.obs_min = torch.tensor(flat_bounds["min"], dtype=torch.float32, device=device)
             self.obs_max = torch.tensor(flat_bounds["max"], dtype=torch.float32, device=device)
-        
+
         # Compute range, avoiding division by zero
         self.obs_range = self.obs_max - self.obs_min
         self.obs_range = torch.where(
@@ -145,61 +183,56 @@ class ObservationNormalizer:
             torch.ones_like(self.obs_range),
             self.obs_range
         )
-        
+
         # Tile bounds for frame stacking
         if frame_stack > 1:
             self.obs_min = self.obs_min.repeat(frame_stack)
             self.obs_max = self.obs_max.repeat(frame_stack)
             self.obs_range = self.obs_range.repeat(frame_stack)
-        
+
         self.device = device
 
     def normalize(self, observation: torch.Tensor) -> torch.Tensor:
-        """Normalize observation to [0, 1] range.
-        
-        Args:
-            observation: Raw observation tensor of shape (..., obs_dim).
-            
-        Returns:
-            Normalized observation in [0, 1] range, clamped.
+        """Normalize observation.
+
+        - minmax: (obs - min) / range, then clamp to [0, 1].
+        - standardize: (obs - mean) / std, no clipping.
         """
-        # Ensure bounds are on same device as observation
+        if self.mode == "standardize":
+            if observation.device != self.obs_mean.device:
+                self.to(observation.device)
+            return (observation - self.obs_mean) / self.obs_std
+
+        # minmax
         if observation.device != self.obs_min.device:
             self.to(observation.device)
-        
         normalized = (observation - self.obs_min) / self.obs_range
         return torch.clamp(normalized, 0.0, 1.0)
 
     def denormalize(self, normalized_observation: torch.Tensor) -> torch.Tensor:
-        """Denormalize observation from [0, 1] range back to original scale.
-        
-        Args:
-            normalized_observation: Normalized observation tensor of shape (..., obs_dim).
-            
-        Returns:
-            Denormalized observation in original scale.
-        """
+        """Inverse of `normalize`."""
+        if self.mode == "standardize":
+            if normalized_observation.device != self.obs_mean.device:
+                self.to(normalized_observation.device)
+            return normalized_observation * self.obs_std + self.obs_mean
+
         if normalized_observation.device != self.obs_min.device:
             self.to(normalized_observation.device)
-        
         return normalized_observation * self.obs_range + self.obs_min
 
     def to(self, device: str) -> "ObservationNormalizer":
-        """Move bounds tensors to specified device.
-        
-        Args:
-            device: Target device ('cpu' or 'cuda').
-            
-        Returns:
-            Self for chaining.
-        """
-        self.obs_min = self.obs_min.to(device)
-        self.obs_max = self.obs_max.to(device)
-        self.obs_range = self.obs_range.to(device)
+        """Move stats tensors to the specified device."""
+        if self.mode == "standardize":
+            self.obs_mean = self.obs_mean.to(device)
+            self.obs_std = self.obs_std.to(device)
+        else:
+            self.obs_min = self.obs_min.to(device)
+            self.obs_max = self.obs_max.to(device)
+            self.obs_range = self.obs_range.to(device)
         self.device = device
         return self
 
     def __repr__(self) -> str:
-        return f"ObservationNormalizer(env_id='{self.env_id}', dim={self.observation_dim})"
+        return f"ObservationNormalizer(env_id='{self.env_id}', mode='{self.mode}', dim={self.observation_dim})"
 
 

@@ -419,7 +419,27 @@ class PushingDataset(Dataset):
         data_dir: str = "datasets/block_push/block_push_states_location",
         frame_stack: int = 1,
         max_samples: Optional[int] = None,
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
     ):
+        """Load the IBC block_push oracle dataset.
+
+        Args:
+            data_dir: Directory of `oracle_push_*.tfrecord` files.
+            frame_stack: Concatenate the previous (frame_stack - 1) obs into
+                the current observation. IBC paper uses 2.
+            max_samples: Optional cap (default: load all 75k transitions).
+            normalize_actions: When True, return actions linearly mapped to
+                `action_norm_range`. This matches the IBC pipeline
+                (`compute_dataset_statistics.min_max_actions=True` in
+                `pushing_states/mlp_ebm_langevin.gin`) — the network operates
+                in normalized action space, denormalized back to raw effector
+                deltas only at env.step time. Stats persist in attributes
+                `act_min` / `act_max` so callers can denormalize.
+            action_norm_range: Linear target range for action normalization.
+                Default `(-1, 1)` matches IBC; pass `(0, 1)` for the
+                ibc_with_cps convention.
+        """
         if not TF_AVAILABLE:
             raise ImportError(
                 "TensorFlow is required to load IBC block_push TFRecord files. "
@@ -428,6 +448,8 @@ class PushingDataset(Dataset):
 
         self.frame_stack = frame_stack
         self.data_dir = data_dir
+        self.normalize_actions = normalize_actions
+        self.action_norm_range = action_norm_range
         self._base_obs_dim = sum(d for _, d in self._FEATURE_KEYS)  # 10
 
         pattern = os.path.join(data_dir, "oracle_push_*.tfrecord")
@@ -438,9 +460,33 @@ class PushingDataset(Dataset):
                 f"block_push_states_location.zip?"
             )
 
-        self.observations, self.actions, self._episode_starts = self._load_all_data(
+        self.observations, raw_actions, self._episode_starts = self._load_all_data(
             max_samples=max_samples
         )
+
+        # ─── Dataset statistics (paper-faithful: from raw obs/actions) ──────
+        # Computed on UNSTACKED obs so they apply to one frame at a time.
+        # The ObservationNormalizer will repeat them frame_stack times.
+        self.obs_mean = self.observations.mean(axis=0).astype(np.float32)
+        # Small floor on std avoids divide-by-zero for any degenerate dim
+        # (block_orientation in particular has near-uniform coverage so std
+        # is healthy; this is defensive).
+        self.obs_std = (self.observations.std(axis=0) + 1e-6).astype(np.float32)
+        self.act_min = raw_actions.min(axis=0).astype(np.float32)
+        self.act_max = raw_actions.max(axis=0).astype(np.float32)
+
+        # ─── Action normalization (paper-faithful) ───────────────────────────
+        # Linearly map per-dim from [act_min, act_max] → action_norm_range.
+        # The reverse map is `_unnormalize_action` for use at env.step time.
+        if normalize_actions:
+            lo, hi = float(action_norm_range[0]), float(action_norm_range[1])
+            denom = (self.act_max - self.act_min)
+            # Guard near-degenerate dims (shouldn't happen for pushing but
+            # cheap insurance for future datasets).
+            denom = np.where(denom == 0, np.ones_like(denom), denom)
+            self.actions = (lo + (raw_actions - self.act_min) * (hi - lo) / denom).astype(np.float32)
+        else:
+            self.actions = raw_actions
 
         if frame_stack > 1:
             self.observations = stack_frames(
@@ -449,6 +495,19 @@ class PushingDataset(Dataset):
 
         self.state_shape = self.observations.shape[1]
         self.action_shape = self.actions.shape[1]
+
+    def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
+        """Inverse of the action normalization applied in __init__.
+
+        Use this at env.step time to convert the model's output (in
+        `action_norm_range`) back to a raw effector delta in the env's
+        native action box.
+        """
+        if not self.normalize_actions:
+            return np.asarray(normalized_action, dtype=np.float32)
+        lo, hi = float(self.action_norm_range[0]), float(self.action_norm_range[1])
+        scale = (self.act_max - self.act_min) / (hi - lo)
+        return (self.act_min + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale).astype(np.float32)
 
     @staticmethod
     def _decode_step_type(feature) -> Optional[int]:
@@ -496,11 +555,22 @@ class PushingDataset(Dataset):
                     # Episode boundary detection. tf-agents step_type:
                     # 0=FIRST, 1=MID, 2=LAST. Treat 0 as start.
                     is_start = is_first_in_file
+                    st_val = None
                     if "step_type" in features:
-                        st = self._decode_step_type(features["step_type"])
-                        if st is not None:
-                            is_start = (st == 0)
+                        st_val = self._decode_step_type(features["step_type"])
+                        if st_val is not None:
+                            is_start = (st_val == 0)
                     is_first_in_file = False
+
+                    # SKIP terminal rows. tf-agents Trajectory stores a row
+                    # for the LAST step where the action is a placeholder /
+                    # boundary value, not what the expert actually executed
+                    # from the terminal state. Training a policy on
+                    # (terminal_obs → boundary_action) introduces a
+                    # ~episode-count fraction of noisy supervision and
+                    # corrupts the BC objective.
+                    if st_val == 2:  # LAST
+                        continue
 
                     all_obs.append(obs)
                     all_acts.append(action)
