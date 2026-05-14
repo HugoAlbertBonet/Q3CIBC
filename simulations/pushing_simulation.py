@@ -181,6 +181,9 @@ class PushingSimulation(BaseSimulation):
             return summary
         successes = [r.get("success", False) for r in self.results]
         summary["success_rate"] = float(np.mean(successes))
+        summary["success_rate_std"] = float(np.std(successes))
         dists = [r.get("min_dist_to_target", np.inf) for r in self.results]
-        summary["avg_min_dist_to_target"] = float(np.mean([d for d in dists if np.isfinite(d)]))
+        finite_dists = [d for d in dists if np.isfinite(d)]
+        summary["avg_min_dist_to_target"] = float(np.mean(finite_dists)) if finite_dists else float("inf")
+        summary["std_min_dist_to_target"] = float(np.std(finite_dists)) if finite_dists else float("inf")
         return summary

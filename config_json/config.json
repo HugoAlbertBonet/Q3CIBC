@@ -92,6 +92,7 @@
                 1.0
             ],
             "max_episode_steps": 100,
+            "num_eval_seeds": 100,
             "goal_dist_tolerance": 0.02,
             "training": {
                 "training_steps": 100000,

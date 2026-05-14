@@ -608,7 +608,15 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     max_episode_steps = env_config.get(
         "max_episode_steps", sim_config.get("max_episode_steps", 50)
     )
-    num_seeds = int(sim_config.get("num_seeds", len(sim_config.get("default_seeds", [0]))))
+    # IBC Table 3 reports simulated pushing over 100 evaluation episodes per
+    # training seed. Keep this env-scoped so particle's established eval count
+    # does not change.
+    num_seeds = int(
+        env_config.get(
+            "num_eval_seeds",
+            sim_config.get("num_seeds", len(sim_config.get("default_seeds", [0]))),
+        )
+    )
     if num_seeds <= 0:
         raise ValueError("simulation.num_seeds must be >= 1")
     seeds = list(range(num_seeds))
@@ -792,8 +800,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         finite_target = [d for d in dists_target if np.isfinite(d)]
         return {
             "success_rate": float(np.mean(successes)),
+            "success_rate_std": float(np.std(successes)),
             "avg_reward": float(np.mean(rewards)),
             "avg_min_dist_to_target": float(np.mean(finite_target)) if finite_target else None,
+            "std_min_dist_to_target": float(np.std(finite_target)) if finite_target else None,
             "median_min_dist_to_target": float(np.median(finite_target)) if finite_target else None,
             "avg_episode_length": float(np.mean(ep_lengths)),
             "num_seeds": len(seeds),
