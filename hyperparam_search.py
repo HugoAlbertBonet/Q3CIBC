@@ -219,6 +219,34 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_training",
     },
+    # ── CP-DFO refinement at inference (Q3CIBC-specific) ────────────────────
+    # When > 0, replaces inference-time Langevin with a DFO-style iterative
+    # refinement starting from the CP cloud (optionally with a few extra
+    # uniform samples for safety). Cheaper than Langevin (~5 forward passes
+    # vs ~100, no autograd) and matches DFO's quality whenever the CP cloud
+    # already covers the right action mode — which pushingA showed it does on
+    # Pushing. If both `inference_dfo_iterations > 0` and
+    # `inference_langevin_iterations > 0` are set, DFO takes precedence.
+    "inference_dfo_iterations": {
+        "values": [0, 3, 5, 10],
+        "type": "int",
+        "location": "env_training",
+    },
+    "inference_dfo_iteration_std": {
+        "values": [0.03, 0.05, 0.1, 0.2],
+        "type": "float",
+        "location": "env_training",
+    },
+    "inference_dfo_iteration_std_decay": {
+        "values": [0.5, 0.7, 0.9],
+        "type": "float",
+        "location": "env_training",
+    },
+    "inference_dfo_num_uniform": {
+        "values": [0, 16, 32, 64],
+        "type": "int",
+        "location": "env_training",
+    },
     "langevin_num_iterations": {
         "values": [0, 10, 25, 50, 100],
         "type": "int",
@@ -624,6 +652,21 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     inference_langevin_iterations = int(
         env_config.get("training", {}).get("inference_langevin_iterations", 0)
     )
+    # CP-DFO refinement (Q3CIBC-specific, no IBC analog). Takes precedence
+    # over inference Langevin when > 0, so a trial can opt into either path
+    # without changing the rest of the recipe.
+    inference_dfo_iterations = int(
+        env_config.get("training", {}).get("inference_dfo_iterations", 0)
+    )
+    inference_dfo_iteration_std = float(
+        env_config.get("training", {}).get("inference_dfo_iteration_std", 0.1)
+    )
+    inference_dfo_iteration_std_decay = float(
+        env_config.get("training", {}).get("inference_dfo_iteration_std_decay", 0.7)
+    )
+    inference_dfo_num_uniform = int(
+        env_config.get("training", {}).get("inference_dfo_num_uniform", 0)
+    )
     # Effective langevin hyperparams: env_training.langevin_* overrides env_model.langevin_config.
     langevin_cfg = effective_langevin_config(env_config)
 
@@ -676,7 +719,82 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     )
     q_est.to(device).eval()
 
-    if inference_langevin_iterations > 0:
+    if inference_dfo_iterations > 0:
+        # ── CP-DFO refinement (Q3CIBC inference). Cheaper than Langevin: no
+        # autograd, only N small-batch forward passes through the Q-net.
+        # Initial population = CP cloud (+ optional N_uniform random
+        # samples). Each iter: score → category-ordered resample with
+        # softmax(Q) → small Gaussian jitter → clip. Mirrors IBC's
+        # `iterative_dfo` mechanics (see `bench_inference.iterative_dfo_pass`)
+        # but with a model-trained initial population.
+        _dfo_iters = inference_dfo_iterations
+        _dfo_std0 = inference_dfo_iteration_std
+        _dfo_decay = inference_dfo_iteration_std_decay
+        _dfo_n_uniform = inference_dfo_num_uniform
+
+        class DFORefinedSimulation(SimulationCls):
+            """Refines the CP cloud with iterative DFO before acting."""
+
+            def select_action(self, observation, return_q_range: bool = False):
+                obs_tensor = (
+                    torch.tensor(observation, dtype=torch.float32)
+                    .unsqueeze(0)
+                    .to(self.device)
+                )
+                obs_tensor = self.obs_normalizer.normalize(obs_tensor)
+
+                with torch.no_grad():
+                    cps = self.control_point_generator(obs_tensor)  # (1, N_cp, D)
+
+                    # Action normalization helper (matches the Langevin path).
+                    def _norm(a):
+                        if self._act_min_t is not None:
+                            return (a - self._act_min_t) / self._act_rng_t
+                        return a
+
+                    # Mix in uniform safety samples if requested.
+                    if _dfo_n_uniform > 0:
+                        unif = torch.empty(
+                            1, _dfo_n_uniform, cps.shape[-1], device=self.device
+                        ).uniform_(float(action_bounds[0]), float(action_bounds[1]))
+                        candidates = torch.cat([cps, unif], dim=1)
+                    else:
+                        candidates = cps.clone()
+
+                    N = candidates.shape[1]
+                    obs_expanded = obs_tensor.unsqueeze(1).expand(-1, N, -1)
+                    std = float(_dfo_std0)
+                    log_probs = None
+                    for it in range(_dfo_iters):
+                        log_probs = self.q_estimator(obs_expanded, _norm(candidates)).squeeze(-1)
+                        probs = torch.softmax(log_probs.squeeze(0), dim=-1)
+                        # IBC-style category-ordered resample so the final
+                        # argmax(log_probs)→candidates[argmax] mapping aligns
+                        # with `iterative_dfo`'s `tf.gather(samples, tf.repeat(...))`.
+                        idx = torch.multinomial(probs, N, replacement=True)
+                        counts = torch.bincount(idx, minlength=N)
+                        repeat_idx = torch.repeat_interleave(
+                            torch.arange(N, device=self.device), counts
+                        )
+                        candidates = candidates[:, repeat_idx, :]
+                        if it < _dfo_iters - 1:
+                            candidates = candidates + torch.randn_like(candidates) * std
+                            candidates = candidates.clamp(
+                                float(action_bounds[0]), float(action_bounds[1])
+                            )
+                            std *= _dfo_decay
+                    sel = log_probs.argmax(dim=1)
+                    action_normalized = candidates[0, sel[0], :].cpu().numpy()
+                    q_range = (log_probs.min().item(), log_probs.max().item())
+
+                action = np.clip(action_normalized, action_bounds[0], action_bounds[1])
+                action = self._denormalize_action(action)
+                if return_q_range:
+                    return action, q_range
+                return action
+
+        sim_cls = DFORefinedSimulation
+    elif inference_langevin_iterations > 0:
         class LangevinRefinedParticleSimulation(SimulationCls):
             """Refines the highest-Q control point with Langevin MCMC before acting."""
 
