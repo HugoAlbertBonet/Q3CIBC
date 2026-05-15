@@ -1,0 +1,74 @@
+# DD batch — Particle (n_dim from config_json/config.json; default 16)
+# Q2 = ResNetPreActivation Q-estimator width=128, depth=2 (two residual blocks).
+#
+# Decision rubric (from planning notes):
+#   DD1–DD10 (Langevin): push long-train + high inference_langevin_iterations; compare training_steps / inf_lv / seeds.
+#   DD11–DD20 (CP-DFO): same Q2; inference_dfo_iterations=10, std=0.01, decay=0.7, n_uniform=0 as anchor; sweep std / decay / train length / n_uniform.
+#
+# Run from repo root. Example:
+#   python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '<JSON>'
+#
+# ── Langevin inference (10): set inference_dfo_iterations=0 ; DFO path disabled. ──
+
+# DD1  anchor: 400k train, inf_lv=200, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 400000, "cosine_t_max": 400000, "trial_seed": 3, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+# DD2  400k, inf_lv=200, trial_seed=4
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 400000, "cosine_t_max": 400000, "trial_seed": 4, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+# DD3  300k, inf_lv=200, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 300000, "cosine_t_max": 300000, "trial_seed": 3, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+# DD4  200k, inf_lv=200, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+# DD5  500k, inf_lv=200, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 500000, "cosine_t_max": 500000, "trial_seed": 3, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+# DD6  400k, inf_lv=300, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 400000, "cosine_t_max": 400000, "trial_seed": 3, "inference_langevin_iterations": 300, "inference_dfo_iterations": 0}'
+
+# DD7  400k, inf_lv=150, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 400000, "cosine_t_max": 400000, "trial_seed": 3, "inference_langevin_iterations": 150, "inference_dfo_iterations": 0}'
+
+# DD8  400k, inf_lv=200, trial_seed=0
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 400000, "cosine_t_max": 400000, "trial_seed": 0, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+# DD9  400k, inf_lv=200, trial_seed=1
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 400000, "cosine_t_max": 400000, "trial_seed": 1, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+# DD10 350k, inf_lv=200, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 350000, "cosine_t_max": 350000, "trial_seed": 3, "inference_langevin_iterations": 200, "inference_dfo_iterations": 0}'
+
+
+# ── CP-DFO inference (10): inference_langevin_iterations=0 ; DFO refines CP cloud. ──
+
+# DD11 anchor: 200k train, DFO iters=10, std=0.01, decay=0.7, n_uniform=0, trial_seed=3
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.01, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'
+
+# DD12 tighter jitter: std=0.005
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'
+
+# DD13 looser jitter: std=0.015
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.015, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'
+
+# DD14 faster shrink: decay=0.5, std=0.01
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.01, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 0}'
+
+# DD15 more DFO rounds: iters=15, std=0.01, decay=0.7
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 15, "inference_dfo_iteration_std": 0.01, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'
+
+# DD16 shorter train: 150k, anchor DFO
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 150000, "cosine_t_max": 150000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.01, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'
+
+# DD17 longer train: 250k, anchor DFO
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 250000, "cosine_t_max": 250000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.01, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'
+
+# DD18 extra uniform pool: n_uniform=16 (contrast with CC5–CC8 hypothesis)
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.01, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 16}'
+
+# DD19 larger initial std: 0.03, decay=0.7
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 3, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.03, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'
+
+# DD20 anchor DFO, trial_seed=0
+python hyperparam_search.py combinedv2_cpascounter_training.py --active-env particle --run --params '{"q_network_kind": "resnet", "q_width": 128, "q_depth": 2, "q_use_spectral_norm": false, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 10, "inference_dfo_iteration_std": 0.01, "inference_dfo_iteration_std_decay": 0.7, "inference_dfo_num_uniform": 0}'

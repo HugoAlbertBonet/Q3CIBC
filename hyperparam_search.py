@@ -98,7 +98,7 @@ SEARCH_SPACE: dict[str, dict] = {
         "location": "training_shared",
     },
     "training_steps": {
-        "values": [50000, 100000, 200000],
+        "values": [50000, 100000, 150000, 200000, 250000, 300000, 350000, 400000, 500000],
         "type": "int",
         "location": "env_training",
     },
@@ -205,7 +205,16 @@ SEARCH_SPACE: dict[str, dict] = {
         "location": "env_model",
     },
     "cosine_t_max": {
-        "values": [100000, 150000, 200000],
+        "values": [
+            100000,
+            150000,
+            200000,
+            250000,
+            300000,
+            350000,
+            400000,
+            500000,
+        ],
         "type": "int",
         "location": "env_training",
     },
@@ -215,7 +224,7 @@ SEARCH_SPACE: dict[str, dict] = {
         "location": "training_shared",
     },
     "inference_langevin_iterations": {
-        "values": [0, 10, 25, 50, 100],
+        "values": [0, 10, 25, 50, 100, 150, 200, 250, 300],
         "type": "int",
         "location": "env_training",
     },
@@ -228,12 +237,12 @@ SEARCH_SPACE: dict[str, dict] = {
     # Pushing. If both `inference_dfo_iterations > 0` and
     # `inference_langevin_iterations > 0` are set, DFO takes precedence.
     "inference_dfo_iterations": {
-        "values": [0, 3, 5, 10],
+        "values": [0, 3, 5, 10, 15],
         "type": "int",
         "location": "env_training",
     },
     "inference_dfo_iteration_std": {
-        "values": [0.03, 0.05, 0.1, 0.2],
+        "values": [0.005, 0.01, 0.015, 0.03, 0.05, 0.1, 0.2],
         "type": "float",
         "location": "env_training",
     },
@@ -465,7 +474,13 @@ def append_trial(script_name: str, record: dict, active_env: str | None = None) 
 
 # Params consumed at evaluation time only (never referenced by training scripts).
 # They must still appear in the search so they get tuned.
-INFERENCE_ONLY_PARAMS: set[str] = {"inference_langevin_iterations"}
+INFERENCE_ONLY_PARAMS: set[str] = {
+    "inference_langevin_iterations",
+    "inference_dfo_iterations",
+    "inference_dfo_iteration_std",
+    "inference_dfo_iteration_std_decay",
+    "inference_dfo_num_uniform",
+}
 
 
 def detect_script_params(script_path: Path) -> list[str]:

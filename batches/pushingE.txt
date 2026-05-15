@@ -1,0 +1,46 @@
+# Batch pushingE — push CP-DFO to 100% without giving up the speedup.
+#
+# Diagnosis from pushingC/D:
+#   - CP-DFO @ 100k + std=0.05: 96% mean, 0 pp variance across 3 seeds.
+#     Very stable, very fast (11 ms inference), but plateaued at 96%.
+#   - CP-DFO @ 150k + std=0.05: 92-95%. Extra training HURT, not helped.
+#   - CP-DFO @ 100k + std=0.03 (D3): 96%. No improvement from smaller std at
+#     the smoother 100k Q-landscape — saturated.
+#
+# Hypothesis: more training sharpens the Q-landscape; the std=0.05 jitter
+# becomes wider than the peak basin and CP-DFO's noisy resample bounces off
+# the right peak. Langevin's gradient ascent doesn't have this failure mode
+# (it climbs to the peak by construction), which is why pushingA7 hit 100%
+# at 150k. Fix in DFO-land: tighten the noise.
+#
+# Plan: hold the rest of pushingC1's recipe fixed, sweep
+#   - inference_dfo_iteration_std: 0.02 (vs C6's 0.05)
+#   - inference_dfo_iteration_std_decay: 0.5 (vs C6's 0.7, faster shrink)
+# at training budgets where we know Q is sharp enough to need it.
+#
+# Inference cost stays at ~11 ms (only Langevin would slow us down) so the
+# "fastest we can" constraint is preserved.
+
+# ── pushingE1: tighten noise at the 150k Q-landscape, seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingE2: E1 at seed=1 (variance check on the tighter recipe)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingE3: E1 at seed=2 (3-seed mean for the tighter recipe)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingE4: same tightened recipe but BACK to 100k training — does
+#               the noise change cost us anything at the smoother 100k Q?
+#               If E4 < 96% (vs C6's 96%), the tighter noise is overfit to
+#               sharp peaks and we'd want std to be a function of train steps.
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingE5: 200k training with the tighter inference noise — if the
+#               sharp-peaks hypothesis is right, even longer training should
+#               keep working (or improve) at std=0.02.
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── pushingE6: extra iters (10) + tight noise — more refinement passes,
+#               same std. Tests whether iters alone closes the gap.
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.7,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
