@@ -779,13 +779,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                     N = candidates.shape[1]
                     obs_expanded = obs_tensor.unsqueeze(1).expand(-1, N, -1)
                     std = float(_dfo_std0)
-                    log_probs = None
                     for it in range(_dfo_iters):
                         log_probs = self.q_estimator(obs_expanded, _norm(candidates)).squeeze(-1)
                         probs = torch.softmax(log_probs.squeeze(0), dim=-1)
-                        # IBC-style category-ordered resample so the final
-                        # argmax(log_probs)→candidates[argmax] mapping aligns
-                        # with `iterative_dfo`'s `tf.gather(samples, tf.repeat(...))`.
+                        # IBC-style category-ordered resample.
                         idx = torch.multinomial(probs, N, replacement=True)
                         counts = torch.bincount(idx, minlength=N)
                         repeat_idx = torch.repeat_interleave(
@@ -798,11 +795,21 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                                 float(action_bounds[0]), float(action_bounds[1])
                             )
                             std *= _dfo_decay
-                    sel = log_probs.argmax(dim=1)
+                    # FIX: re-score AFTER the final reorder so argmax index lines
+                    # up with the (now reordered) candidates tensor. The previous
+                    # version used log_probs from the iteration's pre-reorder
+                    # scoring and indexed into the reordered candidates, picking
+                    # the wrong action when softmax mass was spread (the bug was
+                    # masked on pushing where Q is sharply peaked).
+                    final_log_probs = self.q_estimator(obs_expanded, _norm(candidates)).squeeze(-1)
+                    sel = final_log_probs.argmax(dim=1)
                     action_normalized = candidates[0, sel[0], :].cpu().numpy()
-                    q_range = (log_probs.min().item(), log_probs.max().item())
+                    q_range = (final_log_probs.min().item(), final_log_probs.max().item())
 
                 action = np.clip(action_normalized, action_bounds[0], action_bounds[1])
+                # _denormalize_action maps model-space (e.g., [-1, 1] for pushing)
+                # back to env-action space. It's a no-op for particle where
+                # _raw_act_min is None, but REQUIRED for pushing.
                 action = self._denormalize_action(action)
                 if return_q_range:
                     return action, q_range
