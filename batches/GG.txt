@@ -1,0 +1,95 @@
+# Batch GG — break the 88-89% Langevin plateau + retest DFO with aggressive jitter.
+#
+# Findings from FF (trials 217-236):
+#   - FF1-FF5  (300k + seed=3 + inf=300):  mean 88.4%, max 94%, d_g1≈0.027.
+#                Identical to BB (mean 88.5%). Inference-side knobs (inf=200 → 300)
+#                do NOT break the plateau. The ceiling is set by training, not by
+#                how long we polish at test time.
+#   - FF6-FF10 (300k + seed=5 + inf=200):  mean 84.4%, max 86%, d_g1≈0.061. WORSE
+#                than seed=3. Seed=3 keeps its title — stop revisiting seed=5.
+#   - FF11-FF15 (DFO, n_uniform=2048): 0%, d_g1=0.119, identical fingerprint to
+#   - FF16-FF20 (DFO, n_uniform=4096): 0%, d_g1=0.117 (one outlier).
+#                DFO results are bit-stable across 64 / 2048 / 4096 uniform samples,
+#                which means softmax(Q) puts essentially all mass on the CP cloud
+#                and uniform candidates compete for ~0% probability. Density is
+#                NOT the bottleneck. Without a softmax temperature code change,
+#                the only remaining inference-side knob is making the CP cloud
+#                itself spread (large initial jitter std) so the population
+#                actually moves before the next scoring round.
+#
+# This batch tests two clusters:
+#
+#   ── LANGEVIN (10 experiments): push to ≥ 90% mean via TRAINING-side levers ──
+#
+#   GG1-GG5:  Q2 + 300k + seed=3 + inf=300 + nec=32 + σ_final=0.01 + mse=10.
+#              Doubled noisy_expert_count (16 → 32) and halved σ_final (0.02 → 0.01).
+#              Hypothesis: a richer curriculum with tighter terminal noise gives
+#              the Q-estimator a sharper landscape near the optimal action, so
+#              inference Langevin lands inside the 0.05 success ball more often.
+#
+#   GG6-GG10: Q2 + 300k + seed=3 + inf=400 + nec=16 + σ_final=0.01 + mse=10
+#              + langevin_delta_clip=0.008.
+#              Same σ_final tightening, but vary inference geometry instead of
+#              curriculum: smaller per-step clip (0.015 → 0.008) and a few more
+#              iterations (300 → 400). Hypothesis: with a sharper Q, finer steps
+#              of the MCMC chain stay inside the basin of attraction.
+#
+#   ── DFO (10 experiments): training locked to best particle-16 recipe ──
+#       (300k + seed=3 + nec=16 + σ=0.3→0.02 + mse=10; vary DFO inference only)
+#
+#   GG11-GG15: DFO(iters=5, std=0.5, decay=0.3, n_uniform=2048).
+#              Very LARGE initial jitter on the CP cloud. With std=0.5 and a fast
+#              decay (0.3) we splay the CP cloud across most of the action box
+#              on iter 0, score, then snap back. This is the cleanest test of
+#              "softmax concentrates on CP cloud → spread the CP cloud first."
+#
+#   GG16-GG20: DFO(iters=15, std=0.2, decay=0.85, n_uniform=1024).
+#              Sustained moderate jitter over many rounds (decay=0.85 keeps std
+#              above 0.05 for the first ~10 iterations). If a single big jitter
+#              round doesn't work but many medium ones do, this batch surfaces it.
+#
+# All else locked to the production recipe:
+#   nec=16 (unless overridden), σ_start=0.3, cosine_warm_restarts, MLP 256×2,
+#   cp=30, top_k=15, training_steps=300000, cosine_t_max=300000, mse_weight=10,
+#   no training-time Langevin (num_langevin_negatives=0, num_uniform_negatives=0).
+#   For Langevin trials inference_dfo_iterations=0 (Langevin only); for DFO
+#   trials inference_langevin_iterations=0 (DFO takes precedence either way).
+#
+# Decision logic:
+#   - GG1-GG5 mean ≥ 92% → nec=32 + σ_final=0.01 is the new locked training base.
+#   - GG6-GG10 mean ≥ 92% → tighter inference geometry is what was missing; adopt.
+#   - Both Langevin groups stay at 88-89% → 16D particle is plateaued at this
+#     architecture; next batch needs a structural change (wider Q, frame stack).
+#   - GG11-GG15 mean ≥ 70% → spreading the CP cloud before scoring is the fix;
+#     softmax temperature still useful but the geometry workaround is enough.
+#   - GG16-GG20 > GG11-GG15 → sustained jitter beats single-shot; adopt.
+#   - Both DFO groups stay at 0% with d_g1≈0.118 → DFO needs a softmax
+#     temperature code change. Stop tuning the schedule.
+
+# ── GG1–GG5: Langevin push #1 — Q2 + 300k + seed=3 + inf=300 + nec=32 + σ_final=0.01
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":32,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+
+# ── GG6–GG10: Langevin push #2 — Q2 + 300k + seed=3 + inf=400 + nec=16 + σ_final=0.01 + delta_clip=0.008
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.008,"inference_langevin_iterations":400,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.008,"inference_langevin_iterations":400,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.008,"inference_langevin_iterations":400,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.008,"inference_langevin_iterations":400,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.008,"inference_langevin_iterations":400,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.01,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+
+# ── GG11–GG15: DFO #1 — training=best-particle-16 (300k+seed=3+nec=16+σ=0.3→0.02+mse=10), inference DFO(iters=5, std=0.5, decay=0.3, n_uniform=2048)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.5,"inference_dfo_iteration_std_decay":0.3,"inference_dfo_num_uniform":2048,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.5,"inference_dfo_iteration_std_decay":0.3,"inference_dfo_num_uniform":2048,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.5,"inference_dfo_iteration_std_decay":0.3,"inference_dfo_num_uniform":2048,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.5,"inference_dfo_iteration_std_decay":0.3,"inference_dfo_num_uniform":2048,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.5,"inference_dfo_iteration_std_decay":0.3,"inference_dfo_num_uniform":2048,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+
+# ── GG16–GG20: DFO #2 — training=best-particle-16, inference DFO(iters=15, std=0.2, decay=0.85, n_uniform=1024)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":15,"inference_dfo_iteration_std":0.2,"inference_dfo_iteration_std_decay":0.85,"inference_dfo_num_uniform":1024,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":15,"inference_dfo_iteration_std":0.2,"inference_dfo_iteration_std_decay":0.85,"inference_dfo_num_uniform":1024,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":15,"inference_dfo_iteration_std":0.2,"inference_dfo_iteration_std_decay":0.85,"inference_dfo_num_uniform":1024,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":15,"inference_dfo_iteration_std":0.2,"inference_dfo_iteration_std_decay":0.85,"inference_dfo_num_uniform":1024,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":0,"inference_dfo_iterations":15,"inference_dfo_iteration_std":0.2,"inference_dfo_iteration_std_decay":0.85,"inference_dfo_num_uniform":1024,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'

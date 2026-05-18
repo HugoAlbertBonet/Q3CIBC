@@ -1,0 +1,39 @@
+# Batch pushingF — REGRESSION CHECK. Configs are bit-identical to pushingE.
+#
+# Purpose: verify that recent code changes (post-pushingE) did not break
+# anything in the pushing pipeline. Same training recipe, same inference
+# protocol, same seeds. Results should match pushingE within run-to-run
+# CUDA nondeterminism (which on pushing typically sits in the ±2 pp range
+# at 100k+ steps).
+#
+# Reference targets from pushingE:
+#   F1 (was E1) — 150k, std=0.02, dec=0.5, 5 iters, seed=0 → expect ~95%
+#   F2 (was E2) — 150k, std=0.02, dec=0.5, 5 iters, seed=1 → expect ~98%
+#   F3 (was E3) — 150k, std=0.02, dec=0.5, 5 iters, seed=2 → expect ~99%
+#   F4 (was E4) — 100k, std=0.02, dec=0.5, 5 iters, seed=0 → expect ~97%
+#   F5 (was E5) — 200k, std=0.02, dec=0.5, 5 iters, seed=0 → expect ~97%
+#   F6 (was E6) — 150k, std=0.02, dec=0.7, 10 iters, seed=0 → expect ~99%
+#
+# Interpretation:
+#   - All trials within ±2 pp of expected → code changes are safe.
+#   - Any trial ≥5 pp below expected → regression, investigate.
+#   - All trials systematically lower → likely a real regression (e.g.,
+#     normalization, action denorm, or DFO refinement path).
+
+# ── pushingF1: was pushingE1 (150k, std=0.02, dec=0.5, 5 iters, seed=0)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingF2: was pushingE2 (150k, std=0.02, dec=0.5, 5 iters, seed=1)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingF3: was pushingE3 (150k, std=0.02, dec=0.5, 5 iters, seed=2)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingF4: was pushingE4 (100k, std=0.02, dec=0.5, 5 iters, seed=0)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingF5: was pushingE5 (200k, std=0.02, dec=0.5, 5 iters, seed=0)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── pushingF6: was pushingE6 (150k, std=0.02, dec=0.7, 10 iters, seed=0)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.7,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
