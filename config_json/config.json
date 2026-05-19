@@ -131,6 +131,110 @@
                 }
             }
         },
+        "pushing_pixels": {
+            "data_dir": "datasets/block_push/block_push_visual_location",
+            "env_id": "PushingPixels-v0",
+            "state_dim": [6, 240, 320],
+            "action_dim": 2,
+            "frame_stack": 2,
+            "action_bounds": [
+                -1.0,
+                1.0
+            ],
+            "max_episode_steps": 100,
+            "num_eval_seeds": 100,
+            "goal_dist_tolerance": 0.02,
+            "encoder_target_height": 180,
+            "encoder_target_width": 240,
+            "training": {
+                "training_steps": 100000,
+                "learning_rate": 0.001,
+                "batch_size": 128,
+                "sampling_method": "langevin",
+                "counter_examples": 8,
+                "separation_loss": "entropy",
+                "separation_epsilon": 0.02,
+                "entropy_bandwidth": 0.01,
+                "gradient_penalty_margin": 1.0,
+                "gradient_penalty_weight": 1.0,
+                "top_k_control_points": 8,
+                "wirefit_top_k_control_points": 20,
+                "wirefit_distribution_weight": 1.0,
+                "wirefit_distribution_temperature": 1.0,
+                "wirefit_smoothing_param": 0.1,
+                "infonce_logit_clamp": 20.0,
+                "scheduler_type": "cosine",
+                "cosine_t0": 50000,
+                "estimator_learning_rate": 0.001,
+                "langevin_num_iterations": 0,
+                "inference_langevin_iterations": 0
+            },
+            "model": {
+                "control_points": 20,
+                "num_hidden_layers": 2,
+                "num_neurons": 256,
+                "value_width": 1024,
+                "value_num_blocks": 1,
+                "langevin_config": {
+                    "num_iterations": 100,
+                    "lr_init": 0.1,
+                    "lr_final": 1e-05,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.1,
+                    "noise_scale": 0.1
+                }
+            }
+        },
+        "pushing_multi": {
+            "data_dir": "datasets/block_push/block_push_multimodal_states_location",
+            "env_id": "PushingMulti-v0",
+            "state_dim": 16,
+            "action_dim": 2,
+            "frame_stack": 2,
+            "action_bounds": [
+                -1.0,
+                1.0
+            ],
+            "max_episode_steps": 200,
+            "num_eval_seeds": 100,
+            "goal_dist_tolerance": 0.04,
+            "training": {
+                "training_steps": 100000,
+                "learning_rate": 0.001,
+                "batch_size": 512,
+                "sampling_method": "langevin",
+                "counter_examples": 64,
+                "separation_loss": "entropy",
+                "separation_epsilon": 0.02,
+                "entropy_bandwidth": 0.01,
+                "gradient_penalty_margin": 1.0,
+                "gradient_penalty_weight": 1.0,
+                "top_k_control_points": 10,
+                "wirefit_top_k_control_points": 20,
+                "wirefit_distribution_weight": 1.0,
+                "wirefit_distribution_temperature": 1.0,
+                "wirefit_smoothing_param": 0.1,
+                "infonce_logit_clamp": 20.0,
+                "scheduler_type": "cosine",
+                "cosine_t0": 50000,
+                "estimator_learning_rate": 0.001,
+                "langevin_num_iterations": 0,
+                "inference_langevin_iterations": 0
+            },
+            "model": {
+                "control_points": 20,
+                "num_hidden_layers": 2,
+                "num_neurons": 256,
+                "langevin_config": {
+                    "num_iterations": 100,
+                    "lr_init": 0.005,
+                    "lr_final": 1e-05,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.005,
+                    "noise_scale": 0.1
+                }
+            }
+        },
         "dummy": {
             "n_dim": 2,
             "env_id": "Dummy-v0",

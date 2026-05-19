@@ -622,6 +622,12 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     if active_env == "pushing":
         from simulations.pushing_simulation import PushingSimulation
         SimulationCls = PushingSimulation
+    elif active_env == "pushing_multi":
+        from simulations.pushing_multi_simulation import PushingMultiSimulation
+        SimulationCls = PushingMultiSimulation
+    elif active_env == "pushing_pixels":
+        from simulations.pushing_pixels_simulation import PushingPixelsSimulation
+        SimulationCls = PushingPixelsSimulation
     else:
         from simulations.particle_simulation import ParticleSimulation
         SimulationCls = ParticleSimulation
@@ -704,37 +710,83 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    cp_gen = ControlPointGenerator(
-        input_dim=state_dim * frame_stack,
-        output_dim=action_dim,
-        control_points=control_points,
-        hidden_dims=[cp_width] * cp_depth,
-        action_bounds=action_bounds,
-        network_kind=cp_network_kind,
-        width=cp_width,
-        depth=cp_depth,
-        use_spectral_norm=cp_use_spectral_norm,
-    )
-    cp_gen.load_state_dict(
-        torch.load(cp_path, map_location=device, weights_only=True)
-    )
-    cp_gen.to(device).eval()
+    if active_env == "pushing_pixels":
+        from utils.models import PixelControlPointGenerator, PixelQEstimator
+        # state_dim is [C, H, W]. frame_stack is already baked into C
+        # (PushingPixelsDataset reports state_shape=(3*frame_stack, H, W)),
+        # so DON'T multiply by frame_stack here.
+        in_channels = int(state_dim[0])
+        enc_h = int(env_config.get("encoder_target_height", 180))
+        enc_w = int(env_config.get("encoder_target_width", 240))
+        value_width = int(em.get("value_width", 1024))
+        value_num_blocks = int(em.get("value_num_blocks", 1))
+        cp_gen = PixelControlPointGenerator(
+            output_dim=action_dim,
+            control_points=control_points,
+            hidden_dims=[cp_width] * cp_depth,
+            action_bounds=action_bounds,
+            network_kind=cp_network_kind,
+            width=cp_width,
+            depth=cp_depth,
+            use_spectral_norm=cp_use_spectral_norm,
+            in_channels=in_channels,
+            encoder_target_height=enc_h,
+            encoder_target_width=enc_w,
+        )
+        cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
+        cp_gen.to(device).eval()
 
-    q_est = QEstimator(
-        state_dim=state_dim * frame_stack,
-        action_dim=action_dim,
-        hidden_dims=[q_width] * q_depth,
-        use_spectral_norm=q_use_spectral_norm,
-        network_kind=q_network_kind,
-        width=q_width,
-        depth=q_depth,
-    )
-    q_est.load_state_dict(
-        torch.load(q_path, map_location=device, weights_only=True)
-    )
-    q_est.to(device).eval()
+        q_est = PixelQEstimator(
+            action_dim=action_dim,
+            in_channels=in_channels,
+            encoder_target_height=enc_h,
+            encoder_target_width=enc_w,
+            value_width=value_width,
+            value_num_blocks=value_num_blocks,
+        )
+        q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
+        q_est.to(device).eval()
+    else:
+        cp_gen = ControlPointGenerator(
+            input_dim=state_dim * frame_stack,
+            output_dim=action_dim,
+            control_points=control_points,
+            hidden_dims=[cp_width] * cp_depth,
+            action_bounds=action_bounds,
+            network_kind=cp_network_kind,
+            width=cp_width,
+            depth=cp_depth,
+            use_spectral_norm=cp_use_spectral_norm,
+        )
+        cp_gen.load_state_dict(
+            torch.load(cp_path, map_location=device, weights_only=True)
+        )
+        cp_gen.to(device).eval()
 
-    if inference_dfo_iterations > 0:
+        q_est = QEstimator(
+            state_dim=state_dim * frame_stack,
+            action_dim=action_dim,
+            hidden_dims=[q_width] * q_depth,
+            use_spectral_norm=q_use_spectral_norm,
+            network_kind=q_network_kind,
+            width=q_width,
+            depth=q_depth,
+        )
+        q_est.load_state_dict(
+            torch.load(q_path, map_location=device, weights_only=True)
+        )
+        q_est.to(device).eval()
+
+    # Pixel envs skip the DFO/Langevin inference-refinement wrappers — those
+    # wrappers were written for flat states (they call obs_normalizer.normalize
+    # on the obs and do `obs.unsqueeze(1).expand(-1, N, -1)` which would
+    # re-encode the image N times). The base PushingPixelsSimulation.select_action
+    # already does pixel-aware late-fused argmax-over-CPs, which is what IBC
+    # paper calls "no inference refinement." A pixel-aware DFO/Langevin wrapper
+    # is a sensible follow-up but lives outside the first batch's scope.
+    if active_env == "pushing_pixels":
+        sim_cls = SimulationCls
+    elif inference_dfo_iterations > 0:
         # ── CP-DFO refinement (Q3CIBC inference). Cheaper than Langevin: no
         # autograd, only N small-batch forward passes through the Q-net.
         # Initial population = CP cloud (+ optional N_uniform random
@@ -913,6 +965,17 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         sim_kwargs["goal_dist_tolerance"] = float(
             env_config.get("goal_dist_tolerance", 0.02)
         )
+    elif active_env == "pushing_multi":
+        # IBC class default for the multimodal variant is 0.04 (looser than
+        # single-target because both blocks must satisfy the criterion).
+        sim_kwargs["goal_dist_tolerance"] = float(
+            env_config.get("goal_dist_tolerance", 0.04)
+        )
+    elif active_env == "pushing_pixels":
+        # Single-target physics — same 0.02 tolerance as states variant.
+        sim_kwargs["goal_dist_tolerance"] = float(
+            env_config.get("goal_dist_tolerance", 0.02)
+        )
     else:
         sim_kwargs["n_dim"] = n_dim
     sim = sim_cls(**sim_kwargs)
@@ -933,9 +996,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     ep_lengths = [int(r.get("episode_length", 0)) for r in all_results]
     terminated_flags = [bool(r.get("terminated", False)) for r in all_results]
 
-    if active_env == "pushing":
-        # Pushing has a single goal — surface block→target distance under the
-        # same key names the analyzer/table use so trial logs stay searchable.
+    if active_env in ("pushing", "pushing_pixels"):
+        # Single-target pushing (states OR pixels) — single goal, same metric
+        # layout so the trial logs / analyzer queries stay uniform across the
+        # two observation modalities.
         dists_target = [float(r.get("min_dist_to_target", np.inf)) for r in all_results]
         finite_target = [d for d in dists_target if np.isfinite(d)]
         return {
@@ -953,6 +1017,43 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                     "success": successes[i],
                     "reward": rewards[i],
                     "min_dist_to_target": _finite(dists_target[i]),
+                    "episode_length": ep_lengths[i],
+                    "terminated": terminated_flags[i],
+                }
+                for i in range(len(seeds))
+            ],
+        }
+
+    if active_env == "pushing_multi":
+        # Multimodal pushing: 2 blocks, 2 targets. Each block is independently
+        # assigned to its closest target (mirrors IBC's _get_reward). We log
+        # per-block min distances + the mean so trial logs surface partial
+        # progress when only one block lands.
+        d_mean = [float(r.get("min_mean_dist_to_target", np.inf)) for r in all_results]
+        d_b0 = [float(r.get("min_block0_dist_to_target", np.inf)) for r in all_results]
+        d_b1 = [float(r.get("min_block1_dist_to_target", np.inf)) for r in all_results]
+        finite_mean = [d for d in d_mean if np.isfinite(d)]
+        finite_b0 = [d for d in d_b0 if np.isfinite(d)]
+        finite_b1 = [d for d in d_b1 if np.isfinite(d)]
+        return {
+            "success_rate": float(np.mean(successes)),
+            "success_rate_std": float(np.std(successes)),
+            "avg_reward": float(np.mean(rewards)),
+            "avg_min_mean_dist_to_target": float(np.mean(finite_mean)) if finite_mean else None,
+            "std_min_mean_dist_to_target": float(np.std(finite_mean)) if finite_mean else None,
+            "median_min_mean_dist_to_target": float(np.median(finite_mean)) if finite_mean else None,
+            "avg_min_block0_dist_to_target": float(np.mean(finite_b0)) if finite_b0 else None,
+            "avg_min_block1_dist_to_target": float(np.mean(finite_b1)) if finite_b1 else None,
+            "avg_episode_length": float(np.mean(ep_lengths)),
+            "num_seeds": len(seeds),
+            "per_seed": [
+                {
+                    "seed": seeds[i],
+                    "success": successes[i],
+                    "reward": rewards[i],
+                    "min_mean_dist_to_target": _finite(d_mean[i]),
+                    "min_block0_dist_to_target": _finite(d_b0[i]),
+                    "min_block1_dist_to_target": _finite(d_b1[i]),
                     "episode_length": ep_lengths[i],
                     "terminated": terminated_flags[i],
                 }

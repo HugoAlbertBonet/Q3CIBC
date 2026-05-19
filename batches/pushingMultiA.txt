@@ -1,0 +1,105 @@
+# Batch pushingMultiA — IBC-paper-faithful trials on Simulated Pushing (multimodal,
+# 2 blocks + 2 targets, states). First batch on this env after wiring it up.
+#
+# The hyperparameters below mirror IBC's `pushing_multimodal_states/mlp_ebm_langevin.gin`
+# (Florence et al. 2021, Table 3 "Block Pushing — Multimodal, States")
+# wherever a direct mapping exists between IBC and Q3CIBC. The architecture
+# and Langevin recipe match pushingA exactly so single-target vs multimodal
+# results can be compared directly under the same trainer/optimizer.
+#
+# Prereqs (one-time, off-cluster):
+#   - Download and unzip the IBC multimodal oracle TFRecords:
+#       https://storage.googleapis.com/brain-reach-public/ibc_data/block_push_multimodal_states_location.zip
+#     → datasets/block_push/block_push_multimodal_states_location/
+#     The PushingMultiDataset loader globs oracle_*.tfrecord there and will
+#     raise a clear FileNotFoundError pointing at the zip if it's missing.
+#
+# IBC-paper-matched knobs (held constant across all multiA* trials):
+#   batch_size                   = 512        (IBC default)
+#   training_steps               = 100_000    (IBC train_eval.num_iterations)
+#   learning_rate                = 1e-3       (IBC train_eval.learning_rate)
+#   goal_dist_tolerance          = 0.04       (env config; IBC goal_tolerance,
+#                                                looser than single's 0.02 — both
+#                                                blocks must satisfy it)
+#   max_episode_steps            = 200        (IBC BlockPushMultimodal-v0;
+#                                                episodes are ~2× longer than
+#                                                single-target since the agent
+#                                                must visit two block-target pairs)
+#   frame_stack                  = 2          (IBC sequence_length=2)
+#   q_network_kind               = resnet     (IBC MLPEBM.layers='ResNetPreActivation')
+#   q_width                      = 128        (IBC MLPEBM.width=128)
+#   q_depth                      = 8          ── 8 residual BLOCKS == 16 dense
+#                                                layers, i.e. IBC's MLPEBM.depth=16
+#   top_k_control_points         = 8          (IBC ImplicitBCAgent.num_counter_examples=8)
+#   gradient_penalty_weight      = 1.0        (IBC ImplicitBCAgent.add_grad_penalty=True)
+#   gradient_penalty_margin      = 1.0        (IBC grad_penalty.grad_margin=1.0)
+#   inference_langevin_iterations= 100        (IBC langevin_actions_given_obs.num_iterations=100)
+#   langevin_lr_init             = 0.1        (action space is [-1, 1] post-norm,
+#                                                so IBC-paper scale lr/clip apply)
+#   langevin_delta_clip          = 0.1
+#   action space (in model + Q)  = [-1, 1]    PushingMultiDataset normalizes
+#                                                actions, training runs in [-1, 1],
+#                                                PushingMultiSim denormalizes to
+#                                                env scale.
+#   obs normalization            = standardize Per-dim mean/std computed from
+#                                                the multimodal dataset (matches
+#                                                IBC get_normalizers.py +
+#                                                stats.compute_dataset_statistics).
+#
+# Multimodal-specific notes vs pushingA:
+#   - State is 16D (vs 10D single): adds block2_translation/orientation and
+#     target2_translation/orientation. Frame-stacked input is 32D.
+#   - Reward is sparse and bimodal: agent must put EACH block in a DISTINCT
+#     target. Two equally valid orderings exist per episode, so the data is
+#     genuinely multimodal — exactly the regime EBM/implicit policies are
+#     supposed to win on (cf. IBC paper §4 and Fig. 5).
+#   - Eval uses 100 seeds (env_config.num_eval_seeds), same as single-target.
+#
+# Layout (matches pushingA so comparisons are 1:1):
+#   multiA1–A3 : IBC-paper-faithful Langevin recipe, 3 seeds
+#                 → variance + sanity check, all in pushing_multi/ folder
+#   multiA4    : A1 + IBC's TRAINING-time Langevin negatives (8 chains, 25 iters)
+#                 — the contrastive negative source from the paper
+#   multiA5    : A4 + 16 training-time Langevin negatives (IBC's higher count)
+#   multiA6    : A4 + 30 control points (CP coverage probe — the multimodal
+#                 task has two valid expert modes per state, so CP cloud size
+#                 may matter more here than on single-target)
+#   multiA7    : A4 + 150k training steps (multimodal task is harder; check if
+#                 the curve is still climbing past the single-target plateau)
+#   multiA8    : A4 ablation — MLP 256x4 instead of ResNet (does the extra
+#                 capacity from ResNet matter on the harder task?)
+#
+# Predictions:
+#   - multiA1 ≈ A2 ≈ A3 within 10pp variance (architecture-only baseline,
+#     expected far below single-target's because no contrastive negatives)
+#   - multiA4 > multiA1 by ≥20pp (training-time Langevin negatives matter
+#     even more on multimodal — the EBM has to assign equal mass to two modes)
+#   - multiA5 ≥ multiA4 (more negatives helps the multimodal landscape)
+#   - multiA6 ≥ multiA4 (extra CPs help cover both modes)
+#   - multiA7 > multiA4 by ≤10pp (paper trains longer for multimodal in the
+#     original gin config; 150k probes the saturation point)
+#   - multiA8 < multiA4 (ResNet should win on the harder task)
+
+# ── pushingMultiA1: IBC-paper Langevin recipe, seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingMultiA2: same as A1, seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingMultiA3: same as A1, seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingMultiA4: A1 + IBC training-time Langevin negatives (8 counter examples)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingMultiA5: A4 + 16 training-time Langevin negatives
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingMultiA6: A4 + 30 control points (multimodal coverage probe)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":30,"top_k_control_points":15,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingMultiA7: A4 + 150k training steps (saturation probe on harder task)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingMultiA8: A4 ablation — MLP 256x4 instead of ResNet 128x16
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":256,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'

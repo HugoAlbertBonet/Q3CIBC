@@ -452,6 +452,21 @@
             ]
         }
     },
+    "PushingMulti-v0": {
+        "description": "Stub entry for PushingMulti-v0 (BlockPushMultimodal, 2 blocks + 2 targets). The PushingMultiSimulation replaces the base-class ObservationNormalizer with a standardize-mode normalizer built from dataset stats (norm_stats.pt), so these flat_bounds are NEVER actually used. They exist solely so BaseSimulation.__init__'s JSON lookup doesn't crash. State layout (16D): [block_translation (2), block_orientation (1), block2_translation (2), block2_orientation (1), effector_translation (2), effector_target_translation (2), target_translation (2), target_orientation (1), target2_translation (2), target2_orientation (1)].",
+        "source": "Stub — see Pushing-v0 above for the data-driven single-target bounds. Multimodal bounds are nonsense here on purpose; standardize-mode replaces them at runtime.",
+        "observation_dim": 16,
+        "flat_bounds": {
+            "min": [-2.0, -2.0, -3.1416, -2.0, -2.0, -3.1416, 0.05, -0.55, 0.05, -0.55, -2.0, -2.0, -3.1416, -2.0, -2.0, -3.1416],
+            "max": [ 2.0,  2.0,  3.1416,  2.0,  2.0,  3.1416, 0.80,  0.55, 0.80,  0.55,  2.0,  2.0,  3.1416,  2.0,  2.0,  3.1416]
+        }
+    },
+    "PushingPixels-v0": {
+        "description": "Stub entry for PushingPixels-v0 (BlockPush with RGB observations, single target). The PushingPixelsSimulation builds a (3*frame_stack, H, W) tensor at every step and feeds it straight to the conv encoder — the conv encoder handles its OWN preprocessing (uint8→float, /255, bilinear resize to 180×240). The base-class ObservationNormalizer is constructed in __init__ but its `normalize(...)` method is never called in select_action. These dummy bounds exist solely to keep that __init__ from crashing.",
+        "source": "Stub — never used at runtime; the conv encoder handles image preprocessing internally.",
+        "observation_dim": 1,
+        "flat_bounds": {"min": [0.0], "max": [255.0]}
+    },
     "Dummy-v0": {
         "description": "Observation bounds for Dummy-v0 (2D Grid Navigation)",
         "source": "Synthetic",

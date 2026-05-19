@@ -15,7 +15,12 @@ import torch
 import torch.nn as nn
 import wandb
 
-from utils.models import ControlPointGenerator, QEstimator
+from utils.models import (
+    ControlPointGenerator,
+    QEstimator,
+    PixelControlPointGenerator,
+    PixelQEstimator,
+)
 from utils.loss import lossInfoNCE, lossMSE, lossSeparation, lossEntropyKDE
 from utils.normalizations import ObservationNormalizer
 from utils.sampling import sample_langevin
@@ -243,6 +248,14 @@ def load_dataset():
         from utils.datasets import PushingDataset
         data_dir = env_config["data_dir"]
         return PushingDataset(data_dir=data_dir, frame_stack=frame_stack)
+    elif active_env == "pushing_multi":
+        from utils.datasets import PushingMultiDataset
+        data_dir = env_config["data_dir"]
+        return PushingMultiDataset(data_dir=data_dir, frame_stack=frame_stack)
+    elif active_env == "pushing_pixels":
+        from utils.datasets import PushingPixelsDataset
+        data_dir = env_config["data_dir"]
+        return PushingPixelsDataset(data_dir=data_dir, frame_stack=frame_stack)
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
         return DummyDataset(
@@ -321,29 +334,81 @@ def main():
             )
     
     # Create models
-    print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
-    control_point_generator = ControlPointGenerator(
-        input_dim=dataset.state_shape,
-        output_dim=dataset.action_shape,
-        control_points=control_points,
-        hidden_dims=[cp_width for _ in range(cp_depth)],
-        action_bounds=(action_bounds[0], action_bounds[1]),
-        network_kind=cp_network_kind,
-        width=cp_width,
-        depth=cp_depth,
-        use_spectral_norm=cp_use_spectral_norm,
-    ).to(device)
+    if active_env == "pushing_pixels":
+        # Image-conditioned models with vendored IBC ConvMaxpoolEncoder.
+        # dataset.state_shape is (C, H, W); only C and the encoder target
+        # resolution are passed to the model (the encoder bilinearly resizes
+        # any input to target_h × target_w internally, matching IBC's
+        # image_prepro.preprocess).
+        in_channels = dataset.state_shape[0]  # 3 * frame_stack
+        enc_h = env_config.get("encoder_target_height", 180)
+        enc_w = env_config.get("encoder_target_width", 240)
+        value_width = env_model.get("value_width", 1024)
+        value_num_blocks = env_model.get("value_num_blocks", 1)
+        print(
+            f"CP generator: PIXEL kind={cp_network_kind} width={cp_width} "
+            f"depth={cp_depth} in_ch={in_channels} enc={enc_h}x{enc_w}"
+        )
+        control_point_generator = PixelControlPointGenerator(
+            output_dim=dataset.action_shape,
+            control_points=control_points,
+            hidden_dims=[cp_width for _ in range(cp_depth)],
+            action_bounds=(action_bounds[0], action_bounds[1]),
+            network_kind=cp_network_kind,
+            width=cp_width,
+            depth=cp_depth,
+            use_spectral_norm=cp_use_spectral_norm,
+            in_channels=in_channels,
+            encoder_target_height=enc_h,
+            encoder_target_width=enc_w,
+        ).to(device)
+        print(
+            f"Q estimator:  PIXEL value=DenseResnetValue(w={value_width}, "
+            f"blocks={value_num_blocks}) in_ch={in_channels} enc={enc_h}x{enc_w}"
+        )
+        estimator = PixelQEstimator(
+            action_dim=dataset.action_shape,
+            in_channels=in_channels,
+            encoder_target_height=enc_h,
+            encoder_target_width=enc_w,
+            value_width=value_width,
+            value_num_blocks=value_num_blocks,
+        ).to(device)
+    else:
+        print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
+        control_point_generator = ControlPointGenerator(
+            input_dim=dataset.state_shape,
+            output_dim=dataset.action_shape,
+            control_points=control_points,
+            hidden_dims=[cp_width for _ in range(cp_depth)],
+            action_bounds=(action_bounds[0], action_bounds[1]),
+            network_kind=cp_network_kind,
+            width=cp_width,
+            depth=cp_depth,
+            use_spectral_norm=cp_use_spectral_norm,
+        ).to(device)
 
-    print(f"Q estimator:  kind={q_network_kind} width={q_width} depth={q_depth} sn={q_use_spectral_norm}")
-    estimator = QEstimator(
-        state_dim=dataset.state_shape,
-        action_dim=dataset.action_shape,
-        hidden_dims=[q_width for _ in range(q_depth)],
-        use_spectral_norm=q_use_spectral_norm,
-        network_kind=q_network_kind,
-        width=q_width,
-        depth=q_depth,
-    ).to(device)
+        print(f"Q estimator:  kind={q_network_kind} width={q_width} depth={q_depth} sn={q_use_spectral_norm}")
+        estimator = QEstimator(
+            state_dim=dataset.state_shape,
+            action_dim=dataset.action_shape,
+            hidden_dims=[q_width for _ in range(q_depth)],
+            use_spectral_norm=q_use_spectral_norm,
+            network_kind=q_network_kind,
+            width=q_width,
+            depth=q_depth,
+        ).to(device)
+
+    # Helper: call estimator with (state, candidate_actions). For pixels we
+    # pass un-expanded (B, C, H, W) state + (B, N, A) actions so the model's
+    # late-fusion path encodes the image ONCE per state and broadcasts the
+    # 256-D features over the N candidates. For flat states we expand the
+    # state to (B, N, D) the way the legacy code did.
+    def q_score_candidates(state: torch.Tensor, actions_bna: torch.Tensor) -> torch.Tensor:
+        if state.ndim == 4:  # image (B, C, H, W)
+            return estimator(state, actions_bna)
+        states_expanded = state.unsqueeze(1).expand(-1, actions_bna.shape[1], -1)
+        return estimator(states_expanded, actions_bna)
     
     optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
     optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=estimator_learning_rate)
@@ -365,7 +430,20 @@ def main():
             optimizer_estimator, T_max=effective_t_max, eta_min=1e-6
         )
     
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    # Pixels need multi-worker decode to keep the GPU fed (~2-3ms JPEG decode
+    # per frame × frame_stack × batch_size adds up on a single thread). Flat
+    # envs keep num_workers=0 since their dataset is fully in RAM as ndarrays.
+    num_workers = env_config.get(
+        "dataloader_num_workers",
+        4 if active_env == "pushing_pixels" else 0,
+    )
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+    )
     
     # Observation normalizer.
     # For pushing we run in IBC-paper-faithful "standardize" mode using
@@ -374,11 +452,19 @@ def main():
     # bounds. The pushing stats also feed `norm_stats.pt` so the eval-time
     # PushingSimulation can recreate the exact same normalizer.
     particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
-    if active_env == "pushing":
+    if active_env == "pushing_pixels":
+        # The ConvMaxpoolEncoder handles its own preprocessing (uint8 → float
+        # → /255 → bilinear resize to 180×240) on every forward, matching
+        # IBC's image_prepro.preprocess. So we skip the standardize/minmax
+        # ObservationNormalizer entirely here: setting it to None makes the
+        # batch loop branch and pass states straight through.
+        obs_normalizer = None
+        print("Observation normalizer: NONE (pixel encoder handles preprocessing)")
+    elif active_env in ("pushing", "pushing_multi"):
         if not hasattr(dataset, "obs_mean") or not hasattr(dataset, "obs_std"):
             raise RuntimeError(
-                "Pushing dataset must expose `obs_mean`/`obs_std` for standardize "
-                "normalization. Refresh utils/datasets.py:PushingDataset."
+                f"{active_env} dataset must expose `obs_mean`/`obs_std` for standardize "
+                f"normalization. Refresh utils/datasets.py:Pushing(Multi)Dataset."
             )
         obs_normalizer = ObservationNormalizer(
             env_id=env_id,
@@ -418,7 +504,8 @@ def main():
             
             step_start = time.time()
             states = batch['state'].float().to(device)
-            states = obs_normalizer.normalize(states)
+            if obs_normalizer is not None:
+                states = obs_normalizer.normalize(states)
             actions = batch['action'].float().to(device)
             B = states.shape[0]
             
@@ -440,8 +527,7 @@ def main():
             # Detach control points so InfoNCE loss gradients only flow to estimator, not generator.
             predicted_actions_detached = predicted_actions.detach()
             with torch.no_grad():
-                states_for_cp = states.unsqueeze(1).expand(-1, predicted_actions_detached.shape[1], -1)
-                cp_q_values = estimator(states_for_cp, predicted_actions_detached).squeeze(-1)
+                cp_q_values = q_score_candidates(states, predicted_actions_detached).squeeze(-1)
                 topk_idx = torch.topk(cp_q_values, k=k_cp_counter_examples, dim=1).indices
 
             gather_idx = topk_idx.unsqueeze(-1).expand(-1, -1, predicted_actions_detached.shape[2])
@@ -540,10 +626,9 @@ def main():
             
             # Concatenate expert action (index 0) with counter-examples
             all_actions = torch.cat([actions.unsqueeze(1), counter_samples], dim=1)
-            states_expanded = states.unsqueeze(1).expand(-1, 1 + total_counter_examples, -1)
-            
-            # Direct energy evaluation for InfoNCE
-            energies = estimator(states_expanded, all_actions).squeeze(-1)
+
+            # Direct energy evaluation for InfoNCE — late-fused for pixels.
+            energies = q_score_candidates(states, all_actions).squeeze(-1)
 
             # InfoNCE loss: expert action should have the highest Q value (lowest energy equivalent)
             loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
@@ -555,7 +640,7 @@ def main():
             # actually evaluated by the InfoNCE loss.
             if gradient_penalty_weight > 0.0:
                 gp_actions = all_actions.detach().clone().requires_grad_(True)
-                gp_energies = estimator(states_expanded, gp_actions).squeeze(-1)
+                gp_energies = q_score_candidates(states, gp_actions).squeeze(-1)
                 gp_grad = torch.autograd.grad(
                     outputs=gp_energies.sum(),
                     inputs=gp_actions,
@@ -588,12 +673,9 @@ def main():
                 counter_samples_for_generator = cp_counter_samples_for_generator
 
             all_actions_for_generator = torch.cat([actions.unsqueeze(1), counter_samples_for_generator], dim=1)
-            states_expanded_for_generator = states.unsqueeze(1).expand(
-                -1, all_actions_for_generator.shape[1], -1
-            )
             for param in estimator.parameters():
                 param.requires_grad_(False)
-            energies_for_generator = estimator(states_expanded_for_generator, all_actions_for_generator).squeeze(-1)
+            energies_for_generator = q_score_candidates(states, all_actions_for_generator).squeeze(-1)
             loss_infonce_generator = lossInfoNCE(energies_for_generator, logit_clamp=infonce_logit_clamp)
             for param in estimator.parameters():
                 param.requires_grad_(True)
@@ -722,7 +804,7 @@ def main():
     # uses these to recreate the exact same obs-standardize + action-denorm
     # transforms that training used. Mirrors `get_normalizers.py` in
     # google-research/ibc (stats computed from data, frozen, applied at eval).
-    if active_env == "pushing":
+    if active_env in ("pushing", "pushing_multi"):
         norm_stats = {
             "act_min": dataset.act_min,
             "act_max": dataset.act_max,

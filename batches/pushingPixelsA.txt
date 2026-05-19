@@ -1,0 +1,131 @@
+# Batch pushingPixelsA — IBC-paper-faithful trials on Simulated Pushing
+# (single target, IMAGE observations). First batch on the new env after
+# wiring it up.
+#
+# The hyperparameters below mirror IBC's `pushing_pixels/pixel_ebm_langevin.gin`
+# (Florence et al. 2021, Table 3 row "Block Pushing — Single target, Images")
+# wherever a direct mapping exists between IBC and Q3CIBC. The architecture
+# and Q-loss are bit-aligned with the upstream PixelEBM recipe.
+#
+# Prereqs (one-time, already done on this machine):
+#   - block_push_visual_location.zip (~866 MB) downloaded and unzipped to
+#     datasets/block_push/block_push_visual_location/oracle_*.tfrecord (10
+#     shards, ~135 MB each). The PushingPixelsDataset loader globs
+#     oracle_*.tfrecord there and lazy-decodes JPEG bytes per __getitem__.
+#
+# IBC-paper-matched knobs (held constant across all pixelsA* trials):
+#   batch_size                   = 128        (IBC pixel_ebm_langevin.gin —
+#                                                smaller than states' 512 due
+#                                                to image memory; same here
+#                                                so the loss curves are
+#                                                comparable to upstream)
+#   training_steps               = 100_000    (IBC train_eval.num_iterations)
+#   learning_rate                = 1e-3       (IBC train_eval.learning_rate)
+#   goal_dist_tolerance          = 0.02       (env config; IBC goal_tolerance)
+#   max_episode_steps            = 100        (env config; IBC BlockPush-v0)
+#   frame_stack                  = 2          (IBC sequence_length=2; stacked
+#                                                channel-wise → 6-ch input)
+#   encoder                      = ConvMaxpoolEncoder (4× Conv2D 3×3 padding=same
+#                                                with [32,64,128,256] filters,
+#                                                each followed by MaxPool 2×2,
+#                                                then GlobalAvgPool → 256-D)
+#   encoder_target_height        = 180        (IBC PixelEBM.target_height=180)
+#   encoder_target_width         = 240        (IBC PixelEBM.target_width=240)
+#                                                Encoder bilinearly resizes
+#                                                input to 180×240 internally
+#                                                (env native = 240×320, same
+#                                                as IBC's render).
+#   value_net                    = DenseResnetValue(width=1024, num_blocks=1)
+#                                                IBC's exact value head.
+#   top_k_control_points         = 8          (IBC ImplicitBCAgent.num_counter_examples=8)
+#   gradient_penalty_weight      = 1.0        (IBC ImplicitBCAgent.add_grad_penalty=True)
+#   gradient_penalty_margin      = 1.0        (IBC grad_penalty.grad_margin=1.0)
+#   action space (in model + Q)  = [-1, 1]    PushingPixelsDataset normalizes
+#                                                actions, training runs in
+#                                                [-1, 1], PushingPixelsSim
+#                                                denormalizes to env scale.
+#   obs normalization            = NONE       The conv encoder handles its own
+#                                                preprocessing (uint8 → float
+#                                                → /255 → bilinear resize),
+#                                                matching IBC's
+#                                                image_prepro.preprocess.
+#
+# Late fusion (IBC's `late_fusion = True`):
+#   The encoder runs ONCE per state, the resulting 256-D feature vector is
+#   broadcast over the N candidate actions, then concat[features, action]
+#   → DenseResnetValue → scalar Q. This is the entire reason the pixel
+#   training loop can fit on a single GPU at batch=128 — without late fusion
+#   the conv tower would run num_counter_examples + 1 times per training
+#   sample.
+#
+# Inference policy:
+#   - These A-trials use argmax-over-CPs (the base PushingPixelsSimulation
+#     `select_action`). No DFO/Langevin inference refinement.
+#   - IBC's pixel recipe DOES use inference Langevin (`use_langevin = True,
+#     num_iterations = 100`), but the existing LangevinRefinedParticleSimulation
+#     wrapper was written for flat states and would re-encode the image 100×
+#     per env step. A pixel-aware Langevin wrapper is a sensible pushingPixelsB
+#     follow-up but lives outside this batch's scope.
+#
+# CP-generator side (Q3CIBC-specific — no IBC analog):
+#   control_points               = 20         (CP cloud size; Q3CIBC concept)
+#   cp_network_kind              = mlp        (lightweight MLP head on top of
+#                                                the conv encoder's features)
+#   cp_width / cp_depth          = 256 / 2
+#
+# SLURM resource notes:
+#   - The dataset is lazy-decoded so RAM stays under 2 GB (vs ~12 GB if
+#     eager-decoded at 180×240 uint8). The existing
+#     `submit_experiments.sh` template (`#SBATCH --mem=32G`) is comfortable.
+#   - DataLoader uses num_workers=4 to overlap JPEG decode with GPU compute.
+#   - The pushing extra (gym + pybullet) is required as for pushingA, so we
+#     reuse `uv run --managed-python --extra pushing` verbatim.
+#
+# Layout (matches pushingA so cross-modality comparisons are 1:1):
+#   pixelsA1–A3 : IBC-paper-faithful recipe, 3 seeds → variance + sanity check
+#                  All in pushing_pixels/ folder.
+#   pixelsA4    : A1 + IBC's TRAINING-time Langevin negatives (8 chains, 25
+#                  iters) — the contrastive negative source from the paper.
+#   pixelsA5    : A4 + 16 training-time Langevin negatives (IBC's higher count).
+#   pixelsA6    : A4 + 30 control points (CP coverage probe).
+#   pixelsA7    : A4 + 150k training steps (pixel models often benefit from
+#                  longer training than states).
+#   pixelsA8    : A4 ablation — MLP CP head 256x4 instead of 256x2 (more
+#                  capacity AFTER the encoder; does it matter or is the
+#                  encoder the bottleneck?).
+#
+# Predictions:
+#   - pixelsA1 ≈ A2 ≈ A3 within 10pp variance (architecture-only baseline)
+#   - pixelsA4 > pixelsA1 by ≥15pp (training-time Langevin negatives are
+#     the key IBC trick — same expected lift as on states)
+#   - pixelsA5 ≈ pixelsA4 (counter-example count saturates fast)
+#   - pixelsA6 ≈ pixelsA4 (CP cloud size shouldn't dominate; encoder is
+#     usually the bottleneck on pixels)
+#   - pixelsA7 ≥ pixelsA4 by ≤5pp (pixel curves keep climbing past 100k
+#     more than state curves do; modest lift)
+#   - pixelsA8 ≈ pixelsA4 (deeper CP head is unlikely to help if encoder
+#     features are already information-rich)
+
+# ── pushingPixelsA1: IBC-paper recipe, seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsA2: same as A1, seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsA3: same as A1, seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsA4: A1 + IBC training-time Langevin negatives (8 counter examples)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsA5: A4 + 16 training-time Langevin negatives
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsA6: A4 + 30 control points (CP coverage probe)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":30,"top_k_control_points":15,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsA7: A4 + 150k training steps (pixels often benefit from more)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsA8: A4 ablation — deeper CP head (mlp 256x4 vs 256x2)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":4,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'

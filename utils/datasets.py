@@ -414,6 +414,12 @@ class PushingDataset(Dataset):
         ("observation/target_orientation", 1),
     )
 
+    # Glob pattern for the IBC TFRecord shards. Subclasses (multimodal) override.
+    _TFRECORD_GLOB = "oracle_push_*.tfrecord"
+    # Short human-readable name of the IBC zip to point users at when the glob
+    # finds no files. Subclasses override.
+    _DATASET_ZIP_NAME = "block_push_states_location.zip"
+
     def __init__(
         self,
         data_dir: str = "datasets/block_push/block_push_states_location",
@@ -452,12 +458,12 @@ class PushingDataset(Dataset):
         self.action_norm_range = action_norm_range
         self._base_obs_dim = sum(d for _, d in self._FEATURE_KEYS)  # 10
 
-        pattern = os.path.join(data_dir, "oracle_push_*.tfrecord")
+        pattern = os.path.join(data_dir, self._TFRECORD_GLOB)
         self.tfrecord_files = sorted(glob.glob(pattern))
         if not self.tfrecord_files:
             raise FileNotFoundError(
                 f"No TFRecord files match {pattern}. Did you download "
-                f"block_push_states_location.zip?"
+                f"{self._DATASET_ZIP_NAME}?"
             )
 
         self.observations, raw_actions, self._episode_starts = self._load_all_data(
@@ -597,3 +603,284 @@ class PushingDataset(Dataset):
 
     def __len__(self):
         return len(self.observations)
+
+
+class PushingMultiDataset(PushingDataset):
+    """Dataset for the IBC paper's Simulated Pushing task (Multimodal, 2 blocks + 2 targets).
+
+    Loads the official `block_push_multimodal_states_location` TFRecord oracle
+    dataset published with Florence et al. 2021 (Implicit Behavioral Cloning):
+        https://storage.googleapis.com/brain-reach-public/ibc_data/block_push_multimodal_states_location.zip
+
+    Unzip into `datasets/block_push/block_push_multimodal_states_location/`
+    (same convention as the single-target dataset).
+
+    State layout (16D before frame-stacking) — MUST stay aligned with the
+    canonical ordering in `simulations.pushing_multi_env.OBS_KEYS_AND_DIMS`:
+        [block_translation (2),  block_orientation (1),
+         block2_translation (2), block2_orientation (1),
+         effector_translation (2), effector_target_translation (2),
+         target_translation (2),  target_orientation (1),
+         target2_translation (2), target2_orientation (1)]
+    Action (2D): xArm planar position delta — same scale as the single-target
+        oracle (the multimodal oracle uses the same control envelope).
+    """
+
+    # Canonical key order. Sync with simulations.pushing_multi_env.OBS_KEYS_AND_DIMS.
+    _FEATURE_KEYS = (
+        ("observation/block_translation", 2),
+        ("observation/block_orientation", 1),
+        ("observation/block2_translation", 2),
+        ("observation/block2_orientation", 1),
+        ("observation/effector_translation", 2),
+        ("observation/effector_target_translation", 2),
+        ("observation/target_translation", 2),
+        ("observation/target_orientation", 1),
+        ("observation/target2_translation", 2),
+        ("observation/target2_orientation", 1),
+    )
+
+    # Permissive glob — IBC ships the multimodal shards as
+    # `oracle_multimodal_push_*.tfrecord`, but matching all `oracle_*.tfrecord`
+    # files keeps the loader robust to future shard renames.
+    _TFRECORD_GLOB = "oracle_*.tfrecord"
+    _DATASET_ZIP_NAME = "block_push_multimodal_states_location.zip"
+
+    def __init__(
+        self,
+        data_dir: str = "datasets/block_push/block_push_multimodal_states_location",
+        frame_stack: int = 1,
+        max_samples: Optional[int] = None,
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
+    ):
+        super().__init__(
+            data_dir=data_dir,
+            frame_stack=frame_stack,
+            max_samples=max_samples,
+            normalize_actions=normalize_actions,
+            action_norm_range=action_norm_range,
+        )
+
+
+class PushingPixelsDataset(Dataset):
+    """Dataset for the IBC paper's Simulated Pushing task (Single target, IMAGES).
+
+    Loads the official `block_push_visual_location` TFRecord oracle dataset
+    published with Florence et al. 2021 (Implicit Behavioral Cloning):
+        https://storage.googleapis.com/brain-reach-public/ibc_data/block_push_visual_location.zip
+
+    Unzip into `datasets/block_push/block_push_visual_location/` (oracle_*.tfrecord
+    files at the top level — flatten any nested folder if needed).
+
+    Storage strategy: LAZY. We scan all TFRecords at __init__ and keep the
+    JPEG-encoded `observation/rgb` bytes (~14 KB/frame) in a Python list +
+    the float actions and episode-start flags in numpy arrays. JPEG decode
+    happens per __getitem__ call. RAM footprint:
+        ~100k frames × ~14 KB = ~1.4 GB encoded
+        + ~100k × 8 bytes (action) = ~800 KB
+    Decode is a few ms per call so num_workers≥4 in the DataLoader keeps the
+    pipeline GPU-bound.
+
+    __getitem__ returns:
+        state:  (3*frame_stack, H, W) uint8 channel-stacked image
+                H=240, W=320 native env resolution. The conv encoder
+                (utils.models.ConvMaxpoolEncoder) does its own bilinear
+                resize to (180, 240) internally.
+        action: (2,) float32 in `action_norm_range` (default [-1, 1]).
+
+    Action normalization mirrors PushingDataset (min-max from raw oracle
+    actions). The `act_min`/`act_max` and `action_norm_range` attrs are
+    exposed for the eval-time simulation to invert.
+    """
+
+    _IMAGE_KEY = "observation/rgb"
+    _ACTION_KEY = "action"
+    _STEP_TYPE_KEY = "step_type"
+    _TFRECORD_GLOB = "oracle_*.tfrecord"
+    _DATASET_ZIP_NAME = "block_push_visual_location.zip"
+    _IMAGE_HEIGHT = 240
+    _IMAGE_WIDTH = 320
+    _IMAGE_CHANNELS = 3
+
+    def __init__(
+        self,
+        data_dir: str = "datasets/block_push/block_push_visual_location",
+        frame_stack: int = 1,
+        max_samples: Optional[int] = None,
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
+    ):
+        if not TF_AVAILABLE:
+            raise ImportError(
+                "TensorFlow is required to load IBC block_push TFRecord files. "
+                "Install with: uv add tensorflow"
+            )
+
+        self.frame_stack = frame_stack
+        self.data_dir = data_dir
+        self.normalize_actions = normalize_actions
+        self.action_norm_range = action_norm_range
+
+        pattern = os.path.join(data_dir, self._TFRECORD_GLOB)
+        self.tfrecord_files = sorted(glob.glob(pattern))
+        if not self.tfrecord_files:
+            raise FileNotFoundError(
+                f"No TFRecord files match {pattern}. Did you download "
+                f"{self._DATASET_ZIP_NAME}?"
+            )
+
+        (
+            self._encoded_rgb,
+            raw_actions,
+            self._episode_starts,
+        ) = self._scan_all(max_samples=max_samples)
+
+        self.act_min = raw_actions.min(axis=0).astype(np.float32)
+        self.act_max = raw_actions.max(axis=0).astype(np.float32)
+
+        if normalize_actions:
+            lo, hi = float(action_norm_range[0]), float(action_norm_range[1])
+            denom = self.act_max - self.act_min
+            denom = np.where(denom == 0, np.ones_like(denom), denom)
+            self.actions = (
+                lo + (raw_actions - self.act_min) * (hi - lo) / denom
+            ).astype(np.float32)
+        else:
+            self.actions = raw_actions
+
+        # Pre-compute, for each step i, the indices to read for frame-stacking.
+        # At episode boundaries the earliest frames are repeated (same policy
+        # as `stack_frames` for flat obs — keeps position information rather
+        # than zero-padding).
+        self._stack_indices = self._build_stack_index_map()
+
+        # Per-frame uint8 image is the model-facing "state". We expose its
+        # shape so the training-script reads `dataset.state_shape` the same
+        # way it does for flat datasets.
+        self.state_shape = (
+            self._IMAGE_CHANNELS * frame_stack,
+            self._IMAGE_HEIGHT,
+            self._IMAGE_WIDTH,
+        )
+        self.action_shape = self.actions.shape[1]
+
+    def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
+        if not self.normalize_actions:
+            return np.asarray(normalized_action, dtype=np.float32)
+        lo, hi = float(self.action_norm_range[0]), float(self.action_norm_range[1])
+        scale = (self.act_max - self.act_min) / (hi - lo)
+        return (
+            self.act_min + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale
+        ).astype(np.float32)
+
+    @staticmethod
+    def _decode_step_type(feature) -> Optional[int]:
+        try:
+            if feature.int64_list.value:
+                return int(feature.int64_list.value[0])
+            if feature.bytes_list.value:
+                raw = feature.bytes_list.value[0]
+                return int.from_bytes(raw, byteorder="little", signed=False)
+        except Exception:
+            return None
+        return None
+
+    def _scan_all(self, max_samples: Optional[int] = None):
+        encoded_rgb: list[bytes] = []
+        all_acts: list[np.ndarray] = []
+        ep_starts: list[bool] = []
+        total = 0
+
+        for tfrecord_file in self.tfrecord_files:
+            raw_dataset = tf.data.TFRecordDataset(tfrecord_file)
+            is_first_in_file = True
+            for raw_record in raw_dataset:
+                try:
+                    example = tf.train.Example()
+                    example.ParseFromString(raw_record.numpy())
+                    features = example.features.feature
+
+                    is_start = is_first_in_file
+                    st_val = None
+                    if self._STEP_TYPE_KEY in features:
+                        st_val = self._decode_step_type(features[self._STEP_TYPE_KEY])
+                        if st_val is not None:
+                            is_start = (st_val == 0)
+                    is_first_in_file = False
+
+                    # SKIP terminal rows: same logic as PushingDataset — the
+                    # last step's action is a tf-agents boundary placeholder,
+                    # not the executed expert action.
+                    if st_val == 2:  # LAST
+                        continue
+
+                    rgb_bytes = features[self._IMAGE_KEY].bytes_list.value[0]
+                    action = np.asarray(
+                        features[self._ACTION_KEY].float_list.value, dtype=np.float32
+                    )
+
+                    encoded_rgb.append(rgb_bytes)
+                    all_acts.append(action)
+                    ep_starts.append(is_start)
+                    total += 1
+                    if max_samples is not None and total >= max_samples:
+                        break
+                except Exception:
+                    continue
+            if max_samples is not None and total >= max_samples:
+                break
+
+        if not encoded_rgb:
+            raise ValueError(f"No valid records found in {self.tfrecord_files}")
+
+        return (
+            encoded_rgb,  # list[bytes]
+            np.array(all_acts, dtype=np.float32),
+            np.array(ep_starts, dtype=bool),
+        )
+
+    def _build_stack_index_map(self) -> np.ndarray:
+        """For each step i, return the list of frame indices to channel-stack.
+
+        Mirrors the boundary-repeat behavior of utils.datasets.stack_frames:
+        the earliest indices are clamped to the first frame of the episode.
+        Returns shape (N, frame_stack), int64.
+        """
+        n = len(self._encoded_rgb)
+        fs = self.frame_stack
+        # Episode id per step — cumulative count of episode starts.
+        episode_id = np.cumsum(self._episode_starts).astype(np.int64) - 1
+        # Episode-start absolute index per step.
+        starts_abs = np.where(self._episode_starts)[0]
+        # For each step, the absolute index of its episode start:
+        ep_start_for_step = starts_abs[episode_id]
+
+        stack = np.empty((n, fs), dtype=np.int64)
+        for k in range(fs):
+            # Offset k means "k frames before current" (k=fs-1 → current frame
+            # in the channel-stack order, matching stack_frames' convention
+            # of [oldest, ..., newest]).
+            offset = fs - 1 - k
+            raw = np.arange(n) - offset
+            # Clamp to the episode start of the current step.
+            stack[:, k] = np.maximum(raw, ep_start_for_step)
+        return stack
+
+    def _decode_jpeg(self, idx: int) -> np.ndarray:
+        """Decode one frame's bytes → (H, W, 3) uint8 ndarray."""
+        img = tf.io.decode_image(self._encoded_rgb[idx], channels=3).numpy()
+        return img.astype(np.uint8)
+
+    def __getitem__(self, index):
+        # Decode and channel-stack `frame_stack` frames; channels-first layout
+        # so the conv encoder gets (C, H, W) per sample directly.
+        idxs = self._stack_indices[index]
+        frames = [self._decode_jpeg(int(i)) for i in idxs]  # each (H, W, 3)
+        # Channel-wise stack: [(H, W, 3), (H, W, 3)] → (H, W, 6) → (6, H, W).
+        stacked = np.concatenate(frames, axis=-1)  # (H, W, 3*fs)
+        stacked = np.transpose(stacked, (2, 0, 1))  # (3*fs, H, W)
+        return {"state": stacked, "action": self.actions[index]}
+
+    def __len__(self):
+        return len(self._encoded_rgb)

@@ -1,0 +1,6 @@
+# Project-specific ignores
+papers/
+wandb/
+checkpoints/
+#datasets/
+datasets/
