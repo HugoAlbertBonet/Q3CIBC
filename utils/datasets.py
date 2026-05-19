@@ -19,6 +19,18 @@ try:
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
     os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
     import tensorflow as tf
+    # Force TF to CPU. We only use TF for:
+    #   - TFRecord parsing in __init__ (CPU op)
+    #   - tf.io.decode_image in PushingPixelsDataset.__getitem__ (CPU op)
+    # If TF grabs CUDA, DataLoader workers forked after PyTorch's CUDA init
+    # crash with `CUDA_ERROR_NOT_INITIALIZED` when they touch the (post-fork
+    # broken) CUDA context. set_visible_devices([], "GPU") prevents that
+    # without affecting PyTorch's GPU access. The try/except handles the
+    # case where TF has already initialized GPUs (then this is a no-op).
+    try:
+        tf.config.set_visible_devices([], "GPU")
+    except RuntimeError:
+        pass
     TF_AVAILABLE = True
 except ImportError:
     TF_AVAILABLE = False

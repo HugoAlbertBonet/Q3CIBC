@@ -1,0 +1,73 @@
+# Batch pushingG — close the gap to IBC + DFO's paper-faithful inference time.
+#
+# State of play after pushingC/D/E/F + bench_inference at --q-depth 4:
+#   - Q3CIBC + CP-DFO @ q_depth=8 (paper Langevin Q-net) hits 100% across
+#     3 seeds (trials 36, 39, 41). Inference: 11.48 ms (bench at q_depth=8).
+#   - IBC + DFO @ q_depth=4 (paper's actual DFO config from mlp_ebm_best.gin)
+#     gets paper-reported 100% with bench inference time 9.50 ms.
+#   - Q3CIBC + CP-DFO @ q_depth=4 (UNCONFIRMED on quality, benchmarked at
+#     8.16 ms). If we can hit 100% there too, Q3CIBC + CP-DFO beats
+#     IBC + DFO on speed AND quality at IBC's own published architecture.
+#
+# pushingG validates the q_depth=4 hypothesis at scale. Bulk of the budget
+# goes to seed variance at two training budgets; remaining trials probe
+# inference recipe and training-step extremes in case the smaller Q-net
+# needs adjustment.
+#
+# Across-the-board fixed: q_depth=4 (was 8), everything else identical to
+# the 100% recipe of trials 36/39/41:
+#   q_width=128, cp=mlp 128x2, control_points=20, top_k=8,
+#   train-time Langevin negatives 8 chains × 25 iters,
+#   inference DFO: 5 iters, std=0.02, decay=0.5, no uniform safety (unless noted).
+#
+# ── PRIMARY: 200k training × 3 seeds (matches trial 41's setup but smaller Q)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# pushingG1: 200k, seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# pushingG2: 200k, seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# pushingG3: 200k, seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── BUDGET SWEEP: 150k × 3 seeds (matches trials 36/39 setup but smaller Q)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# pushingG4: 150k, seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# pushingG5: 150k, seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# pushingG6: 150k, seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── TRAINING EXTREMES (seed=0) ─────────────────────────────────────────────
+
+# pushingG7: 100k seed=0 — floor check (q_depth=8 was 96% here; expect similar regression)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# pushingG8: 250k seed=0 — ceiling check (smaller Q may need more training to saturate)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":250000,"cosine_t_max":250000}'
+
+# ── INFERENCE-RECIPE ABLATIONS at 200k seed=0 ──────────────────────────────
+# Run at the primary training budget so we can compare against G1 directly.
+
+# pushingG9: 200k seed=0, 10 DFO iters at std=0.02 decay=0.7 (more refinement
+#            passes for the smaller-cap Q-net; mirrors the trial-35/40 recipe
+#            that hit 99% at q_depth=8).
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.7,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# pushingG10: 200k seed=0, tighter noise std=0.015 (smaller Q-net may have
+#             narrower peak basins; tighter jitter helps DFO stay on them).
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.015,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# pushingG11: 200k seed=0, +16 uniform safety samples (insurance against any
+#             mode-coverage drop in the smaller CP-conditioned Q).
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# pushingG12: 200k seed=3 (4th-seed variance check; if G1-G3 are all 100%,
+#             one more seed lets us claim >=99% mean across 4 independent runs).
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":3,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'

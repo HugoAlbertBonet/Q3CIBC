@@ -300,11 +300,23 @@ class BenchConfig:
     cp_width: int = 128
     cp_depth: int = 2
     control_points: int = 20
-    # DFO refinement defaults — Q3CIBC-only method. Smaller std than IBC's
-    # 0.33 because we start from 20 model-trained CPs, not 16k uniform.
+    # DFO refinement defaults match the empirically-validated 100%-success
+    # recipe from `pushing/trials.jsonl` (trials 36, 39, 41 — three runs
+    # across seeds 0/1/2, training 150k–200k, all hit 50/50 eval seeds).
+    # This is THE fastest inference setup that reached 100% on Pushing
+    # single-target states; only training budget/seed varies between those
+    # three trials. Inference cost: 5 iters × 20 CPs = 100 no-autograd
+    # forward passes (vs IBC DFO's 16384 × 3 = 49,152).
+    #
+    # NOTE on the comparison: IBC's paper Table 3 reports their EBM with
+    # DFO inference at 100 ± 0 on this same task (paper used DFO for 2D
+    # pushing per Appendix D.2 / p19). So this benchmark compares two
+    # methods that BOTH reach 100% on pushing-states; the differentiator
+    # is wall-clock per env step at the same Q-net size, not task
+    # performance — see the table in the script's stdout.
     dfo_num_iters: int = 5
-    dfo_iter_std: float = 0.1
-    dfo_std_decay: float = 0.7
+    dfo_iter_std: float = 0.02
+    dfo_std_decay: float = 0.5
     dfo_num_uniform: int = 0  # safety-valve uniform samples mixed in; 0 = pure CP-DFO
 
 
@@ -342,7 +354,7 @@ def make_method_q3cibc_cp_dfo(device: torch.device, cfg: BenchConfig):
                                 cp_width=cfg.cp_width, cp_depth=cfg.cp_depth)
     q_net = build_mlpebm(width=cfg.q_width, depth_blocks=cfg.q_depth, device=device)
     name = (f"Q3CIBC + CP-DFO ({cfg.dfo_num_iters} iters, std={cfg.dfo_iter_std}, "
-            f"+{cfg.dfo_num_uniform} uniform)")
+            f"decay={cfg.dfo_std_decay}, +{cfg.dfo_num_uniform} uniform)")
 
     def select_action():
         obs = torch.randn(1, OBS_DIM, device=device)
@@ -489,13 +501,17 @@ def main():
     parser.add_argument("--cp-depth", type=int, default=2, help="CP-gen hidden layers, Q3CIBC only (default 2)")
     parser.add_argument("--control-points", type=int, default=20,
                         help="Number of CPs the Q3CIBC generator emits per state (default 20)")
-    # CP-DFO refinement knobs.
+    # CP-DFO refinement knobs. Defaults below come from the FASTEST inference
+    # recipe in our trial log that reached 100% success on Pushing (trials 36,
+    # 39, 41 in `results/.../pushing/trials.jsonl`). All three differed only
+    # in training budget / seed; the inference triple (5 iters, std=0.02,
+    # decay=0.5) is the empirical sweet spot.
     parser.add_argument("--dfo-num-iters", type=int, default=5,
-                        help="Q3CIBC CP-DFO iterations (default 5; IBC uses 3 over 16k uniform)")
-    parser.add_argument("--dfo-iter-std", type=float, default=0.1,
-                        help="Q3CIBC CP-DFO initial Gaussian noise std (default 0.1; IBC uses 0.33)")
-    parser.add_argument("--dfo-std-decay", type=float, default=0.7,
-                        help="Q3CIBC CP-DFO noise decay per iter (default 0.7; IBC uses 0.5)")
+                        help="Q3CIBC CP-DFO iterations (default 5 — 100%-recipe value; IBC uses 3 over 16k uniform)")
+    parser.add_argument("--dfo-iter-std", type=float, default=0.02,
+                        help="Q3CIBC CP-DFO initial Gaussian noise std (default 0.02 — 100%-recipe value; IBC uses 0.33)")
+    parser.add_argument("--dfo-std-decay", type=float, default=0.5,
+                        help="Q3CIBC CP-DFO noise decay per iter (default 0.5 — 100%-recipe value; IBC also uses 0.5)")
     parser.add_argument("--dfo-num-uniform", type=int, default=0,
                         help="Extra uniform samples mixed into CP-DFO's first iter for safety (default 0)")
     args = parser.parse_args()

@@ -1,0 +1,100 @@
+# Batch HH — Langevin only. Two clusters: push to 95%, and ≥92% with inf ≤ 150.
+#
+# Findings carried forward from GG (trials 237-256):
+#   - GG1-GG5  (nec=32 + σ_final=0.01 + inf=300): mean 0%. Doubling nec AND halving
+#               σ_final overcooks the curriculum — Q collapses to a centroid.
+#   - GG6-GG10 (σ_final=0.01 + dclip=0.008 + inf=400): mean 84.4%, max 88%. WORSE
+#               than BB. σ_final=0.01 is too tight; σ_final=0.02 is the sweet spot.
+#   - DFO at all settings: 0%. Confirmed the bottleneck is high-D geometry
+#               (closest-of-30 CPs is ~0.118 from goal in 16-D; jitter can't
+#               make directed progress without gradients). DFO is shelved.
+#
+# Cross-batch tally of ≥90% on particle 16-D, by inference_langevin_iterations:
+#   inf_lv=200 : 6 / 53 trials ≥ 90% (best 92%, 6 distinct trials)
+#   inf_lv=300 : 2 / 10 trials ≥ 90% (best 94% at trial 231)
+#   inf_lv=150 : 0 / 12 trials ≥ 90% (best 86%)
+#   inf_lv=100 : 0 / 24 trials ≥ 90% (best 0% — broken legacy configs)
+#   inf_lv=400 : 0 /  5 trials ≥ 90% (regresses, EE evidence)
+#
+# So 200-300 is the working zone. 94% is the current ceiling, hit once at inf=300.
+#
+# This batch tests two questions:
+#
+#   ── 95% push (10 experiments) ──
+#
+#   HH1-HH5:  Bit-identical to trial 231 (the 94% peak): 300k + seed=3 + nec=16
+#              + σ=0.3→0.02 + mse=10 + inf=300 + dclip=0.015. We have n=5 at this
+#              config; one hit 94%, the others 82-92%. Five more replicates tell
+#              us if 94+% is reproducible or a one-off SLURM/GPU lottery win.
+#
+#   HH6-HH10: SAME recipe but trial_seed=7. seed=3 has been the workhorse;
+#              seed=5 was tested and ran ~4pp worse. seed=7 is untested. A new
+#              init may land in a better Q-landscape basin. Best-case: 95+%.
+#              Worst-case: ~85% (similar to seed=5).
+#
+#   ── ≥92% with inf ≤ 150 (10 experiments) ──
+#
+#   HH11-HH15: 300k + seed=3 + nec=16 + σ=0.3→0.02 + mse=10 + inf=150 +
+#              langevin_lr_init=0.025 + langevin_delta_clip=0.020.
+#              Hypothesis: at inf=150 the chain is converging-but-not-converged;
+#              bigger per-step Langevin movement (lr ↑ ×1.67, clip ↑ ×1.33) lets
+#              it cover the same distance in fewer steps. Noise scale 0.05 held
+#              fixed to avoid stacking changes. Target: ≥ 92%.
+#
+#   HH16-HH20: 300k + seed=3 + nec=16 + σ=0.3→0.02 + mse=10 + inf=150 +
+#              langevin_lr_init=0.030 + langevin_delta_clip=0.025.
+#              Same idea, more aggressive (~2× the default step size). If
+#              HH11-HH15 helps but doesn't break 92%, this batch pushes further.
+#              If HH11-HH15 collapses, this batch will too (the chain becomes
+#              unstable).
+#
+# All else locked to the production recipe across all 20 trials:
+#   cp=30, top_k=15, q=mlp 256x2, cp=mlp 256x2, no spectral norm,
+#   training_steps=300000, cosine_t_max=300000, mse_weight=10.0,
+#   num_uniform_negatives=0, num_langevin_negatives=0, langevin_num_iterations=0
+#   (so training = noisy expert curriculum only, identical to BB / FF1-FF5).
+#   No DFO: inference_dfo_iterations=0 throughout.
+#
+# Decision logic:
+#   - HH1-HH5 max ≥ 95% → 94% was not the ceiling; another batch of replicates
+#     might break 95%. Lock recipe, keep grinding.
+#   - HH1-HH5 mean drops to ~85% → trial 231 was a tail event. The realistic
+#     mean at this recipe is ~88%, and 95% needs a structural change.
+#   - HH6-HH10 mean > HH1-HH5 mean → seed=7 is a better basin; pivot future
+#     batches to seed=7.
+#   - HH6-HH10 mean ≈ HH1-HH5 mean → seed variance is small, the plateau is
+#     architectural, not basin-dependent.
+#   - HH11-HH15 mean ≥ 90% → bigger Langevin steps recover most of the inf=200
+#     performance at 75% the compute. Cheaper inference recipe locked.
+#   - HH16-HH20 > HH11-HH15 → the chain wanted even bigger steps; revisit
+#     lr_init / dclip in the inf=200-300 regime too.
+#   - HH11-HH15 collapses to 0% → step-size compensation breaks the chain
+#     (probably explodes / leaves basin). Stop along this axis.
+
+# ── HH1–HH5: 95% push — bit-identical to trial 231 recipe (inf=300 + BB locked)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+
+# ── HH6–HH10: 95% push — same recipe at trial_seed=7 (untested init)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":7,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":7,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":7,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":7,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":7,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.015,"langevin_noise_scale":0.05,"langevin_delta_clip":0.015,"inference_langevin_iterations":300,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+
+# ── HH11–HH15: ≥92% at inf=150 with moderately bigger steps (lr=0.025, clip=0.020)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.025,"langevin_noise_scale":0.05,"langevin_delta_clip":0.020,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.025,"langevin_noise_scale":0.05,"langevin_delta_clip":0.020,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.025,"langevin_noise_scale":0.05,"langevin_delta_clip":0.020,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.025,"langevin_noise_scale":0.05,"langevin_delta_clip":0.020,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.025,"langevin_noise_scale":0.05,"langevin_delta_clip":0.020,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+
+# ── HH16–HH20: ≥92% at inf=150 with aggressively bigger steps (lr=0.030, clip=0.025)
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.030,"langevin_noise_scale":0.05,"langevin_delta_clip":0.025,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.030,"langevin_noise_scale":0.05,"langevin_delta_clip":0.025,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.030,"langevin_noise_scale":0.05,"langevin_delta_clip":0.025,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.030,"langevin_noise_scale":0.05,"langevin_delta_clip":0.025,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py --run --fixed-params '{"trial_seed":3,"control_points":30,"top_k_control_points":15,"q_network_kind":"mlp","q_width":256,"q_depth":2,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.030,"langevin_noise_scale":0.05,"langevin_delta_clip":0.025,"inference_langevin_iterations":150,"inference_dfo_iterations":0,"noisy_expert_count":16,"noisy_expert_sigma_start":0.3,"noisy_expert_sigma_final":0.02,"training_steps":300000,"cosine_t_max":300000,"mse_weight":10.0}'
