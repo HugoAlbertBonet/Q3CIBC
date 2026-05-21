@@ -303,9 +303,15 @@ class DenseResnetValue(nn.Module):
 	"""Dense + N ResNetBlocks + Dense(1). Port of IBC's DenseResnetValue.
 
 	IBC's `pushing_pixels/pixel_ebm_langevin.gin` sets width=1024, num_blocks=1.
-	`Normal(0, 1)` init on every Dense (matches IBC's `kernel_initializer='normal'`
-	and `bias_initializer='normal'`).
+	`Normal(0, 0.05)` init on every Dense — matches IBC's `kernel_initializer='normal'`
+	and `bias_initializer='normal'`, which in Keras both default to
+	`RandomNormal(mean=0.0, stddev=0.05)`. Initial port used std=1.0; with a
+	1024-wide hidden layer that produced ~32-std initial activations and
+	prevented the Q estimator from learning (saw ~6% argmax-pick of the
+	closest-to-expert CP). std=0.05 keeps activations in a sane range.
 	"""
+
+	_INIT_STD = 0.05
 
 	def __init__(self, in_dim: int, width: int = 1024, num_blocks: int = 1) -> None:
 		super().__init__()
@@ -317,9 +323,9 @@ class DenseResnetValue(nn.Module):
 	def _init_parameters(self) -> None:
 		for m in self.modules():
 			if isinstance(m, nn.Linear):
-				nn.init.normal_(m.weight, mean=0.0, std=1.0)
+				nn.init.normal_(m.weight, mean=0.0, std=self._INIT_STD)
 				if m.bias is not None:
-					nn.init.normal_(m.bias, mean=0.0, std=1.0)
+					nn.init.normal_(m.bias, mean=0.0, std=self._INIT_STD)
 
 	def forward(self, x: torch.Tensor) -> torch.Tensor:
 		x = self.dense0(x)

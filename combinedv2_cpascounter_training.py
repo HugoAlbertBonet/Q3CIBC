@@ -804,16 +804,20 @@ def main():
     # uses these to recreate the exact same obs-standardize + action-denorm
     # transforms that training used. Mirrors `get_normalizers.py` in
     # google-research/ibc (stats computed from data, frozen, applied at eval).
-    if active_env in ("pushing", "pushing_multi"):
+    if active_env in ("pushing", "pushing_multi", "pushing_pixels"):
         norm_stats = {
             "act_min": dataset.act_min,
             "act_max": dataset.act_max,
             "action_norm_range": getattr(dataset, "action_norm_range", (-1.0, 1.0)),
-            "obs_mean": dataset.obs_mean,
-            "obs_std": dataset.obs_std,
             "frame_stack": frame_stack,
             "env_id": env_id,
         }
+        # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
+        # its own [0,1] scaling + bilinear resize on every forward, matching
+        # IBC's image_prepro.preprocess). Only persist these when present.
+        if hasattr(dataset, "obs_mean"):
+            norm_stats["obs_mean"] = dataset.obs_mean
+            norm_stats["obs_std"] = dataset.obs_std
         torch.save(norm_stats, os.path.join(MODEL_SAVE_DIR, "norm_stats.pt"))
         print(f"norm_stats.pt saved (act range {dataset.act_min} → {dataset.act_max})")
 

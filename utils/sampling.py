@@ -142,8 +142,13 @@ def sample_langevin(
         actions = torch.rand(batch_size, num_samples, action_dim, device=device)
         actions = actions * (action_max - action_min) + action_min
     
-    # Expand observations to match samples: (B, D_obs) -> (B, N, D_obs)
-    obs_expanded = observations.unsqueeze(1).expand(-1, num_samples, -1)
+    # Expand observations to match samples: (B, *obs_shape) -> (B, N, *obs_shape).
+    # Shape-agnostic so this works for flat 1-D obs AND for image obs (B, C, H, W)
+    # where the model uses late-fused encoding (the resulting (B, N, C, H, W)
+    # tensor is a stride-0 view — no extra memory — and PixelQEstimator.forward
+    # detects ndim==5 and slices dim=1 to recover the un-expanded image).
+    obs_trailing = [-1] * (observations.ndim - 1)
+    obs_expanded = observations.unsqueeze(1).expand(-1, num_samples, *obs_trailing)
     
     trajectories = []
     if return_trajectories:
