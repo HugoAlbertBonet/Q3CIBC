@@ -1,0 +1,88 @@
+# Batch pushingPixelsB — diagnostic follow-up to pushingPixelsA.
+#
+# pushingPixelsA delivered the IBC paper-faithful baseline (A1–A3 mean
+# 84% ±5pp, best 89% at seed=0 — within the published Block Pushing
+# (single target, images) range), BUT the training-time Langevin
+# negatives ablation went the WRONG way relative to states:
+#
+#   pushingA  (states, n_lang=8 vs n_lang=0): expected +15pp, got +15pp ✓
+#   pushingPixelsA (pixels, n_lang=8 vs n_lang=0):  observed −9pp ✗
+#   pushingPixelsA (pixels, n_lang=16 vs n_lang=0): observed −26pp ✗
+#
+# This batch isolates three follow-up questions left open by A:
+#
+#   Q1 [B1, B2, B3]: Is "Langevin hurts on pixels" real, or seed noise?
+#     A only had ONE seed at n_lang=8 (got 80%); baseline seed variance
+#     was 11pp (78–89%). Repeat n_lang=8 at seeds 1 and 2 so we can do a
+#     paired 3-seed comparison vs A1–A3. B3 adds a 4th baseline seed to
+#     tighten the n_lang=0 mean ± std before we draw conclusions.
+#
+#   Q2 [B4, B5, B6]: Are UNIFORM negatives a better neg source on pixels?
+#     IBC paper's pushing_pixels gin actually uses Langevin samples as the
+#     sole counter-example source (`fraction_langevin_samples = 1.0`), but
+#     on states pushingA found uniform random negatives also help. Test
+#     uniform-only on pixels (B4: 8 uniform, B5: 16 uniform) and the
+#     full mix (B6: 8 uniform + 8 langevin) before concluding pixels
+#     just don't want any extra negatives.
+#
+#   Q3 [B7, B8]: Does the baseline benefit from more capacity / steps?
+#     B7: 150k steps with the winning A1 recipe (no extra negatives) —
+#         does the curve still climb past 100k on pixels?
+#     B8: ResNet CP head (128×8 ≡ IBC's MLPEBM depth=16) replacing the
+#         MLP 256×2 head on the no-negatives recipe — does the CP cloud
+#         benefit from a deeper post-encoder head?
+#
+# Predictions (will fall back to the data, but stating up front):
+#   - Q1: If B1, B2 land in 75–85% (consistent with B-seed-0 80%), the
+#     n_lang=8 mean is genuinely ~5pp below n_lang=0 mean — Langevin
+#     hurts. If one of them lands >88%, "Langevin hurts" was likely a
+#     single-seed coincidence.
+#   - Q2: Best guess uniform negatives ≈ baseline (neutral) on pixels.
+#     If uniform-only beats baseline, that's a strong "the negatives ARE
+#     the right idea, but Langevin chains specifically are noisy in image
+#     space" result. If mixed (B6) beats both, the IBC recipe is right
+#     but needs the specific mix.
+#   - Q3: B7 (150k baseline) +2–5pp over A1's 89%. B8 (ResNet head)
+#     marginal change ±3pp — encoder is the bottleneck on pixels, not
+#     the post-encoder head.
+#
+# Compute budget per trial (from A timing measurements):
+#   - No Langevin negatives (B3, B4, B5, B7, B8): ~8h on L40s.
+#   - With Langevin negatives (B1, B2, B6):       ~24h on L40s (right at
+#     the existing #SBATCH --time=25:00:00 wall). The A4/A5/A6 trials
+#     completed in 1436–1455 min so there IS slack, but if you want
+#     safety margin, bump to --time=30:00:00 in submit_experiments.sh
+#     before submitting (a one-line edit).
+#
+# Layout / prereqs:
+#   - Same dataset (datasets/block_push/block_push_visual_location/),
+#     same `--extra pushing` deps, same `--active-env pushing_pixels`.
+#     No new code or env changes needed; this batch only varies the
+#     hyperparameters threaded through hyperparam_search.
+#   - Results land in
+#     results/hyperparam_search/combinedv2_cpascounter_training/pushing_pixels/trials.jsonl
+#     alongside the A trials, so cross-batch analysis is one jq away.
+
+# ── pushingPixelsB1: confirm Langevin hurts — A4 recipe, seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsB2: confirm Langevin hurts — A4 recipe, seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsB3: 4th baseline seed for tighter no-neg mean — A1 recipe, seed=3
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":3,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsB4: uniform negatives only (8 uniform) — seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":8,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsB5: uniform negatives only (16 uniform) — seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":16,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsB6: full IBC neg mix — 8 uniform + 8 Langevin, seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":8,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pushingPixelsB7: baseline + 150k steps (saturation probe) — seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsB8: baseline + ResNet CP head (128×8) — seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"resnet","cp_width":128,"cp_depth":8,"cp_use_spectral_norm":false,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
