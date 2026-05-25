@@ -1,8 +1,0 @@
-==========================================
-SLURM_JOB_ID = 7989069
-SLURM_JOB_NODELIST = b17-15
-TMPDIR = /tmp/SLURM_7989069
-==========================================
-srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
-[2026-04-15T16:05:50.775] error: *** STEP 7989069.0 ON b17-15 CANCELLED AT 2026-04-15T16:05:50 DUE to SIGNAL Terminated ***
-[2026-04-15T16:05:50.775] error: *** JOB 7989069 ON b17-15 CANCELLED AT 2026-04-15T16:05:50 DUE to SIGNAL Terminated ***

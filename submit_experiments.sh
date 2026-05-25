@@ -78,7 +78,7 @@ for cmd in "${commands[@]}"; do
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100|l40s|a40|v100"
 #SBATCH --mem=32G
-#SBATCH --time=25:00:00
+#SBATCH --time=30:00:00
 #SBATCH --job-name=${batch_name}_${tag}
 #SBATCH --output=${out_dir}/${batch_name}_${tag}.out
 #SBATCH --error=${out_dir}/${batch_name}_${tag}.err
