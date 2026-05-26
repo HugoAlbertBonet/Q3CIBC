@@ -1,0 +1,97 @@
+# Batch pushingPixelsC — saturation push + stability, NO CODE CHANGES.
+#
+# Standing on pushingPixelsB's results:
+#   - B7 (150k baseline, no extra negatives, seed=0) hit 0.91 — current ceiling.
+#   - Seed variance is large (4-seed baseline std=0.18; range 0.44–0.89).
+#   - Extra negatives (uniform, Langevin, mixed) ≤ baseline on pixels.
+#   - Encoder is the bottleneck (ResNet vs MLP CP head was a wash).
+#
+# Honest expectations:
+#   - 100% is almost certainly unreachable without the IBC paper's
+#     inference-time Langevin refinement (which IS the biggest known
+#     lever — +5–10pp typical — but requires the pixel-aware wrapper
+#     deferred to pushingPixelsD).
+#   - Realistic config-only ceiling: ~0.93–0.95 by combining longer
+#     training + an untried negative source + a stack.
+#   - Lower-bound improvement: just +1–3pp from training-step extension
+#     alone (A1=0.89 → B7=0.91 was already that trend).
+#
+# Strategy for C (8 trials, all pure --fixed-params overrides):
+#
+#   Saturation curve:
+#     C1, C2, C3 — push training from 150k → 200k → 300k. C1 and C2 are
+#     two seeds at 200k to test whether longer training reduces the bad-
+#     seed phenomenon B3 (0.44 at seed=3) and B1 (0.42 at seed=1, n_lang=8)
+#     exposed at 100k. C3 is the max practical training on a 25h SLURM
+#     wall (~21h pure baseline).
+#
+#   One untried negative source:
+#     C4, C5 — `noisy_expert_count=8`: expert action + Gaussian noise as
+#     hard negatives, with a σ curriculum (0.05 → 0.005 over training).
+#     This is the ONE neg source pushingPixelsA/B didn't try. Unlike
+#     uniform negatives (anywhere in [-1,1]) and Langevin (Q-ascent from
+#     uniform), noisy-expert negatives are TIGHTLY clustered around the
+#     expert — they shape Q's local curvature where it actually matters
+#     for action selection. Cheap (no inner loop, just expert+noise),
+#     so fits in the same time budget as a baseline trial.
+#
+#   Stacking:
+#     C6 — 200k + ResNet CP head (cp 128×8). B8 (ResNet at 100k) was
+#     0.88, barely below A1's 0.89. Maybe the deeper head was undertrained;
+#     test it with B7's longer-training recipe.
+#
+#   Optimization stability:
+#     C7 — lower LR (3e-4 vs the default 1e-3). The 100k-step bad-seed
+#     trials (B1, B3) had train_acc collapsing below 0.5, consistent
+#     with optimizer oscillation. Lower LR is the gentlest single
+#     intervention that's known to help on EBMs.
+#
+#   CP cloud density:
+#     C8 — 50 CPs (top_k=20) at 200k. A6 (30 CPs, 100k) didn't move
+#     vs A4 (20 CPs, 100k), but maybe denser cloud + longer training
+#     gives Q more refined argmax targets.
+#
+# Compute budget per trial (extrapolated from A/B timings):
+#   - C1, C2 (200k baseline, no negs):       ~14h each
+#   - C3 (300k baseline):                    ~21h  (tight on 25h SLURM)
+#   - C4 (150k + noisy_expert, no Langevin): ~11h  (noisy_expert is cheap)
+#   - C5 (200k + noisy_expert):              ~14h
+#   - C6 (200k + ResNet head):               ~15h
+#   - C7 (150k + lower LR):                  ~11h
+#   - C8 (200k + 50 CPs):                    ~14h
+#   All fit in the existing #SBATCH --time=25:00:00 wall comfortably
+#   except C3, which is right at the edge — if you want safety margin,
+#   bump that one to --time=30:00:00 manually before sbatch.
+#
+# Things explicitly NOT in this batch (deferred to pushingPixelsD with code):
+#   - Inference-time Langevin refinement (needs pixel-aware wrapper:
+#     encode image ONCE per env step, then 100 Langevin iters on the
+#     cached 256-D features; the existing LangevinRefinedParticleSimulation
+#     re-encodes 100× per step).
+#   - Inference-time DFO refinement (same code path).
+#   - value_width / value_num_blocks (not routable through SEARCH_SPACE).
+#   - frame_stack changes (env-level, not in env_training/env_model).
+
+# ── pushingPixelsC1: 200k baseline saturation, seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── pushingPixelsC2: 200k baseline, seed=1 (variance check at saturation)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── pushingPixelsC3: 300k baseline (max practical training), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":300000,"cosine_t_max":300000}'
+
+# ── pushingPixelsC4: 150k baseline + noisy-expert hard negs (count=8, σ 0.05→0.005), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":8,"noisy_expert_sigma_start":0.05,"noisy_expert_sigma_final":0.005,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsC5: 200k + noisy-expert hard negs (the candidate top score), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":8,"noisy_expert_sigma_start":0.05,"noisy_expert_sigma_final":0.005,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── pushingPixelsC6: 200k + ResNet CP head (128×8), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"resnet","cp_width":128,"cp_depth":8,"cp_use_spectral_norm":false,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'
+
+# ── pushingPixelsC7: 150k baseline + lower LR (3e-4), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsC8: 200k + denser CP cloud (50 CPs, top_k=20), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000}'

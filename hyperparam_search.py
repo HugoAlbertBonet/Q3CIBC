@@ -777,15 +777,151 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         )
         q_est.to(device).eval()
 
-    # Pixel envs skip the DFO/Langevin inference-refinement wrappers — those
-    # wrappers were written for flat states (they call obs_normalizer.normalize
-    # on the obs and do `obs.unsqueeze(1).expand(-1, N, -1)` which would
-    # re-encode the image N times). The base PushingPixelsSimulation.select_action
-    # already does pixel-aware late-fused argmax-over-CPs, which is what IBC
-    # paper calls "no inference refinement." A pixel-aware DFO/Langevin wrapper
-    # is a sensible follow-up but lives outside the first batch's scope.
+    # ── Pixel envs: dedicated late-fused DFO / Langevin refinement ────────
+    # The flat-state wrappers below assume `obs.unsqueeze(1).expand(-1, N, -1)`
+    # is cheap — that's true for vector obs, but for images it would re-encode
+    # the (1, C, H, W) tensor N (DFO) or 100 (Langevin) times PER ENV STEP.
+    # Instead we encode ONCE per step, cache the 256-D features, and run the
+    # refinement inner loop against PixelQEstimator.score(features, actions).
+    # This is what IBC's `late_fusion = True` config flag does upstream.
     if active_env == "pushing_pixels":
-        sim_cls = SimulationCls
+        if inference_dfo_iterations > 0:
+            _dfo_iters = inference_dfo_iterations
+            _dfo_std0 = inference_dfo_iteration_std
+            _dfo_decay = inference_dfo_iteration_std_decay
+            _dfo_n_uniform = inference_dfo_num_uniform
+
+            class PixelDFORefinedSimulation(SimulationCls):
+                """Pixel-aware CP-DFO refinement (encode once per env step).
+
+                Same algorithm as DFORefinedSimulation below — initial pop = CP
+                cloud (+ optional uniform safety samples); each iter resamples
+                via category-ordered softmax(Q) and jitters — but the Q forward
+                calls run against cached image features instead of re-encoding.
+                """
+
+                def select_action(self, observation, return_q_range: bool = False):
+                    obs_tensor = self._obs_to_tensor(observation)  # (1, C, H, W) uint8
+
+                    with torch.no_grad():
+                        features = self.q_estimator.encode(obs_tensor)  # (1, F)
+                        cps = self.control_point_generator(obs_tensor)  # (1, N_cp, A)
+
+                        if _dfo_n_uniform > 0:
+                            unif = torch.empty(
+                                1, _dfo_n_uniform, cps.shape[-1], device=self.device
+                            ).uniform_(float(action_bounds[0]), float(action_bounds[1]))
+                            candidates = torch.cat([cps, unif], dim=1)
+                        else:
+                            candidates = cps.clone()
+
+                        N = candidates.shape[1]
+                        std = float(_dfo_std0)
+                        for it in range(_dfo_iters):
+                            log_probs = self.q_estimator.score(features, candidates).squeeze(-1)  # (1, N)
+                            probs = torch.softmax(log_probs.squeeze(0), dim=-1)
+                            idx = torch.multinomial(probs, N, replacement=True)
+                            counts = torch.bincount(idx, minlength=N)
+                            repeat_idx = torch.repeat_interleave(
+                                torch.arange(N, device=self.device), counts
+                            )
+                            candidates = candidates[:, repeat_idx, :]
+                            if it < _dfo_iters - 1:
+                                candidates = candidates + torch.randn_like(candidates) * std
+                                candidates = candidates.clamp(
+                                    float(action_bounds[0]), float(action_bounds[1])
+                                )
+                                std *= _dfo_decay
+                        # Re-score after the final reorder so argmax index aligns
+                        # with the (reordered) candidates tensor — same fix as
+                        # the flat-state DFORefinedSimulation.
+                        final_log_probs = self.q_estimator.score(features, candidates).squeeze(-1)
+                        sel = final_log_probs.argmax(dim=1)
+                        action_normalized = candidates[0, sel[0], :].cpu().numpy()
+                        q_range = (final_log_probs.min().item(), final_log_probs.max().item())
+
+                    action = np.clip(action_normalized, action_bounds[0], action_bounds[1])
+                    action = self._denormalize_action(action)
+                    if return_q_range:
+                        return action, q_range
+                    return action
+
+            sim_cls = PixelDFORefinedSimulation
+
+        elif inference_langevin_iterations > 0:
+            class PixelLangevinRefinedSimulation(SimulationCls):
+                """Pixel-aware Langevin refinement (encode once per env step).
+
+                Encodes the (1, C, H, W) image once into 256-D features, picks
+                the argmax-Q CP as the starting action, then runs Langevin MCMC
+                on actions against the cached features. The energy_function
+                ignores `sample_langevin`'s expanded-obs argument and uses the
+                closed-over `features` tensor instead — that's how we get the
+                speedup vs the flat-state wrapper.
+                """
+
+                def select_action(self, observation, return_q_range: bool = False):
+                    obs_tensor = self._obs_to_tensor(observation)  # (1, C, H, W) uint8
+
+                    with torch.no_grad():
+                        features = self.q_estimator.encode(obs_tensor)  # (1, F)
+                        cps = self.control_point_generator(obs_tensor)  # (1, N_cp, A)
+                        q_values = self.q_estimator.score(features, cps).squeeze(-1)  # (1, N)
+                        best_idx = q_values.argmax(dim=1)
+                        q_range = (q_values.min().item(), q_values.max().item())
+                        best_cp = cps[0, best_idx[0], :].view(1, 1, -1).clone()  # (1, 1, A)
+
+                    act_min_t = torch.full(
+                        (cps.shape[-1],), float(action_bounds[0]), device=self.device
+                    )
+                    act_max_t = torch.full(
+                        (cps.shape[-1],), float(action_bounds[1]), device=self.device
+                    )
+
+                    for p in self.q_estimator.parameters():
+                        p.requires_grad_(False)
+
+                    # Closed over `features` — the loop uses the cached encoding,
+                    # not sample_langevin's expanded `obs_lv` arg (we just need
+                    # to accept its signature).
+                    def _neg_energy_fn(obs_lv, actions_lv):
+                        return -self.q_estimator.score(features, actions_lv).squeeze(-1)
+
+                    refined = sample_langevin(
+                        energy_function=_neg_energy_fn,
+                        observations=features,  # (1, F) — expanded internally, ignored by our fn
+                        num_samples=1,
+                        action_min=act_min_t,
+                        action_max=act_max_t,
+                        num_iterations=inference_langevin_iterations,
+                        lr_init=float(langevin_cfg.get("lr_init", 0.1)),
+                        lr_final=float(langevin_cfg.get("lr_final", 1e-5)),
+                        polynomial_decay_power=float(
+                            langevin_cfg.get("polynomial_decay_power", 2.0)
+                        ),
+                        delta_action_clip=float(
+                            langevin_cfg.get("delta_action_clip", 0.1)
+                        ),
+                        noise_scale=float(langevin_cfg.get("noise_scale", 1.0)),
+                        initial_actions=best_cp,
+                        device=self.device,
+                    )
+
+                    for p in self.q_estimator.parameters():
+                        p.requires_grad_(True)
+
+                    action = refined[0, 0, :].cpu().numpy()
+                    action = np.clip(action, action_bounds[0], action_bounds[1])
+                    action = self._denormalize_action(action)
+                    if return_q_range:
+                        return action, q_range
+                    return action
+
+            sim_cls = PixelLangevinRefinedSimulation
+
+        else:
+            sim_cls = SimulationCls
+
     elif inference_dfo_iterations > 0:
         # ── CP-DFO refinement (Q3CIBC inference). Cheaper than Langevin: no
         # autograd, only N small-batch forward passes through the Q-net.
