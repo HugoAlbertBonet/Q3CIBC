@@ -369,6 +369,17 @@ def make_method_q3cibc_cp_dfo(device: torch.device, cfg: BenchConfig):
         N = candidates.shape[1]
         obs_expanded = obs.unsqueeze(1).expand(-1, N, -1)
         std = cfg.dfo_iter_std
+
+        # 0-iter case = pure CP-argmax (no DFO refinement loop). Matches the
+        # PushingSimulation.select_action fallback in hyperparam_search when
+        # both inference_dfo_iterations and inference_langevin_iterations
+        # are 0 — confirmed by pushingH trials 66/67/68 (99% mean).
+        if cfg.dfo_num_iters == 0:
+            with torch.no_grad():
+                log_probs = q_net(obs_expanded, candidates).squeeze(-1)  # (1, N)
+            sel = log_probs.argmax(dim=1)
+            return candidates[0, sel[0], :]
+
         log_probs = None
         for it in range(cfg.dfo_num_iters):
             with torch.no_grad():

@@ -137,6 +137,31 @@ SLURM batches submitting pushing trials prefix their command with `uv run --mana
 - `gin` is stubbed to no-ops (we set hyperparameters from Python, not `.gin` files).
 - URDF asset paths are rewritten by `utils/utils_pybullet.py` to point at the vendored `assets/` directory; xArm URDFs come from PyBullet's bundled data.
 
+**Inference protocol — CP-DFO.** The IBC paper's `mlp_ebm_best.gin` uses Derivative-Free Optimization (`iterative_dfo`) over 16,384 uniformly-sampled candidate actions × 3 iterations to pick an action at every env step (49,152 Q-network calls per step). Q3CIBC replaces the uniform candidates with the **20 CPs produced by `ControlPointGenerator`** — i.e. the candidates are model-trained, not random. The DFO loop then runs on this much smaller, pre-anchored set. Two new config knobs (added to `hyperparam_search.py`'s `SEARCH_SPACE`) control the recipe:
+
+| Param | Default | Meaning |
+|---|---|---|
+| `inference_dfo_iterations` | 0 (off) | Set > 0 to use CP-DFO refinement at eval. When > 0 it takes precedence over `inference_langevin_iterations`. |
+| `inference_dfo_iteration_std` | 0.1 | Initial Gaussian-jitter std applied between DFO iterations. Smaller than IBC's 0.33 because the CP cloud starts close to the optimum already. |
+| `inference_dfo_iteration_std_decay` | 0.5 | Multiplicative shrink of the jitter std each iteration (same as IBC's default for `iterative_dfo`). |
+| `inference_dfo_num_uniform` | 0 | Number of uniform safety samples to mix into the CP cloud for iteration 0 (insurance against bad CP coverage). |
+
+Successive batches under `batches/pushingA.txt … batches/pushingH.txt` searched the inference and training hyperparameters; the recipe `(5 iters, std=0.02, decay=0.5)` at q_depth=4 (paper-faithful Q-net) reaches the paper's 100% success on three independent seeds. Reducing the loop further yields a Pareto front:
+
+| Inference recipe at paper-faithful Q-net (`resnet 128×4 blocks` = IBC `depth=8`) | Q-calls per env step | Inference (mean, ms) | Success rate (3 seeds) |
+|---|---|---|---|
+| **IBC + DFO** (`mlp_ebm_best.gin`: 16384 × 3 iters) | 49,152 | 9.50 | 100 ± 0 (paper Table 3) |
+| Q3CIBC + CP-DFO (5 iters) | 100 | 8.16 | 99.33 ± 0.58 |
+| **Q3CIBC + CP-DFO (3 iters)** ← matches paper at 2× speed | 60 | 4.64 | 100 ± 0 |
+| **Q3CIBC + CP-DFO (0 iters, pure CP-argmax)** ← 10× speed, 1 pp cost | 20 | 0.89 | 99.0 ± 1.0 |
+
+Full per-row provenance (trial IDs, training budgets, seeds, params, stdev) is in [`results/hyperparam_search/combinedv2_cpascounter_training/pushing/single_target_states.csv`](results/hyperparam_search/combinedv2_cpascounter_training/pushing/single_target_states.csv). Reproduce the timings with `bench_inference.py` (random-weight nets, shared Q-net across all methods):
+
+```bash
+uv run --managed-python --extra pushing python bench_inference.py \
+    --q-depth 4 --dfo-num-iters 3 --num-steps 50
+```
+
 ---
 
 ---
@@ -152,8 +177,9 @@ Q3CIBC/
 ├── joint_training.py               # Gen InfoNCE+MSE+separation; estimator InfoNCE; CPs as negative samples
 ├── direct_training.py              # Gen MSE+separation; estimator InfoNCE; estimator decoupled from generator
 ├── hyperparam_search.py            # Trial runner: CLI for single/auto/analyze modes, --active-env override, per-trial config + checkpoint isolation
+├── bench_inference.py              # Inference-time benchmark: random-weight nets, shared Q-net across all methods, JSONL+CSV outputs
 ├── submit_experiments.sh           # Reads a batch file (one shell command per line) and submits each as a SLURM job
-├── batches/                        # Hand-authored batch files for SLURM submission (V/T/U/pushingA)
+├── batches/                        # Hand-authored batch files for SLURM submission (V/T/U/pushingA-H)
 ├── config_json/
 │   ├── config.json                 # All environment & training configuration
 │   └── observation_bounds.json     # Observation min-max bounds for the legacy minmax normalizer
@@ -181,6 +207,10 @@ Q3CIBC/
 ├── plots/                          # Generated evaluation plots
 ├── checkpoints/                    # Saved model weights (per-trial under checkpoints/hpsearch/run_<id>/)
 ├── results/hyperparam_search/      # JSONL trial logs partitioned by script/env/n_dim
+│   └── combinedv2_cpascounter_training/pushing/
+│       ├── trials.jsonl                  # per-trial training + eval records
+│       ├── inference_benchmark.jsonl     # one record per `bench_inference.py` run
+│       └── single_target_states.csv      # head-to-head Q3CIBC vs IBC at matched architectures
 ├── pyproject.toml                  # Project metadata & dependencies (pushing extras = pybullet + gym)
 └── README.md
 ```
@@ -310,6 +340,11 @@ All parameters are in `config_json/config.json`. Each environment has its own bl
 | `top_k_control_points`   | per-env training   | Number of top CPs used as InfoNCE negatives                |
 | `q_network_kind`         | per-env model      | `mlp` or `resnet` (ResNetPreActivation)                    |
 | `q_width` / `q_depth`    | per-env model      | Q-net width / number of blocks (resnet) or layers (mlp)    |
+| `inference_langevin_iterations` | per-env training | If > 0, refine the best CP with Langevin MCMC at eval time |
+| `inference_dfo_iterations` | per-env training | If > 0, run CP-DFO refinement instead of Langevin (takes precedence) |
+| `inference_dfo_iteration_std` | per-env training | Initial Gaussian-jitter std for CP-DFO; tighter than IBC's 0.33 |
+| `inference_dfo_iteration_std_decay` | per-env training | Jitter shrink factor per DFO iteration                    |
+| `inference_dfo_num_uniform` | per-env training | Uniform safety samples added to CP cloud (default 0 = pure CP) |
 | `snapshot_steps`         | per-env (dummy)    | Timesteps at which to save diagnostic plots                |
 
 ---
@@ -334,16 +369,26 @@ $$
 - **MSE** – distance from nearest control point to expert.
 - **Separation** – encourages control-point diversity via inverse pairwise distances.
 
+### Inference protocols
+
+Multiple ways to map state → action at eval time, selected by `hyperparam_search.py` config flags:
+
+- **Plain CP-argmax** (when neither Langevin nor DFO is enabled) — forward the CP generator, score the 20 CPs with the Q-net, return the argmax. Fastest.
+- **Inference-time Langevin** (`inference_langevin_iterations > 0`) — start a single chain from the best CP, run gradient-based MCMC for N iterations. Default for early experiments.
+- **CP-DFO** (`inference_dfo_iterations > 0`, takes precedence over Langevin when both > 0) — IBC-style iterative resampling, but starting from the 20 CPs instead of 16,384 uniform random actions. Several orders of magnitude fewer Q-network calls per env step.
+
 ---
 
 ## Results
 
-| Environment        | Metric        | Q3CIBC                                                                | IBC paper           |
-|--------------------|---------------|-----------------------------------------------------------------------|---------------------|
-| Dummy              | Extra steps   | 0                                                                     | 0.33                |
-| Particle (2D)      | Success rate  | 100%                                                                  | 100%                |
-| Particle (16D)     | Success rate  | best 66%, mean ~40% across seeds (`particle/16/trials.jsonl`)         | 99% (paper, Fig. 6) |
-| Pushing (1 target) | Success rate  | running batch `pushingA` (24% in a 500-step smoke after gap-closure)  | 87% / 73% (Table 3) |
+| Environment            | Q3CIBC                                                                | IBC paper                       |
+|------------------------|-----------------------------------------------------------------------|---------------------------------|
+| Dummy                  | 0 extra steps                                                         | 0.33 extra steps                |
+| Particle (2D)          | 100% success rate                                                     | 100% (Fig. 6)                   |
+| Particle (16D)         | Best 66%, mean ~40% across seeds (`particle/16/trials.jsonl`)         | 99% (Fig. 6)                    |
+| **Pushing (1 target, states)** | **100 ± 0** success at paper-faithful Q-net (ResNet 128×4 blocks), 3-iter CP-DFO inference, 4.64 ms per env step (≈ 2× faster than IBC + DFO benched at the same arch). 99.0 ± 1.0 at 0.89 ms with pure CP-argmax (10× faster). | **100 ± 0** (Table 3), 9.50 ms benched at the same arch |
+
+See [`results/hyperparam_search/combinedv2_cpascounter_training/pushing/single_target_states.csv`](results/hyperparam_search/combinedv2_cpascounter_training/pushing/single_target_states.csv) for the full apples-to-apples comparison (matched Q-net, multiple inference recipes, per-row trial-ID provenance).
 
 ## Dependencies
 
