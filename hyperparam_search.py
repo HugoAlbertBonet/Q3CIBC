@@ -628,6 +628,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env == "pushing_pixels":
         from simulations.pushing_pixels_simulation import PushingPixelsSimulation
         SimulationCls = PushingPixelsSimulation
+    elif active_env == "pen":
+        from simulations.pen_human_v2_simulation import PenHumanV2Simulation
+        SimulationCls = PenHumanV2Simulation
     else:
         from simulations.particle_simulation import ParticleSimulation
         SimulationCls = ParticleSimulation
@@ -1112,6 +1115,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         sim_kwargs["goal_dist_tolerance"] = float(
             env_config.get("goal_dist_tolerance", 0.02)
         )
+    elif active_env == "pen":
+        # AdroitHandPen-v1 — no goal_dist_tolerance / n_dim knobs. Both pen sim
+        # and the Langevin/DFO wrappers ignore norm_stats here (action space is
+        # already env-native [-1, 1]).
+        pass
     else:
         sim_kwargs["n_dim"] = n_dim
     sim = sim_cls(**sim_kwargs)
@@ -1131,6 +1139,31 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     rewards = [float(r.get("total_reward", 0.0)) for r in all_results]
     ep_lengths = [int(r.get("episode_length", 0)) for r in all_results]
     terminated_flags = [bool(r.get("terminated", False)) for r in all_results]
+
+    if active_env == "pen":
+        # IBC Table 2 reports avg return on pen-human (no per-step distance
+        # metric like the pushing tasks have). We still log success_rate (from
+        # the env's "is_success" info bit), but avg_reward is the canonical
+        # number to compare against the paper (their EBM hit 2586 ± 65).
+        return {
+            "success_rate": float(np.mean(successes)),
+            "success_rate_std": float(np.std(successes)),
+            "avg_reward": float(np.mean(rewards)),
+            "std_reward": float(np.std(rewards)),
+            "median_reward": float(np.median(rewards)),
+            "avg_episode_length": float(np.mean(ep_lengths)),
+            "num_seeds": len(seeds),
+            "per_seed": [
+                {
+                    "seed": seeds[i],
+                    "success": successes[i],
+                    "reward": rewards[i],
+                    "episode_length": ep_lengths[i],
+                    "terminated": terminated_flags[i],
+                }
+                for i in range(len(seeds))
+            ],
+        }
 
     if active_env in ("pushing", "pushing_pixels"):
         # Single-target pushing (states OR pixels) — single goal, same metric

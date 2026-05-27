@@ -1,0 +1,97 @@
+# Batch penA — first pass at D4RL pen-human-v2 (AdroitHandPen-v1, 24-D actions).
+#
+# Reference: IBC paper (Florence et al. 2021), Table 2 + Appendix D.1.
+#   - Reported pen-human-v0 EBM return: 2586 ± 65 (avg over 3 seeds, 100 evals).
+#   - Recipe: Langevin EBM, 100k steps, batch 512, LR 5e-4 (decay 0.99/100),
+#     512×8 MLP with spectral norm, 8 train counter examples (Langevin),
+#     gradient_penalty (margin=1, hinge, final-step-only).
+#     Inference: Langevin 100 iters (2nd-iter LR 1e-5).
+#
+# The IBC paper uses ONLY Langevin counter examples (8 of them).
+# Q3CIBC adds a CP generator on top: we want to test whether the CP cloud
+# (sampled in 24-D action space, trained jointly with MSE) lets us match or
+# beat 2586 with LESS inference compute than 100 Langevin iters/step.
+#
+# All trials share the IBC paper's architecture:
+#   q_network_kind=mlp, q_width=512, q_depth=8, q_use_spectral_norm=true
+#   cp_network_kind=mlp, cp_width=512, cp_depth=8
+# and the paper's training Langevin hypers (lr_init=0.5, noise=0.5, clip=0.5,
+# decay_power=2, lr_final=1e-5, 100 iters). All trials use seed=0; variance
+# across seeds is a follow-up (penB) once we know which config to commit to.
+#
+# Compute notes:
+#   - pen-human has 50 demos (~5k transitions). batch=512 → ~10 epochs per
+#     10k steps, so 100k steps is ~100 epochs (well past overfitting on MSE
+#     alone — but the InfoNCE branch + spectral norm + GP regularize Q).
+#   - Training Langevin: 8 negs × 100 iters × forward Q pass per step is
+#     expensive (~2-4x baseline per step). 100k steps fits in 25h SLURM.
+#   - Inference: 100 Langevin iters × 100 episodes × 200 steps/episode
+#     ≈ 2M Q-forward passes per evaluation. Cutting this 4x (A4) or to 0
+#     (A5) is the headline "less inference compute" claim.
+#
+# Things explicitly NOT in this batch (deferred to penB):
+#   - Multi-seed reps (the published number is over 3 seeds; we run seed=0
+#     here to triage configs, then rerun winners across 3 seeds in penB).
+#   - DFO refinement at inference. The paper uses Langevin for D4RL because
+#     DFO is known to fail past ~5D, and pen is 24-D. We could still try
+#     CP-DFO (inference_dfo_iterations>0) since the CP cloud is a trained
+#     starting population — but that's a Q3CIBC-specific bet that we'll
+#     park until we have an A1-style ceiling number to compare against.
+#   - longer training (150k–200k steps). pen-human is so small that 100k
+#     should be saturated; if A1 trains below paper, longer is worth trying.
+
+# ── penA1: IBC-paper-faithful baseline + CP cloud as 8 extra negatives.
+#   Trains CPs jointly (MSE + InfoNCE on top-8 CP) AND uses 8 Langevin negs
+#   (paper's recipe). Inference: 100 Langevin iters. Expected: should hit
+#   close to 2586 if the CP-cloud addition doesn't hurt.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penA2: CP-only counter examples (Langevin negs = 0).
+#   Tests whether the trained CP cloud alone is sufficient to shape Q on
+#   pen, dropping the expensive training Langevin entirely. If this is
+#   close to A1, training is ~2-4x faster and the CP cloud is doing the
+#   work of IBC's Langevin negatives.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penA3: minimal-CP, paper-style — control_points=1, 8 Langevin negs.
+#   Cripples the CP path (only 1 CP, so MSE collapses to direct regression
+#   of the mean) to approximate the paper's pure-IBC Langevin setup as
+#   closely as combinedv2 allows. This is the calibration anchor: how close
+#   do we get to 2586 when the CP cloud isn't a meaningful contribution?
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":1,"top_k_control_points":1,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penA4: A1 recipe + inference Langevin reduced 4x (25 iters).
+#   Headline "less inference compute" trial. The CP cloud provides a good
+#   warm start (argmax-Q over 20 CPs is itself a strong initial action),
+#   so the 100→25 iter cut may not hurt return significantly.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penA5: zero inference Langevin — argmax over CP cloud only.
+#   The cheapest possible inference path: one Q forward pass over 20 CPs,
+#   pick argmax. ~100x cheaper than A1 at inference. Hypothesis: with
+#   training Langevin negs (A1's recipe) the Q surface is well-shaped at
+#   the expert, and the CP cloud lands in the right neighborhood, so a
+#   single Q forward suffices.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penA6: denser CP cloud — control_points=50, top_k=20.
+#   Pen is 24-D; 20 CPs is sparse coverage. More CPs may help the
+#   argmax-over-CPs (A5-style) inference path, and gives Q a richer set of
+#   counter-examples during training. Keeps Langevin negs at 8 (A1 recipe).
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penA7: shorter training Langevin (25 iters instead of 100).
+#   Training compute reduction. The CP cloud already gives Q a structured
+#   set of negatives (top-8 CPs); maybe Q doesn't need 100 Langevin steps
+#   to find hard negatives — 25 may be enough to maintain expert margin.
+#   Cuts training time ~3x. Inference stays at 100 (so this only tests
+#   training-compute reduction, not the inference-cost claim).
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penA8: IBC mixture — top-8 CPs + 8 Langevin negs + 16 uniform negs.
+#   The IBC paper considers mixed negative sources in App. B; for 24-D pen
+#   it stuck with pure Langevin. We test whether adding 16 uniform negatives
+#   on top of A1's recipe is "free" extra coverage of the 24-D action box,
+#   or whether they wash out the useful gradient signal from Langevin's
+#   hard negatives.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":16,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
