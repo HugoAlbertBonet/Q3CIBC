@@ -1175,6 +1175,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             "success_rate": float(np.mean(successes)),
             "success_rate_std": float(np.std(successes)),
             "avg_reward": float(np.mean(rewards)),
+            "std_reward": float(np.std(rewards)),
+            "median_reward": float(np.median(rewards)),
             "avg_min_dist_to_target": float(np.mean(finite_target)) if finite_target else None,
             "std_min_dist_to_target": float(np.std(finite_target)) if finite_target else None,
             "median_min_dist_to_target": float(np.median(finite_target)) if finite_target else None,
@@ -1208,6 +1210,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             "success_rate": float(np.mean(successes)),
             "success_rate_std": float(np.std(successes)),
             "avg_reward": float(np.mean(rewards)),
+            "std_reward": float(np.std(rewards)),
+            "median_reward": float(np.median(rewards)),
             "avg_min_mean_dist_to_target": float(np.mean(finite_mean)) if finite_mean else None,
             "std_min_mean_dist_to_target": float(np.std(finite_mean)) if finite_mean else None,
             "median_min_mean_dist_to_target": float(np.median(finite_mean)) if finite_mean else None,
@@ -1238,6 +1242,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     return {
         "success_rate": float(np.mean(successes)),
         "avg_reward": float(np.mean(rewards)),
+        "std_reward": float(np.std(rewards)),
+        "median_reward": float(np.median(rewards)),
         "avg_min_dist_first_goal": float(np.mean(finite_first)) if finite_first else None,
         "avg_min_dist_second_goal": float(np.mean(finite_second)) if finite_second else None,
         "median_min_dist_first_goal": float(np.median(finite_first)) if finite_first else None,
@@ -1474,7 +1480,14 @@ def run_single_trial(
 
     sr = record["success_rate"]
     rw = record["avg_reward"]
-    print(f"\n  Result (trial #{trial_id}): success_rate={sr:.2%}, avg_reward={rw:.3f}")
+    rw_std = record.get("std_reward")
+    # Pen target: IBC paper reports 2586 ± 65 on pen-human; std_reward is the
+    # primary signal there (success_rate is binary and less informative). For
+    # other envs success_rate is still the headline.
+    rw_str = f"{rw:.3f} ± {rw_std:.3f}" if rw_std is not None else f"{rw:.3f}"
+    print(
+        f"\n  Result (trial #{trial_id}): success_rate={sr:.2%}, avg_reward={rw_str}"
+    )
     return record
 
 
@@ -1499,7 +1512,7 @@ def print_analysis(script_name: str, active_env: str | None = None) -> None:
     cols: list[tuple[str, int]] = [("Trial", 6)]
     for p in all_param_names:
         cols.append((p[:12], max(len(p[:12]), 10)))
-    cols += [("Steps", 8), ("Success", 8), ("Reward", 8), ("Loss", 8), ("Time", 7)]
+    cols += [("Steps", 8), ("Success", 8), ("Reward", 18), ("Loss", 8), ("Time", 7)]
 
     header = " | ".join(f"{name:>{w}}" for name, w in cols)
     separator = "-+-".join("-" * w for _, w in cols)
@@ -1528,11 +1541,15 @@ def print_analysis(script_name: str, active_env: str | None = None) -> None:
         failed = t.get("training_failed", False)
         sr = t.get("success_rate", 0)
         rw = t.get("avg_reward", 0)
+        rw_std = t.get("std_reward")
         loss = t.get("final_train_loss")
         dur = t.get("duration_seconds", 0)
 
         row_vals.append("  FAILED" if failed else f"{sr:>7.0%}")
-        row_vals.append(f"{rw:>8.3f}")
+        rw_cell = (
+            f"{rw:.3f} ± {rw_std:.3f}" if rw_std is not None else f"{rw:.3f}"
+        )
+        row_vals.append(f"{rw_cell:>18}")
         row_vals.append(f"{loss:>8.4f}" if loss is not None else f"{'—':>8}")
         row_vals.append(f"{dur / 60:>6.1f}m")
 
@@ -1542,10 +1559,22 @@ def print_analysis(script_name: str, active_env: str | None = None) -> None:
 
     valid = [t for t in trials if not t.get("training_failed")]
     if valid:
-        best = max(valid, key=lambda t: t.get("success_rate", 0))
+        # Pen objective is reward (IBC paper Table 2 reports 2586 ± 65 on
+        # pen-human-v0). Other envs still ranked by success_rate.
+        env_names = {t.get("active_env") for t in valid}
+        if env_names == {"pen"}:
+            best = max(valid, key=lambda t: t.get("avg_reward", float("-inf")))
+        else:
+            best = max(valid, key=lambda t: t.get("success_rate", 0))
+        best_std = best.get("std_reward")
+        rw_str = (
+            f"{best['avg_reward']:.3f} ± {best_std:.3f}"
+            if best_std is not None
+            else f"{best['avg_reward']:.3f}"
+        )
         print(f"\nBest trial: #{best['trial_id']}  "
               f"success_rate={best['success_rate']:.2%}  "
-              f"avg_reward={best['avg_reward']:.3f}")
+              f"avg_reward={rw_str}")
         print(f"  Params: {json.dumps(best['params'], indent=4)}")
 
     print(f"\nTotal trials: {len(trials)} ({len(valid)} completed, "

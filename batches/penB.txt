@@ -1,0 +1,77 @@
+# Batch penB — validate penA5 winner + push capacity around it.
+#
+# penA result snapshot (single seed=0 each):
+#   A5  inf_lang=0 (CP-argmax only)             R= 4735.7 ± 4518.9   succ=58%
+#   A4  inf_lang=25                             R=  130.7 ± 1222.8   succ=15%
+#   A1  paper-faithful inf_lang=100              CRASHED at 0m
+#   A8  +16 uniform negs                        R= -229.1            succ= 6%
+#   A3  control_points=1 (pure-IBC analogue)    R= -306.4            succ=10%
+#   A7  train_lang=25                           R= -392.7            succ= 6%
+#   A6  cp=50/top_k=20, inf_lang=100            R= -436.1            succ=10%
+#   A2  no Langevin at all                      R= -577.7            succ=12%
+#
+# Headlines:
+#   1) inference_langevin=0 (just argmax over CP cloud) BEATS IBC paper's
+#      2586 ± 65 by mean=4735 — but with single-seed std=4518 and only
+#      58% success rate. The mean is dominated by a few high-reward episodes;
+#      this MUST be confirmed across seeds before we claim the win.
+#   2) Inference Langevin > 0 HURTS on pen across the board (A4, A6, A7, A8
+#      all ≤ 130 reward). The trained Q surface is sharp at the CP-argmax
+#      and Langevin refinement walks off the good basin.
+#   3) Training Langevin DOES help (A2 with no Langevin = -577; A7 with only
+#      25 train Langevin iters = -392; A5 with full 100 iters = 4735).
+#   4) cp=1 (A3) is bad, cp=20 (A5) wins, cp=50 (A6) was bad BUT at
+#      inf_lang=100 — needs retest at inf_lang=0.
+#   5) A1 crashed instantly (dur=0m). Worth one retry with logs scrutinized;
+#      could be an OOM or a one-off env init failure.
+#
+# penB strategy (8 trials, all use A5's recipe as base unless noted):
+#   B1, B2  multi-seed validation of A5 (seeds 1, 2) — paper averages 3 seeds.
+#           If B1+B2 land near 2586 and the variance shrinks, claim is solid.
+#   B3      A5 + cp=50/top_k=20 — A6 was bad but A6 had inf_lang=100. Maybe
+#           denser CP cloud actually helps when inference is pure argmax.
+#   B4      A5 + cp=100/top_k=30 — max practical CP density in 24-D space.
+#   B5      A5 + num_langevin_negatives=32 — more hard train negatives,
+#           sharper Q peaks where CPs land.
+#   B6      A5 + training_steps=150000 + cosine_t_max=150000 — saturation
+#           push, capped at 150k to stay under 25h SLURM (A5 was 14h at 100k).
+#   B7      A5 + cp_use_spectral_norm=true — regularize the CP generator
+#           the same way the Q net already is. Could cut variance.
+#   B8      A1 retry (paper-faithful inf_lang=100) — must figure out crash.
+#           If it runs and lands near paper's 2586, gives us a calibration
+#           anchor; if it crashes again, log will show why.
+#
+# Compute (per A5's 860m timing):
+#   B1, B2, B3, B5, B7, B8  ~14h each   (100k steps, inf cheap)
+#   B4                       ~16h        (more CPs = bigger CP head)
+#   B6                       ~21h        (150k steps, edge of 25h wall)
+
+# ── penB1: A5 recipe, seed=1 (variance check #1)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penB2: A5 recipe, seed=2 (variance check #2 — completes 3-seed avg)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penB3: A5 + denser CP cloud (cp=50, top_k=20). Re-tests A6's bad
+#   result now that we know inf_lang=100 was the killer.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penB4: A5 + cp=100/top_k=30 (max practical CP density in 24-D space).
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penB5: A5 + num_langevin_negatives=32 (4× more hard train negatives).
+#   IBC paper uses 8; we test whether more hard negs sharpen Q at CP locations.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":32,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penB6: A5 + 150k steps (saturation push, ~21h — at edge of 25h wall).
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── penB7: A5 + cp_use_spectral_norm=true (regularize CP gen).
+#   Q already has spectral norm; might cut CP-output variance and reduce
+#   the wild std=4518 we saw in A5.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":true,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penB8: A1 retry (paper-faithful inf_lang=100) — penA's #1 died at 0m.
+#   Need it to either confirm paper number (~2586) or surface the crash root
+#   cause in the log. Same exact params as penA1.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'

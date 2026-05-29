@@ -1,0 +1,95 @@
+# Batch pushingPixelsD — stack winning C recipes with DFO inference
+# refinement to push past the 0.93 ceiling.
+#
+# Standing on pushingPixelsC:
+#   Three configs tied at 0.93:
+#     C7 — 150k baseline + LR=3e-4         (seed=0)
+#     C3 — 300k baseline + LR=1e-3         (seed=0)
+#     C2 — 200k baseline + LR=1e-3         (seed=1)
+#   The lower-LR finding (C7) is the cleanest single intervention — same
+#   training budget as B7's 0.91 with one knob change.
+#
+# What changed in the codebase since C was authored:
+#   PixelDFORefinedSimulation (hyperparam_search.py) — pixel-aware CP-DFO
+#   refinement that encodes the (1, C, H, W) image ONCE per env step, then
+#   runs the resample/jitter inner loop against cached 256-D features.
+#   Cheap (no autograd, just N forwards through DenseResnetValue), so eval
+#   cost stays under 5 minutes per trial vs ~3h for Langevin inference.
+#
+#   With this wrapper in place, `inference_dfo_iterations > 0` on
+#   active_env=pushing_pixels now routes through the pixel-aware DFO path
+#   instead of the no-refinement fallback.
+#
+# DFO knobs and their pushingF (states) reference values:
+#   inference_dfo_iterations       5–15
+#   inference_dfo_iteration_std    0.02 (paper-faithful tight jitter)
+#   inference_dfo_iteration_std_decay
+#                                  0.5  (halve std each iter — pushingF)
+#   inference_dfo_num_uniform      0    (no safety samples, CP cloud only)
+#
+# pushingF6 found that 10 iters with decay=0.7 worked well on states; we
+# replicate both decay settings here in case pixels prefer slower decay.
+#
+# Honest expectations:
+#   - DFO refinement on pixels at IBC paper recipe typically lifts 5–10pp
+#     when the baseline Q surface is well-shaped. With our baseline at
+#     0.93, headroom to 1.00 is 7pp — exactly the range DFO can move.
+#   - Realistic ceiling for D: 0.95–0.97. Hitting 1.00 would require
+#     either zero seed variance (we have ±0.18 baseline std) OR DFO
+#     fixing every last edge case (unlikely on a precision pushing task).
+#   - Lower-bound: 0.93 (no improvement over C). Even no-improvement is
+#     useful — tells us refinement on pixels saturates at q3c's CP cloud.
+#
+# Strategy for D (8 trials, NO LANGEVIN at training OR inference):
+#
+#   D1, D2, D3 — DFO refinement on C7 base (LR=3e-4, 150k), with three
+#     iter counts (5, 10, 15). Same Q-network, different inference work.
+#     Distinguishes "more iters helps" from "refinement helps at all".
+#
+#   D4, D5     — DFO refinement on C3 base (300k, LR=1e-3) and the C7+300k
+#     stack (LR=3e-4, 300k). The longer-training Q surface may be smoother
+#     and absorb more refinement gain.
+#
+#   D6         — DFO with safety uniform samples (8). On the off-chance
+#     the CP cloud is mode-collapsed at some states, uniform safety
+#     samples give DFO a fresh start away from CPs.
+#
+#   D7, D8     — Best-guess winner (D1's recipe) at seeds 1 and 2. With
+#     three seeds of the same DFO recipe we can claim a real mean.
+#
+# Compute per trial:
+#   - D1, D2, D3, D6 (C7 base, 150k, LR=3e-4): ~10h training + ~5min eval
+#   - D4 (C3 base, 300k, LR=1e-3):              ~21h training + ~5min eval
+#     ← Tight on the 25h SLURM wall. If you want safety margin, bump to
+#       --time=30:00:00 manually for this one job.
+#   - D5 (300k, LR=3e-4):                       ~21h training + ~5min eval
+#     ← Same time concern as D4.
+#   - D7, D8 (C7 base + DFO, alt seeds):       ~10h each
+#
+# Layout:
+#   Same dataset, same `--extra pushing`, same `--active-env pushing_pixels`.
+#   Results land in pushing_pixels/trials.jsonl alongside A/B/C.
+
+# ── pushingPixelsD1: C7 winner + DFO 5 iters, std=0.02, decay=0.5
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsD2: C7 winner + DFO 10 iters, std=0.02, decay=0.5
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsD3: C7 winner + DFO 15 iters, std=0.02, decay=0.7
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":15,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.7,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsD4: C3 winner (300k, LR=1e-3) + DFO 5 iters
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":300000,"cosine_t_max":300000}'
+
+# ── pushingPixelsD5: 300k + LR=3e-4 + DFO 5 iters (full stack)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":300000,"cosine_t_max":300000}'
+
+# ── pushingPixelsD6: C7 winner + DFO 5 iters + 8 uniform safety samples
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":8,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsD7: D1 recipe at seed=1 (variance check)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsD8: D1 recipe at seed=2 (variance check)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
