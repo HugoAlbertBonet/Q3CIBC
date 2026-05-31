@@ -460,11 +460,11 @@ def main():
         # batch loop branch and pass states straight through.
         obs_normalizer = None
         print("Observation normalizer: NONE (pixel encoder handles preprocessing)")
-    elif active_env in ("pushing", "pushing_multi"):
+    elif active_env in ("pushing", "pushing_multi", "pen"):
         if not hasattr(dataset, "obs_mean") or not hasattr(dataset, "obs_std"):
             raise RuntimeError(
                 f"{active_env} dataset must expose `obs_mean`/`obs_std` for standardize "
-                f"normalization. Refresh utils/datasets.py:Pushing(Multi)Dataset."
+                f"normalization. Refresh utils/datasets.py."
             )
         obs_normalizer = ObservationNormalizer(
             env_id=env_id,
@@ -804,7 +804,7 @@ def main():
     # uses these to recreate the exact same obs-standardize + action-denorm
     # transforms that training used. Mirrors `get_normalizers.py` in
     # google-research/ibc (stats computed from data, frozen, applied at eval).
-    if active_env in ("pushing", "pushing_multi", "pushing_pixels"):
+    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen"):
         norm_stats = {
             "act_min": dataset.act_min,
             "act_max": dataset.act_max,

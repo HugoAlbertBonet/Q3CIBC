@@ -80,16 +80,36 @@ def stack_frames(observations: np.ndarray, episode_starts: np.ndarray, frame_sta
 
 
 class D4RLDataset(Dataset):
-    
-    def __init__(self, root: str, download: bool = True, frame_stack: int = 1):
+    """Minari D4RL dataset wrapper with IBC-paper-faithful normalization.
+
+    IBC paper (Florence et al. 2021, App. B.1 / B.3) normalizes:
+      - observations: per-dim zero-mean unit-variance (standardize), and
+      - actions:      per-dim min-max to `action_norm_range` (default [-1, 1]).
+
+    Stats are computed from the UNSTACKED observations / raw actions so they
+    apply to one frame at a time; ObservationNormalizer repeats them
+    `frame_stack` times when consuming stacked obs. `act_min`/`act_max` are
+    exposed for the eval-time simulation to invert via
+    `unnormalize_action()` before stepping the env (mirrors PushingDataset).
+    """
+
+    def __init__(
+        self,
+        root: str,
+        download: bool = True,
+        frame_stack: int = 1,
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
+    ):
         self.dataset = minari.load_dataset(root, download=download)
         self.frame_stack = frame_stack
-        
-        # Load episode data and track episode boundaries
+        self.normalize_actions = normalize_actions
+        self.action_norm_range = action_norm_range
+
         all_observations = []
         all_actions = []
         episode_starts = []
-        
+
         for ep in self.dataset.iterate_episodes():
             obs = ep.observations[:-1]  # exclude terminal observation
             acts = ep.actions
@@ -98,17 +118,51 @@ class D4RLDataset(Dataset):
             all_observations.append(obs)
             all_actions.append(acts)
             episode_starts.append(starts)
-        
-        self.observations = np.concatenate(all_observations)
-        self.actions = np.concatenate(all_actions)
+
+        self.observations = np.concatenate(all_observations).astype(np.float32)
+        raw_actions = np.concatenate(all_actions).astype(np.float32)
         self._episode_starts = np.concatenate(episode_starts)
-        
-        # Apply frame stacking
+
+        # ─── Dataset statistics (paper-faithful, from raw obs/actions) ──────
+        # Obs stats are computed on UNSTACKED obs — ObservationNormalizer tiles
+        # them frame_stack times. Small std floor avoids div-by-zero on any
+        # degenerate dim (Adroit obs dims are healthy in practice; defensive).
+        self.obs_mean = self.observations.mean(axis=0).astype(np.float32)
+        self.obs_std = (self.observations.std(axis=0) + 1e-6).astype(np.float32)
+        self.act_min = raw_actions.min(axis=0).astype(np.float32)
+        self.act_max = raw_actions.max(axis=0).astype(np.float32)
+
+        if normalize_actions:
+            lo, hi = float(action_norm_range[0]), float(action_norm_range[1])
+            denom = self.act_max - self.act_min
+            denom = np.where(denom == 0, np.ones_like(denom), denom)
+            self.actions = (
+                lo + (raw_actions - self.act_min) * (hi - lo) / denom
+            ).astype(np.float32)
+        else:
+            self.actions = raw_actions
+
         if frame_stack > 1:
-            self.observations = stack_frames(self.observations, self._episode_starts, frame_stack)
-        
+            self.observations = stack_frames(
+                self.observations, self._episode_starts, frame_stack
+            )
+
         self.state_shape = self.observations.shape[1]  # obs_dim * frame_stack
         self.action_shape = self.actions.shape[1]
+
+    def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
+        """Inverse of the action normalization applied in __init__.
+
+        Use this at env.step time to convert the model's output (in
+        `action_norm_range`) back to the env's native action box.
+        """
+        if not self.normalize_actions:
+            return np.asarray(normalized_action, dtype=np.float32)
+        lo, hi = float(self.action_norm_range[0]), float(self.action_norm_range[1])
+        scale = (self.act_max - self.act_min) / (hi - lo)
+        return (
+            self.act_min + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale
+        ).astype(np.float32)
 
     def __getitem__(self, index):
         return {'state': self.observations[index], 'action': self.actions[index]}

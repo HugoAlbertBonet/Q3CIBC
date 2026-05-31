@@ -41,14 +41,20 @@ import torch
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from simulations.particle_env import ParticleEnv
 from utils.models import QEstimator
 from utils.normalizations import ObservationNormalizer
 from utils.sampling import sample_langevin
 
 CONFIG_PATH = ROOT_DIR / "config_json" / "config.json"
-RESULTS_BASE_DIR = ROOT_DIR / "results" / "hyperparam_search" / "ibc_dfo_particle"
+RESULTS_BASE = ROOT_DIR / "results" / "hyperparam_search"
 CHECKPOINTS_BASE = ROOT_DIR / "checkpoints" / "hpsearch_dfo"
+
+# Env-specific results-dir slug. Particle path kept under the legacy
+# "ibc_dfo_particle" so previous trials.jsonl files are untouched.
+_RESULTS_SLUG = {
+    "particle": "ibc_dfo_particle",
+    "pen": "ibc_dfo_pen",
+}
 
 BASELINE_HPARAMS: dict = {
     # Training
@@ -68,6 +74,8 @@ BASELINE_HPARAMS: dict = {
     "SOFTMAX_TEMPERATURE": 1.0,
     "UNIFORM_BOUNDARY_BUFFER": 0.05,
     "HIDDEN_DIMS": [256, 256],
+    # Architecture (IBC paper uses spectral_norm=True for D4RL pen-human).
+    "Q_USE_SPECTRAL_NORM": False,
     # Stability
     "trial_seed": 0,
     "nan_abort_threshold": 50,
@@ -81,7 +89,9 @@ BASELINE_HPARAMS: dict = {
     "INFERENCE_NOISE_SCALE": 0.1,
 }
 
-NUM_EVAL_SEEDS = 50
+# Particle uses 50 eval seeds (legacy); pen uses 100 (matches IBC Table 2).
+_DEFAULT_NUM_EVAL_SEEDS = {"particle": 50, "pen": 100}
+NUM_EVAL_SEEDS = 50  # kept for particle backcompat (used when active_env="particle")
 
 
 # ─── Concurrency helpers (mirror hyperparam_search.py) ────────────────────────
@@ -91,24 +101,28 @@ def _new_run_id() -> str:
     return datetime.now().strftime("%Y%m%dT%H%M%S") + "_" + secrets.token_hex(4)
 
 
-def _results_dir() -> Path:
-    """results/hyperparam_search/ibc_dfo_particle/<n_dim>/  — per-n_dim partition."""
-    cfg = load_config()
-    n_dim = int(cfg["environments"]["particle"].get("n_dim", 2))
-    return RESULTS_BASE_DIR / str(n_dim)
+def _results_dir(active_env: str = "particle") -> Path:
+    """Resolve per-env trials dir. Particle keeps the legacy `<n_dim>` partition."""
+    slug = _RESULTS_SLUG.get(active_env, f"ibc_dfo_{active_env}")
+    base = RESULTS_BASE / slug
+    if active_env == "particle":
+        cfg = load_config()
+        n_dim = int(cfg["environments"]["particle"].get("n_dim", 2))
+        return base / str(n_dim)
+    return base
 
 
-def _trials_path() -> Path:
-    return _results_dir() / "trials.jsonl"
+def _trials_path(active_env: str = "particle") -> Path:
+    return _results_dir(active_env) / "trials.jsonl"
 
 
-def append_trial(record: dict) -> int:
+def append_trial(record: dict, active_env: str = "particle") -> int:
     """Atomically assign monotonically-increasing trial_id and append.
 
     Uses fcntl.flock for an exclusive lock during the read-max + write section.
     Safe under parallel sbatch submissions. Returns the assigned id.
     """
-    path = _trials_path()
+    path = _trials_path(active_env)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -165,10 +179,26 @@ def _finite(x: float) -> float | None:
 
 # ─── Training-time Langevin counter-example sampler ──────────────────────────
 
-def langevin_counter_examples(energy_model, obs_norm, device, hparams, action_dim):
+def langevin_counter_examples(
+    energy_model,
+    obs_norm,
+    device,
+    hparams,
+    action_dim,
+    act_range_lo: float = 0.0,
+    act_range_hi: float = 1.0,
+):
+    """Sample IBC paper-style Langevin counter-examples.
+
+    `act_range_lo` / `act_range_hi` are the action-box bounds in the SAME
+    space the model is trained on. Particle uses [0, 1] (dataset actions are
+    pre-normalized to [0, 1]), pen uses [-1, 1] (D4RLDataset returns actions
+    already in [-1, 1] via per-dim min-max). The UNIFORM_BOUNDARY_BUFFER
+    hparam pads both sides identically.
+    """
     B = obs_norm.shape[0]
-    act_min = 0.0 - hparams["UNIFORM_BOUNDARY_BUFFER"]
-    act_max = 1.0 + hparams["UNIFORM_BOUNDARY_BUFFER"]
+    act_min = act_range_lo - hparams["UNIFORM_BOUNDARY_BUFFER"]
+    act_max = act_range_hi + hparams["UNIFORM_BOUNDARY_BUFFER"]
     n_counter = hparams["NUM_COUNTER_EXAMPLES"]
     actions = torch.rand(B, n_counter, action_dim, device=device) * (act_max - act_min) + act_min
     delta_clip = hparams["LANGEVIN_DELTA_ACTION_CLIP"] * 0.5 * (act_max - act_min)
@@ -199,10 +229,15 @@ def langevin_counter_examples(energy_model, obs_norm, device, hparams, action_di
 
 # ─── Training ─────────────────────────────────────────────────────────────────
 
-def train_dfo(hparams: dict, run_id: str) -> dict:
-    """Train a DFO model and return metadata dict."""
-    from utils.datasets import ParticleDataset
+def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
+    """Train a DFO model and return metadata dict.
 
+    Env branches:
+      - particle: ParticleDataset, minmax obs normalization with JSON bounds,
+        actions normalized per-dim to [0, 1] inside the train loop.
+      - pen:      D4RLDataset, standardize obs normalization from dataset
+        stats (paper-faithful), actions already in [-1, 1] from D4RLDataset.
+    """
     # Deterministic seeding — same trial_seed ⇒ same training trajectory.
     seed = int(hparams.get("trial_seed", 0))
     random.seed(seed)
@@ -212,33 +247,78 @@ def train_dfo(hparams: dict, run_id: str) -> dict:
         torch.cuda.manual_seed_all(seed)
 
     cfg = load_config()
-    env_cfg = cfg["environments"]["particle"]
-    n_dim = env_cfg.get("n_dim", 2)
-    frame_stack = env_cfg.get("frame_stack", 2)
+    env_cfg = cfg["environments"][active_env]
+    frame_stack = env_cfg.get("frame_stack", 1)
     action_dim = env_cfg["action_dim"]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"  device={device}, trial_seed={seed}")
-    print(f"  n_dim={n_dim}, action_dim={action_dim}, frame_stack={frame_stack}")
+    print(f"  device={device}, trial_seed={seed}, active_env={active_env}")
+    print(f"  action_dim={action_dim}, frame_stack={frame_stack}")
     print(f"  Steps={hparams['TRAINING_STEPS']}, LR={hparams['LEARNING_RATE']}, "
           f"Temp={hparams['SOFTMAX_TEMPERATURE']}")
     print(f"  Counter-examples={hparams['NUM_COUNTER_EXAMPLES']}, "
           f"Langevin iters={hparams['LANGEVIN_TRAIN_ITERATIONS']}")
-    print(f"  Model: {hparams['HIDDEN_DIMS']}, Grad margin={hparams['GRADIENT_MARGIN']}")
+    print(f"  Model: {hparams['HIDDEN_DIMS']}, SN={hparams.get('Q_USE_SPECTRAL_NORM', False)}, "
+          f"Grad margin={hparams['GRADIENT_MARGIN']}")
 
-    dataset = ParticleDataset(env_cfg["data_dir"], n_dim=n_dim, frame_stack=frame_stack)
+    if active_env == "particle":
+        from utils.datasets import ParticleDataset
+        n_dim = env_cfg.get("n_dim", 2)
+        dataset = ParticleDataset(
+            env_cfg["data_dir"], n_dim=n_dim, frame_stack=frame_stack,
+        )
+        # Particle keeps the legacy [0, 1] in-model action range; per-batch
+        # normalize_tensor maps raw dataset actions into [0, 1].
+        action_in_model_range = (0.0, 1.0)
+        per_batch_action_norm = True
+        norm_stats = compute_dataset_stats(dataset)
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_cfg["env_id"], device=device,
+            frame_stack=frame_stack, particle_n_dim=n_dim,
+        )
+    elif active_env == "pen":
+        from utils.datasets import D4RLDataset
+        dataset = D4RLDataset(
+            env_cfg["dataset_name"],
+            download=True,
+            frame_stack=frame_stack,
+            normalize_actions=True,
+            action_norm_range=(-1.0, 1.0),
+        )
+        # D4RLDataset returns actions already per-dim min-max normalized to
+        # [-1, 1] (IBC paper App. B.3). Skip per-batch action normalize.
+        action_in_model_range = (-1.0, 1.0)
+        per_batch_action_norm = False
+        # Norm stats include obs mean/std AND raw act min/max so eval can
+        # both standardize obs and denormalize the model's [-1, 1] action
+        # back to the env's per-dim native range.
+        norm_stats = {
+            "obs_mean": dataset.obs_mean.astype(np.float32),
+            "obs_std": dataset.obs_std.astype(np.float32),
+            "act_min": dataset.act_min.astype(np.float32),
+            "act_max": dataset.act_max.astype(np.float32),
+            "action_norm_range": (-1.0, 1.0),
+            "frame_stack": frame_stack,
+            "env_id": env_cfg["env_id"],
+        }
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_cfg["env_id"], device=device,
+            frame_stack=frame_stack,
+            obs_mean=dataset.obs_mean,
+            obs_std=dataset.obs_std,
+        )
+    else:
+        raise ValueError(f"Unsupported active_env for DFO: {active_env}")
+
     print(f"  Dataset size: {len(dataset)}")
-    norm_stats = compute_dataset_stats(dataset)
-
-    obs_normalizer = ObservationNormalizer(
-        env_id=env_cfg["env_id"], device=device,
-        frame_stack=frame_stack, particle_n_dim=n_dim,
-    )
 
     obs_dim = dataset.state_shape
     act_dim = dataset.action_shape
     energy_model = QEstimator(
-        state_dim=obs_dim, action_dim=act_dim, hidden_dims=hparams["HIDDEN_DIMS"],
+        state_dim=obs_dim,
+        action_dim=act_dim,
+        hidden_dims=hparams["HIDDEN_DIMS"],
+        use_spectral_norm=bool(hparams.get("Q_USE_SPECTRAL_NORM", False)),
     ).to(device)
 
     optimizer = torch.optim.Adam(energy_model.parameters(), lr=hparams["LEARNING_RATE"])
@@ -266,12 +346,18 @@ def train_dfo(hparams: dict, run_id: str) -> dict:
             B = states.shape[0]
 
             states_norm = obs_normalizer.normalize(states)
-            actions_norm = normalize_tensor(
-                actions, norm_stats["act_min"], norm_stats["act_max"], device,
-            )
+            if per_batch_action_norm:
+                actions_norm = normalize_tensor(
+                    actions, norm_stats["act_min"], norm_stats["act_max"], device,
+                )
+            else:
+                # D4RLDataset pre-normalized actions to action_in_model_range.
+                actions_norm = actions
 
             counter_actions = langevin_counter_examples(
                 energy_model, states_norm, device, hparams, act_dim,
+                act_range_lo=action_in_model_range[0],
+                act_range_hi=action_in_model_range[1],
             )
 
             n_counter = hparams["NUM_COUNTER_EXAMPLES"]
@@ -342,6 +428,8 @@ def train_dfo(hparams: dict, run_id: str) -> dict:
         "step": hparams["TRAINING_STEPS"],
         "hparams": hparams,
         "run_id": run_id,
+        "active_env": active_env,
+        "action_in_model_range": action_in_model_range,
     }, ckpt_path)
     # Persist the exact hparams next to the checkpoint for traceability.
     with open(save_dir / "hparams.json", "w") as f:
@@ -361,46 +449,107 @@ def train_dfo(hparams: dict, run_id: str) -> dict:
 
 # ─── Evaluation ──────────────────────────────────────────────────────────────
 
-def evaluate_checkpoint(ckpt_path: str, langevin_cfg: dict, num_seeds: int = 50) -> dict:
-    """Evaluate a DFO checkpoint over the same deterministic 50 seeds we use for
-    every other algorithm. Returns the same shape of dict as
-    `hyperparam_search.py:evaluate_q3c` so analyses transfer.
+def evaluate_checkpoint(
+    ckpt_path: str,
+    langevin_cfg: dict,
+    num_seeds: int | None = None,
+    active_env: str | None = None,
+) -> dict:
+    """Evaluate a DFO checkpoint with paper-faithful Langevin inference.
+
+    `active_env` is taken from the checkpoint metadata when not passed
+    explicitly. Particle returns the same shape of dict as
+    `hyperparam_search.py:evaluate_q3c`; pen returns reward-focused metrics
+    (success_rate, avg/std/median reward, ep length) matching the pen branch
+    in hyperparam_search.py.
     """
     cfg = load_config()
-    env_cfg = cfg["environments"]["particle"]
-    n_dim = int(env_cfg["n_dim"])
-    state_dim = int(env_cfg["state_dim"])
-    action_dim = int(env_cfg["action_dim"])
-    frame_stack = int(env_cfg.get("frame_stack", 2))
-    action_bounds = tuple(env_cfg.get("action_bounds", [0, 1]))
-    max_steps = int(cfg.get("simulation", {}).get("max_episode_steps", 50))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     sd = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
     norm_stats = ckpt.get("norm_stats") if isinstance(ckpt, dict) else None
+    if active_env is None:
+        active_env = ckpt.get("active_env", "particle") if isinstance(ckpt, dict) else "particle"
+    action_in_model_range = (
+        tuple(ckpt.get("action_in_model_range", (0.0, 1.0)))
+        if isinstance(ckpt, dict)
+        else (0.0, 1.0)
+    )
+
+    env_cfg = cfg["environments"][active_env]
+    action_dim = int(env_cfg["action_dim"])
+    frame_stack = int(env_cfg.get("frame_stack", 1))
+    action_bounds = tuple(env_cfg.get("action_bounds", [0, 1]))
 
     indices = sorted({int(k.split(".")[1]) for k in sd if k.startswith("network.") and k.endswith(".weight")})
     hidden = [int(sd[f"network.{i}.weight"].shape[0]) for i in indices[:-1]]
 
-    model = QEstimator(state_dim=state_dim * frame_stack, action_dim=action_dim, hidden_dims=hidden)
-    model.load_state_dict(sd)
-    model.to(device).eval()
+    # Detect spectral-norm via parametrization keys in the state-dict.
+    use_sn = any("parametrizations.weight" in k for k in sd.keys())
 
-    obs_normalizer = ObservationNormalizer(
-        env_id=env_cfg["env_id"], device=device,
-        frame_stack=frame_stack, particle_n_dim=n_dim,
-    )
+    if active_env == "particle":
+        state_dim = int(env_cfg["state_dim"])
+        max_steps = int(cfg.get("simulation", {}).get("max_episode_steps", 50))
+        n_dim = int(env_cfg["n_dim"])
+        model = QEstimator(
+            state_dim=state_dim * frame_stack, action_dim=action_dim,
+            hidden_dims=hidden, use_spectral_norm=use_sn,
+        )
+        model.load_state_dict(sd)
+        model.to(device).eval()
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_cfg["env_id"], device=device,
+            frame_stack=frame_stack, particle_n_dim=n_dim,
+        )
+    elif active_env == "pen":
+        state_dim = int(env_cfg["state_dim"])
+        max_steps = int(env_cfg.get("max_episode_steps", 100))
+        if norm_stats is None or "obs_mean" not in norm_stats:
+            raise RuntimeError(
+                "Pen DFO eval requires norm_stats with obs_mean/obs_std. "
+                "Train with a fresh checkpoint."
+            )
+        model = QEstimator(
+            state_dim=state_dim * frame_stack, action_dim=action_dim,
+            hidden_dims=hidden, use_spectral_norm=use_sn,
+        )
+        model.load_state_dict(sd)
+        model.to(device).eval()
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_cfg["env_id"], device=device,
+            frame_stack=frame_stack,
+            obs_mean=np.asarray(norm_stats["obs_mean"], dtype=np.float32),
+            obs_std=np.asarray(norm_stats["obs_std"], dtype=np.float32),
+        )
+    else:
+        raise ValueError(f"Unsupported active_env for DFO eval: {active_env}")
+
+    if num_seeds is None:
+        num_seeds = int(env_cfg.get("num_eval_seeds", _DEFAULT_NUM_EVAL_SEEDS.get(active_env, 50)))
 
     buf_sz = 0.05
-    norm_min = torch.full((action_dim,), -buf_sz, device=device)
-    norm_max = torch.full((action_dim,), 1.0 + buf_sz, device=device)
+    lo, hi = float(action_in_model_range[0]), float(action_in_model_range[1])
+    norm_min = torch.full((action_dim,), lo - buf_sz, device=device)
+    norm_max = torch.full((action_dim,), hi + buf_sz, device=device)
 
     def denorm(a):
+        """Map model-space action in `action_in_model_range` back to env-native.
+
+        Particle: model and env share [0, 1]; norm_stats is a per-dim min-max
+        rescale (legacy). Pen: model emits in [-1, 1] and per-dim min-max
+        maps to env-native (env actually wraps to [-1, 1] but per-dim min/max
+        is tighter — paper's per-dim min-max protocol).
+        """
         if norm_stats is None:
             return a
-        rng = np.where((norm_stats["act_max"] - norm_stats["act_min"]) == 0, 1.0,
-                       norm_stats["act_max"] - norm_stats["act_min"])
+        rng = np.where(
+            (norm_stats["act_max"] - norm_stats["act_min"]) == 0, 1.0,
+            norm_stats["act_max"] - norm_stats["act_min"],
+        )
+        if active_env == "pen":
+            scale = rng / (hi - lo)
+            return norm_stats["act_min"] + (a - lo) * scale
         return a * rng + norm_stats["act_min"]
 
     seeds = list(range(num_seeds))
@@ -411,9 +560,23 @@ def evaluate_checkpoint(ckpt_path: str, langevin_cfg: dict, num_seeds: int = 50)
     ep_lengths: list[int] = []
     terminated_flags: list[bool] = []
 
+    # Lazy env factory keeps the gymnasium-robotics import out of particle runs.
+    def _make_env():
+        if active_env == "particle":
+            from simulations.particle_env import ParticleEnv
+            return ParticleEnv(n_dim=n_dim, n_steps=max_steps, render_mode=None)
+        # pen
+        import gymnasium as gym
+        import gymnasium_robotics
+        gym.register_envs(gymnasium_robotics)
+        return gym.make(
+            env_cfg["env_id"], reward_type="dense",
+            max_episode_steps=max_steps, render_mode=None,
+        )
+
     t0 = time.time()
     for seed in seeds:
-        env = ParticleEnv(n_dim=n_dim, n_steps=max_steps, render_mode=None)
+        env = _make_env()
         obs, _ = env.reset(seed=seed)
         frame_buf = deque(maxlen=frame_stack)
         for _ in range(frame_stack):
@@ -424,6 +587,7 @@ def evaluate_checkpoint(ckpt_path: str, langevin_cfg: dict, num_seeds: int = 50)
         terminated = False
         truncated = False
         info: dict = {}
+        any_step_success = False
         while not (terminated or truncated):
             stacked = np.concatenate(list(frame_buf)) if frame_stack > 1 else frame_buf[-1]
             st = torch.from_numpy(stacked).float().unsqueeze(0).to(device)
@@ -451,8 +615,15 @@ def evaluate_checkpoint(ckpt_path: str, langevin_cfg: dict, num_seeds: int = 50)
             frame_buf.append(obs.copy())
             total_reward += float(reward)
             ep_len += 1
+            # AdroitHandPen emits info["success"] each step while goal pose
+            # tolerance holds — track sticky any-step success for pen.
+            if active_env == "pen" and bool(info.get("success", info.get("is_success", False))):
+                any_step_success = True
 
-        successes.append(bool(info.get("success", False)))
+        if active_env == "pen":
+            successes.append(any_step_success)
+        else:
+            successes.append(bool(info.get("success", False)))
         rewards.append(total_reward)
         dists_first.append(float(info.get("min_dist_to_first_goal", np.inf)))
         dists_second.append(float(info.get("min_dist_to_second_goal", np.inf)))
@@ -462,12 +633,38 @@ def evaluate_checkpoint(ckpt_path: str, langevin_cfg: dict, num_seeds: int = 50)
 
     eval_time = time.time() - t0
 
+    # Env-branched metrics: pen has no first/second-goal distance; particle
+    # records them. Both record reward stats (paper-comparable for pen).
+    if active_env == "pen":
+        return {
+            "success_rate": float(np.mean(successes)),
+            "success_rate_std": float(np.std(successes)),
+            "avg_reward": float(np.mean(rewards)),
+            "std_reward": float(np.std(rewards)),
+            "median_reward": float(np.median(rewards)),
+            "avg_episode_length": float(np.mean(ep_lengths)),
+            "num_seeds": len(seeds),
+            "eval_time_s": eval_time,
+            "per_seed": [
+                {
+                    "seed": seeds[i],
+                    "success": successes[i],
+                    "reward": rewards[i],
+                    "episode_length": ep_lengths[i],
+                    "terminated": terminated_flags[i],
+                }
+                for i in range(len(seeds))
+            ],
+        }
+
     finite_first = [d for d in dists_first if np.isfinite(d)]
     finite_second = [d for d in dists_second if np.isfinite(d)]
 
     return {
         "success_rate": float(np.mean(successes)),
         "avg_reward": float(np.mean(rewards)),
+        "std_reward": float(np.std(rewards)),
+        "median_reward": float(np.median(rewards)),
         "avg_min_dist_first_goal": float(np.mean(finite_first)) if finite_first else None,
         "avg_min_dist_second_goal": float(np.mean(finite_second)) if finite_second else None,
         "median_min_dist_first_goal": float(np.median(finite_first)) if finite_first else None,
@@ -496,6 +693,7 @@ def run_trial(
     params_override: dict | None = None,
     quick: bool = False,
     reeval_checkpoint: str | None = None,
+    active_env: str = "particle",
 ):
     """If `reeval_checkpoint` is given, skip training and just evaluate that
     checkpoint with the inference params from `params_override`. Useful for
@@ -550,9 +748,9 @@ def run_trial(
         training_failed = False
         train_error = None
     else:
-        print(f"\n  Training ({hparams['TRAINING_STEPS']} steps)...")
+        print(f"\n  Training ({hparams['TRAINING_STEPS']} steps) on active_env={active_env}...")
         try:
-            train_meta = train_dfo(hparams, run_id)
+            train_meta = train_dfo(hparams, run_id, active_env=active_env)
             training_failed = False
             train_error = None
         except RuntimeError as exc:
@@ -583,17 +781,32 @@ def run_trial(
     eval_results: dict = {}
     eval_error = None
     if not training_failed and train_meta["checkpoint_path"] is not None:
-        print(f"\n  Evaluating on {NUM_EVAL_SEEDS} seeds...")
+        # Env-driven eval seed count: pen=100 (paper), particle=50 (legacy).
+        cfg_for_eval = load_config()
+        eval_env_cfg = cfg_for_eval["environments"].get(active_env, {})
+        num_eval = int(
+            eval_env_cfg.get("num_eval_seeds", _DEFAULT_NUM_EVAL_SEEDS.get(active_env, NUM_EVAL_SEEDS))
+        )
+        print(f"\n  Evaluating on {num_eval} seeds...")
         try:
             eval_results = evaluate_checkpoint(
-                train_meta["checkpoint_path"], inference_cfg, NUM_EVAL_SEEDS,
+                train_meta["checkpoint_path"], inference_cfg, num_eval, active_env=active_env,
             )
-            print(
-                f"\n  Result: success_rate={eval_results['success_rate']*100:.2f}%, "
-                f"eval_time={eval_results['eval_time_s']:.1f}s, "
-                f"d1_med={eval_results['median_min_dist_first_goal']}, "
-                f"d2_med={eval_results['median_min_dist_second_goal']}"
-            )
+            if active_env == "pen":
+                print(
+                    f"\n  Result: avg_reward={eval_results['avg_reward']:.1f} "
+                    f"± {eval_results['std_reward']:.1f} "
+                    f"(median={eval_results['median_reward']:.1f}), "
+                    f"success_rate={eval_results['success_rate']*100:.2f}%, "
+                    f"eval_time={eval_results['eval_time_s']:.1f}s"
+                )
+            else:
+                print(
+                    f"\n  Result: success_rate={eval_results['success_rate']*100:.2f}%, "
+                    f"eval_time={eval_results['eval_time_s']:.1f}s, "
+                    f"d1_med={eval_results.get('median_min_dist_first_goal')}, "
+                    f"d2_med={eval_results.get('median_min_dist_second_goal')}"
+                )
         except Exception as exc:
             eval_error = f"Evaluation failed: {exc}"
             print(f"\n  {eval_error}")
@@ -601,6 +814,7 @@ def run_trial(
     record = {
         "run_id": run_id,
         "timestamp": timestamp,
+        "active_env": active_env,
         "hparams": hparams,
         "params": hparams,                          # alias so analysis tools that look for `params` work
         "training_steps": hparams["TRAINING_STEPS"],
@@ -608,6 +822,8 @@ def run_trial(
         "train_duration_s": train_meta["duration_seconds"],   # kept for back-compat with old analyze()
         "success_rate": eval_results.get("success_rate", 0.0),
         "avg_reward": eval_results.get("avg_reward", 0.0),
+        "std_reward": eval_results.get("std_reward"),
+        "median_reward": eval_results.get("median_reward"),
         "avg_min_dist_first_goal": eval_results.get("avg_min_dist_first_goal"),
         "avg_min_dist_second_goal": eval_results.get("avg_min_dist_second_goal"),
         "median_min_dist_first_goal": eval_results.get("median_min_dist_first_goal"),
@@ -630,15 +846,15 @@ def run_trial(
         "reeval_checkpoint": reeval_checkpoint,
     }
 
-    trial_id = append_trial(record)
-    print(f"  Logged as trial #{trial_id} (run_id={run_id}) → {_trials_path()}")
+    trial_id = append_trial(record, active_env=active_env)
+    print(f"  Logged as trial #{trial_id} (run_id={run_id}) → {_trials_path(active_env)}")
     return record
 
 
 # ─── Analysis ─────────────────────────────────────────────────────────────────
 
-def analyze():
-    path = _trials_path()
+def analyze(active_env: str = "particle"):
+    path = _trials_path(active_env)
     if not path.exists():
         print(f"No trials found at {path}.")
         return
@@ -649,43 +865,58 @@ def analyze():
             if line.strip():
                 trials.append(json.loads(line))
 
-    trials.sort(key=lambda t: -t.get("success_rate", 0))
-
-    print(f"\n{'=' * 130}")
-    print(f"  Hyperparameter search results: ibc_dfo_particle (n_dim from {path})")
-    print(f"{'=' * 130}")
-    print(
-        f"{'ID':>4} {'SR%':>6} {'Q':>2} {'Steps':>7} {'Temp':>5} {'CE':>4} "
-        f"{'LR':>8} {'Arch':>10} {'Margin':>6} {'TrainT':>7} {'EvalT':>7} "
-        f"{'NCE':>7} {'Acc':>5} {'d1m':>7} {'d2m':>7} {'inf_iters':>9} {'inf_smp':>7}"
+    # Sort by reward for pen (paper-aligned objective), success_rate elsewhere.
+    sort_key = (
+        (lambda t: -t.get("avg_reward", -1e9)) if active_env == "pen"
+        else (lambda t: -t.get("success_rate", 0))
     )
-    print("-" * 130)
+    trials.sort(key=sort_key)
+
+    print(f"\n{'=' * 140}")
+    print(f"  Hyperparameter search results: ibc_dfo_{active_env} (path: {path})")
+    print(f"{'=' * 140}")
+    print(
+        f"{'ID':>4} {'SR%':>6} {'Reward±std':>18} {'Q':>2} {'Steps':>7} {'Temp':>5} {'CE':>4} "
+        f"{'LR':>8} {'Arch':>10} {'SN':>3} {'Margin':>6} {'TrainT':>7} {'EvalT':>7} "
+        f"{'NCE':>7} {'Acc':>5} {'inf_iters':>9} {'inf_smp':>7}"
+    )
+    print("-" * 140)
     for t in trials:
         h = t.get("hparams") or t.get("params") or {}
         q = "Y" if t.get("quick") else "N"
         arch = "x".join(str(d) for d in h.get("HIDDEN_DIMS", []))
         sr = t.get("success_rate", 0)
-        d1m = t.get("median_min_dist_first_goal")
-        d2m = t.get("median_min_dist_second_goal")
+        rw = t.get("avg_reward", 0)
+        rw_std = t.get("std_reward")
+        rw_cell = f"{rw:.1f} ± {rw_std:.1f}" if rw_std is not None else f"{rw:.1f}"
+        sn = "Y" if h.get("Q_USE_SPECTRAL_NORM") else "N"
         inf_cfg = t.get("inference_cfg") or {}
         print(
-            f"{t.get('trial_id', '?'):>4} {sr * 100:>5.1f}% {q:>2} "
+            f"{t.get('trial_id', '?'):>4} {sr * 100:>5.1f}% {rw_cell:>18} {q:>2} "
             f"{h.get('TRAINING_STEPS', 0):>7} {h.get('SOFTMAX_TEMPERATURE', 0):>5.2f} "
             f"{h.get('NUM_COUNTER_EXAMPLES', 0):>4} {h.get('LEARNING_RATE', 0):>8.1e} "
-            f"{arch:>10} {h.get('GRADIENT_MARGIN', 0):>6.1f} "
+            f"{arch:>10} {sn:>3} {h.get('GRADIENT_MARGIN', 0):>6.1f} "
             f"{t.get('duration_seconds', 0) or 0:>6.0f}s {(t.get('eval_time_s') or 0):>6.0f}s "
             f"{t.get('final_infonce', 0) or 0:>7.4f} {t.get('final_train_accuracy', 0) or 0:>5.3f} "
-            f"{(d1m if isinstance(d1m, (int, float)) else 0):>7.4f} "
-            f"{(d2m if isinstance(d2m, (int, float)) else 0):>7.4f} "
             f"{inf_cfg.get('num_iterations', '—'):>9} {inf_cfg.get('num_samples', '—'):>7}"
         )
-    print("=" * 130)
+    print("=" * 140)
 
     valid = [t for t in trials if not t.get("training_failed")]
     if valid:
-        best = max(valid, key=lambda t: t.get("success_rate", 0))
+        if active_env == "pen":
+            best = max(valid, key=lambda t: t.get("avg_reward", float("-inf")))
+        else:
+            best = max(valid, key=lambda t: t.get("success_rate", 0))
+        rw_std = best.get("std_reward")
+        rw_str = (
+            f"{best.get('avg_reward', 0):.1f} ± {rw_std:.1f}"
+            if rw_std is not None
+            else f"{best.get('avg_reward', 0):.1f}"
+        )
         print(f"\nBest trial: #{best.get('trial_id')}  "
-              f"success_rate={best.get('success_rate', 0):.2%}")
+              f"success_rate={best.get('success_rate', 0):.2%}  "
+              f"avg_reward={rw_str}")
         print(f"  hparams: {json.dumps(best.get('hparams', {}), indent=2, default=str)}")
 
     print(f"\nTotal trials: {len(trials)} ({len(valid)} completed, "
@@ -719,10 +950,16 @@ def main():
              "with the inference Langevin params from --params. Cheap way to "
              "sweep inference cost without retraining the same model.",
     )
+    parser.add_argument(
+        "--active-env", type=str, default="particle",
+        choices=list(_RESULTS_SLUG.keys()),
+        help="Environment to train + eval on. Default: particle (legacy). "
+             "Use 'pen' for IBC-paper-faithful pen-human-v2 runs.",
+    )
     args = parser.parse_args()
 
     if args.analyze:
-        analyze()
+        analyze(active_env=args.active_env)
         return
 
     if args.run:
@@ -738,6 +975,7 @@ def main():
                 rep_params,
                 quick=args.quick,
                 reeval_checkpoint=args.reeval_checkpoint,
+                active_env=args.active_env,
             )
         return
 

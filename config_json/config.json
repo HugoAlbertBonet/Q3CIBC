@@ -11,7 +11,7 @@
                 -1,
                 1
             ],
-            "max_episode_steps": 200,
+            "max_episode_steps": 100,
             "num_eval_seeds": 100,
             "training": {
                 "training_steps": 100000,

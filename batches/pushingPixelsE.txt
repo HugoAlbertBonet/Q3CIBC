@@ -1,0 +1,85 @@
+# Batch pushingPixelsE — rescue DFO refinement via uniform safety samples.
+#
+# Standing on pushingPixelsD:
+#   Naked DFO refinement HURT vs C7's 0.93 baseline:
+#     D1 (DFO 5,  std=0.02, decay=0.5, 0 safety) → 0.85
+#     D2 (DFO 10, std=0.02, decay=0.5, 0 safety) → 0.87
+#     D3 (DFO 15, std=0.02, decay=0.7, 0 safety) → 0.88
+#   But adding 8 uniform safety samples partially rescued it:
+#     D6 (DFO 5, std=0.02, decay=0.5, 8 safety, seed=0) → 0.91
+#   And 3-seed naked-DFO replication showed seed variance dominates:
+#     D1, D7, D8 (same recipe, seeds 0/1/2) → 0.85, 0.84, 0.92
+#
+# Interpretation:
+#   CP cloud is well-shaped (C7 base = 0.93). Tight-jitter DFO without
+#   escape samples mostly pushes CPs into slightly-worse-Q regions.
+#   Uniform safety samples give DFO a population it can grow when CPs
+#   are mode-collapsed at a given state.
+#
+# Hypothesis for E:
+#   More uniform safety = more rescue. D6 jumped from D1's 0.85 to 0.91
+#   with 8 safety samples. Scale to 16, 32, 64 to find the saturation
+#   point. Plus 3-seed replication of D6's recipe to confirm 0.91 isn't
+#   seed-lucky.
+#
+# Honest expectations:
+#   - Realistic ceiling for E: 0.93–0.95 (match or slightly beat C7
+#     baseline). Hitting 1.00 with DFO-only refinement on a Q surface
+#     that already saturates at 0.93 is implausible — refinement can't
+#     fix what the Q surface doesn't know.
+#   - Lower bound: 0.90 (D6 reproduction).
+#   - If E5, E6, E7 cluster at 0.91 ± 0.02, that's the new "DFO + safety"
+#     baseline and we know the next step is encoder/training changes
+#     (which need code).
+#
+# Strategy for E (8 trials, NO LANGEVIN, NO CODE CHANGES):
+#
+#   Safety-sample scaling (D6 base, seed=0):
+#     E1 — n_uniform=16   (2× D6)
+#     E2 — n_uniform=32   (4× D6)
+#     E3 — n_uniform=64   (8× D6; sanity-checks saturation)
+#
+#   D6 reproduction (8 uniform, seeds 1, 2):
+#     E4 — D6 recipe at seed=1
+#     E5 — D6 recipe at seed=2
+#
+#   Jitter sensitivity (CPs + 8 safety, seed=0):
+#     E6 — std=0.05 (wider jitter, more exploration; risk overshoot)
+#     E7 — std=0.01 (tighter jitter, less destructive)
+#
+#   No-CP control:
+#     E8 — DFO on PURE uniform population (set inference_dfo_num_uniform
+#       very high effectively making CPs irrelevant) — actually achieved
+#       by feeding DFO with 32 uniform + 20 CPs and softmax temperature
+#       letting the population converge. Below we use n_uniform=32 and
+#       DFO 10 iters with decay=0.7 (slower) to see if a uniform-heavy
+#       DFO without CP advantage can match the CP-based recipes.
+#
+# Compute per trial:
+#   - All 8 use C7 training base (150k, LR=3e-4) → ~10h training each.
+#   - DFO eval cost: 5–10 iters × small N forwards. <5 minutes total.
+#   - Fits comfortably in #SBATCH --time=25:00:00.
+
+# ── pushingPixelsE1: D6 recipe + 16 uniform safety samples
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsE2: D6 recipe + 32 uniform safety samples
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":32,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsE3: D6 recipe + 64 uniform safety samples (saturation check)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":64,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsE4: D6 reproduction at seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":8,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsE5: D6 reproduction at seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":8,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsE6: D6 base + wider jitter (std=0.05)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.05,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":8,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsE7: D6 base + tighter jitter (std=0.01)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.01,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":8,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── pushingPixelsE8: uniform-heavy DFO (32 safety + 10 iters slow decay)
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.7,"inference_dfo_num_uniform":32,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
