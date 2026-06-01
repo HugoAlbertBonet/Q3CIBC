@@ -1,0 +1,54 @@
+# Batch penAibc_reeval — re-evaluate the 9 existing penAibc checkpoints.
+#
+# Why: the original penAibc trials all hit
+#   "Error(s) in loading state_dict for QEstimator: Missing key(s)
+#    network.0.weight ... Unexpected key(s) network.0.weight_orig ..."
+# at eval time. Training succeeded on every trial (final_train_loss ~1.38,
+# final_train_accuracy ~0.99) — checkpoints are intact.
+#
+# Bug: hyperparam_search_dfo.evaluate_checkpoint inferred architecture from
+# `.weight` keys, but spectral_norm renames `weight` → `weight_orig` (old
+# torch.nn.utils.spectral_norm API). With Q_USE_SPECTRAL_NORM=true the
+# `.weight` scan returned zero matches → hidden=[] → wrong model → load fail.
+#
+# Fix (committed): hidden dims now inferred from `.bias` keys (unchanged
+# under SN); use_sn detected from `weight_orig` OR `parametrizations.weight`.
+# Smoke-verified locally on a fresh 512×8 SN QEstimator: detected hidden
+# [512,512,512,512,512,512,512,512], use_sn=True, load_state_dict succeeds.
+#
+# This batch reuses each checkpoint with --reeval-checkpoint (skips training,
+# runs eval only) and the original hparams JSON pulled verbatim from
+# trials.jsonl so inference_cfg matches the original intent.
+#
+# Eval cost: ~30-60 min per trial (100 episodes × 100-step horizon × 100
+# Langevin iters). All 9 fit comfortably in 25h SLURM, or run sequentially.
+#
+# Trials.jsonl gets new rows tagged `"reeval_only": true`; old failed rows
+# stay (filter on `eval_error == null` when analyzing).
+
+# ── reeval trial #1 (run_id=20260531T000143_79e10a0f) — penAibc6 LANGEVIN_TRAIN_ITERATIONS=50, seed=0
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260531T000143_79e10a0f/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":50,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":0}'
+
+# ── reeval trial #2 (run_id=20260530T232034_6650dc95) — penAibc1 paper-exact, seed=0
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260530T232034_6650dc95/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":0}'
+
+# ── reeval trial #3 (run_id=20260530T232132_73bbf2f7) — penAibc2 paper-exact, seed=1
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260530T232132_73bbf2f7/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":1}'
+
+# ── reeval trial #4 (run_id=20260530T232442_bb170d04) — penAibc3 paper-exact, seed=2
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260530T232442_bb170d04/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":2}'
+
+# ── reeval trial #5 (run_id=20260530T235918_23562450) — penAibc9 GRADIENT_MARGIN=0.5, seed=0
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260530T235918_23562450/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":0.5,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":0}'
+
+# ── reeval trial #6 (run_id=20260531T000211_9a531572) — penAibc7 INFERENCE_NUM_ITERATIONS=50, seed=0
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260531T000211_9a531572/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":50,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":0}'
+
+# ── reeval trial #7 (run_id=20260530T235912_ada2e9d6) — penAibc10 SOFTMAX_TEMPERATURE=0.5, seed=0
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260530T235912_ada2e9d6/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":0.5,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":0}'
+
+# ── reeval trial #8 (run_id=20260530T235923_30c19df5) — penAibc8 INFERENCE_NUM_ITERATIONS=200, seed=0
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260530T235923_30c19df5/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":200,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":0}'
+
+# ── reeval trial #9 (run_id=20260530T235809_21aed4fd) — penAibc4 NUM_COUNTER_EXAMPLES=16, seed=0
+uv run --managed-python python hyperparam_search_dfo.py --run --active-env pen --reeval-checkpoint /home1/halbertb/Q3CIBC/checkpoints/hpsearch_dfo/run_20260530T235809_21aed4fd/q_estimator.pt --params '{"BATCH_SIZE":512,"GRADIENT_MARGIN":1.0,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.5,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.5,"INFERENCE_NOISE_SCALE":0.5,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":512,"LANGEVIN_DELTA_ACTION_CLIP":0.5,"LANGEVIN_NOISE_SCALE":0.5,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_INIT":0.5,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_TRAIN_ITERATIONS":100,"LEARNING_RATE":0.0005,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":16,"Q_USE_SPECTRAL_NORM":true,"SOFTMAX_TEMPERATURE":1.0,"TRAINING_STEPS":100000,"UNIFORM_BOUNDARY_BUFFER":0.05,"nan_abort_threshold":50,"trial_seed":0}'

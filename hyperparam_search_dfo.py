@@ -482,11 +482,27 @@ def evaluate_checkpoint(
     frame_stack = int(env_cfg.get("frame_stack", 1))
     action_bounds = tuple(env_cfg.get("action_bounds", [0, 1]))
 
-    indices = sorted({int(k.split(".")[1]) for k in sd if k.startswith("network.") and k.endswith(".weight")})
-    hidden = [int(sd[f"network.{i}.weight"].shape[0]) for i in indices[:-1]]
+    # Layer indices come from `.bias` keys (always present, unchanged under
+    # spectral_norm — which renames `weight` → `weight_orig`). Using `.weight`
+    # alone misses every layer when SN is on. Hidden dims are output dims of
+    # each Linear EXCEPT the final one (which is the model output, dim=1 for
+    # the energy estimator).
+    bias_indices = sorted(
+        {int(k.split(".")[1]) for k in sd if k.startswith("network.") and k.endswith(".bias")}
+    )
+    if not bias_indices:
+        raise RuntimeError(
+            f"Cannot infer architecture from checkpoint keys: {list(sd.keys())[:5]}..."
+        )
+    hidden = [int(sd[f"network.{i}.bias"].shape[0]) for i in bias_indices[:-1]]
 
-    # Detect spectral-norm via parametrization keys in the state-dict.
-    use_sn = any("parametrizations.weight" in k for k in sd.keys())
+    # Detect spectral norm under either API:
+    #   - old (torch.nn.utils.spectral_norm): keys `weight_orig`, `weight_u`, `weight_v`
+    #   - new (torch.nn.utils.parametrizations.spectral_norm): `parametrizations.weight.*`
+    use_sn = any(
+        ("weight_orig" in k) or ("parametrizations.weight" in k)
+        for k in sd.keys()
+    )
 
     if active_env == "particle":
         state_dim = int(env_cfg["state_dim"])
