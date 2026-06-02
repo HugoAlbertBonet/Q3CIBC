@@ -1,0 +1,66 @@
+# Batch pushingPixelsG — verify 0.98 ceiling robustness + stack F4/F7 winners.
+#
+# Standing on pushingPixelsF:
+#   Two recipes tied at 0.98 (seed=0):
+#     F4 — std=0.005, 16 unif, 5 iters
+#     F7 — std=0.01, 8 unif, 10 iters
+#   E7 3-seed paired (std=0.01, 8 unif, 5 iters): 0.98 / 0.87 / 0.92.
+#   Seed=0 lucky; multi-seed mean 0.92, std 0.046.
+#
+# Direction for G (10 trials, NO LANGEVIN, NO CODE CHANGES):
+#
+#   Multi-seed verification of F4 and F7 (find robust 0.98 recipe):
+#     G1, G2 — F4 at seeds 1, 2
+#     G3, G4 — F7 at seeds 1, 2
+#
+#   Stack F4 + F7 (tighter std + more iters + safety scaling):
+#     G5     — std=0.005, 16 unif, 10 iters, seed=0
+#     G6     — same stack at seed=1 (paired check)
+#
+#   Push std tighter than F4:
+#     G7     — std=0.003, 16 unif, 5 iters
+#     G8     — std=0.002, 16 unif, 5 iters
+#
+#   F4 variants:
+#     G9     — F4 + 15 iters (more refinement passes)
+#     G10    — F4 + 32 uniform safety (safety scaling on tightest recipe)
+#
+# Honest expectations:
+#   - Most likely outcome: 0.98 confirmed as soft ceiling; multi-seed
+#     mean ~0.93–0.95 across robust recipes.
+#   - Plausible upside: 0.99 if F4+F7 stack synergizes.
+#   - 1.00 implausible without code changes (encoder bottleneck).
+#
+# Compute per trial:
+#   - All 150k + LR=3e-4 base, ~13h training each + <5min eval.
+#   - Fits comfortably in #SBATCH --time=25:00:00.
+
+# ── G1: F4 at seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G2: F4 at seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G3: F7 at seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.01,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":8,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G4: F7 at seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.01,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":8,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G5: F4 + F7 stack (std=0.005, 16 unif, 10 iters), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G6: F4 + F7 stack at seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":10,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G7: ultra tight std=0.003, 16 unif, 5 iters
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.003,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G8: ultra tight std=0.002, 16 unif, 5 iters
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.002,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G9: F4 + 15 iters
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":15,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── G10: F4 + 32 unif safety
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":5,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":32,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'

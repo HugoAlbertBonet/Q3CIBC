@@ -809,10 +809,14 @@ def run_trial(
                 train_meta["checkpoint_path"], inference_cfg, num_eval, active_env=active_env,
             )
             if active_env == "pen":
+                import math
+                ne = int(eval_results.get("num_seeds") or 1)
+                sem = float(eval_results["std_reward"]) / math.sqrt(ne) if ne > 0 else 0.0
                 print(
                     f"\n  Result: avg_reward={eval_results['avg_reward']:.1f} "
-                    f"± {eval_results['std_reward']:.1f} "
-                    f"(median={eval_results['median_reward']:.1f}), "
+                    f"± {sem:.2f} (SEM, n={ne}) "
+                    f"(median={eval_results['median_reward']:.1f}, "
+                    f"σ_ep={eval_results['std_reward']:.1f}), "
                     f"success_rate={eval_results['success_rate']*100:.2f}%, "
                     f"eval_time={eval_results['eval_time_s']:.1f}s"
                 )
@@ -840,6 +844,7 @@ def run_trial(
         "avg_reward": eval_results.get("avg_reward", 0.0),
         "std_reward": eval_results.get("std_reward"),
         "median_reward": eval_results.get("median_reward"),
+        "num_seeds": eval_results.get("num_seeds"),
         "avg_min_dist_first_goal": eval_results.get("avg_min_dist_first_goal"),
         "avg_min_dist_second_goal": eval_results.get("avg_min_dist_second_goal"),
         "median_min_dist_first_goal": eval_results.get("median_min_dist_first_goal"),
@@ -869,7 +874,12 @@ def run_trial(
 
 # ─── Analysis ─────────────────────────────────────────────────────────────────
 
-def analyze(active_env: str = "particle"):
+def analyze(active_env: str = "particle", min_trial_id: int = 0):
+    """Show trials + cross-seed aggregates.
+
+    `min_trial_id`: skip trials with id below this — scope to a recent batch
+    when env protocol has changed (e.g. fixed eval bug after trial N).
+    """
     path = _trials_path(active_env)
     if not path.exists():
         print(f"No trials found at {path}.")
@@ -880,6 +890,8 @@ def analyze(active_env: str = "particle"):
         for line in f:
             if line.strip():
                 trials.append(json.loads(line))
+    if min_trial_id > 0:
+        trials = [t for t in trials if int(t.get("trial_id", 0)) >= min_trial_id]
 
     # Sort by reward for pen (paper-aligned objective), success_rate elsewhere.
     sort_key = (
@@ -938,6 +950,69 @@ def analyze(active_env: str = "particle"):
     print(f"\nTotal trials: {len(trials)} ({len(valid)} completed, "
           f"{len(trials) - len(valid)} failed)\n")
 
+    # ── Cross-seed aggregation ────────────────────────────────────────────
+    # See hyperparam_search.py print_analysis for full semantics:
+    #   - σ_ep(avg): intrinsic per-episode reward spread per seed (avg).
+    #   - cross_std: sample stdev of per-seed means.
+    #   - SEM:        cross_std/√n — IBC paper Table 2 ±65 best matches this.
+    import math
+    from collections import defaultdict
+
+    # Filter out trials with eval errors (e.g. earlier penAibc batch hit a
+    # spectral-norm reload bug that left avg_reward=0 — those rows would
+    # corrupt the cross-seed mean if mixed with reevals).
+    eval_ok = [t for t in valid if not t.get("eval_error")]
+
+    sig_groups: dict[str, list[dict]] = defaultdict(list)
+    for t in eval_ok:
+        h = dict(t.get("hparams") or t.get("params") or {})
+        h.pop("trial_seed", None)
+        sig = json.dumps(h, sort_keys=True, default=str)
+        sig_groups[sig].append(t)
+
+    multi = [(sig, ts) for sig, ts in sig_groups.items() if len(ts) >= 2]
+    if multi:
+        rows = []
+        for sig, ts in multi:
+            means = [float(t.get("avg_reward", 0)) for t in ts]
+            per_ep = [float(t.get("std_reward") or 0) for t in ts]
+            srs = [float(t.get("success_rate", 0)) for t in ts]
+            n = len(means)
+            mean_ = sum(means) / n
+            var = sum((m - mean_) ** 2 for m in means) / (n - 1)
+            cross_std = math.sqrt(var)
+            cross_sem = cross_std / math.sqrt(n)
+            avg_per_ep = sum(per_ep) / n
+            avg_sr = sum(srs) / n
+            seeds = sorted(
+                {(t.get("hparams") or t.get("params") or {}).get("trial_seed") for t in ts}
+            )
+            tid_list = sorted(t.get("trial_id", 0) for t in ts)
+            rows.append((mean_, cross_std, cross_sem, avg_per_ep, avg_sr, n, seeds, tid_list))
+        rows.sort(key=lambda r: -r[0])
+
+        print("=" * 110)
+        print("Cross-seed aggregates (groups with ≥2 trials of same config, different trial_seed)")
+        print("=" * 110)
+        print(
+            f"{'n':>3} {'seeds':<14} {'trial_ids':<22} {'mean_R':>10} "
+            f"{'cross_std':>10} {'SEM':>8} {'σ_ep(avg)':>11} {'SR(avg)':>8}"
+        )
+        print("-" * 110)
+        for mean_, cstd, csem, pep, sr, n, seeds, tids in rows[:25]:
+            seed_str = ",".join(str(s) for s in seeds)
+            tid_str = ",".join(str(t) for t in tids[:6]) + ("…" if len(tids) > 6 else "")
+            print(
+                f"{n:>3} {seed_str:<14} {tid_str:<22} {mean_:>10.1f} "
+                f"{cstd:>10.2f} {csem:>8.2f} {pep:>11.1f} {sr*100:>7.1f}%"
+            )
+        print("=" * 110)
+        print(
+            "  σ_ep(avg)  : intrinsic per-episode reward spread, averaged across the group's seeds.\n"
+            "  cross_std  : sample stdev of per-seed means (sometimes printed as ± in papers).\n"
+            "  SEM        : cross_std / √n  — IBC paper Table 2 ±65 best matches this interpretation.\n"
+        )
+
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -972,10 +1047,15 @@ def main():
         help="Environment to train + eval on. Default: particle (legacy). "
              "Use 'pen' for IBC-paper-faithful pen-human-v2 runs.",
     )
+    parser.add_argument(
+        "--min-trial-id", type=int, default=0,
+        help="When analyzing, skip trials with id below this value (scope "
+             "to recent batch).",
+    )
     args = parser.parse_args()
 
     if args.analyze:
-        analyze(active_env=args.active_env)
+        analyze(active_env=args.active_env, min_trial_id=args.min_trial_id)
         return
 
     if args.run:

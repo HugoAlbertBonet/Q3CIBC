@@ -1478,13 +1478,20 @@ def run_single_trial(
     }
     trial_id = append_trial(script_name, record, active_env=active_env)
 
+    import math as _math
     sr = record["success_rate"]
     rw = record["avg_reward"]
     rw_std = record.get("std_reward")
-    # Pen target: IBC paper reports 2586 ± 65 on pen-human; std_reward is the
-    # primary signal there (success_rate is binary and less informative). For
-    # other envs success_rate is still the headline.
-    rw_str = f"{rw:.3f} ± {rw_std:.3f}" if rw_std is not None else f"{rw:.3f}"
+    n_eval = int(record.get("num_seeds") or 1)
+    # Print SEM = σ_ep / √n_eval — standard error of THIS trial's mean over
+    # its n_eval episodes. Cross-seed SEM (over multiple training seeds) is
+    # what print_analysis aggregates; this single-trial SEM is the
+    # within-trial counterpart.
+    if rw_std is not None and n_eval > 0:
+        sem = rw_std / _math.sqrt(n_eval)
+        rw_str = f"{rw:.3f} ± {sem:.3f} (SEM, n={n_eval}; σ_ep={rw_std:.1f})"
+    else:
+        rw_str = f"{rw:.3f}"
     print(
         f"\n  Result (trial #{trial_id}): success_rate={sr:.2%}, avg_reward={rw_str}"
     )
@@ -1493,9 +1500,21 @@ def run_single_trial(
 
 # ─── Analyze / summary ───────────────────────────────────────────────────────
 
-def print_analysis(script_name: str, active_env: str | None = None) -> None:
-    """Print a formatted results table sorted by success rate."""
+def print_analysis(
+    script_name: str,
+    active_env: str | None = None,
+    min_trial_id: int = 0,
+) -> None:
+    """Print a formatted results table sorted by success rate.
+
+    `min_trial_id`: skip trials with id below this value — useful when env
+    config has changed (e.g. pen `max_episode_steps` 200→100) and earlier
+    trials have the same `params` dict but were trained under a different
+    protocol. Defaults to 0 (no filter).
+    """
     trials = load_trials(script_name, active_env=active_env)
+    if min_trial_id > 0:
+        trials = [t for t in trials if int(t.get("trial_id", 0)) >= min_trial_id]
     if not trials:
         print(f"No trials found for {script_name}.")
         return
@@ -1580,6 +1599,75 @@ def print_analysis(script_name: str, active_env: str | None = None) -> None:
     print(f"\nTotal trials: {len(trials)} ({len(valid)} completed, "
           f"{len(trials) - len(valid)} failed)\n")
 
+    # ── Cross-seed aggregation table ──────────────────────────────────────
+    # Groups trials with identical config but different `trial_seed`. For
+    # each group computes:
+    #   - mean of per-seed means
+    #   - σ_ep_avg : average per-episode std across the group's seeds
+    #     (env-intrinsic spread of episode rewards — bimodal on pen)
+    #   - cross_std : sample stdev (ddof=1) of per-seed means
+    #     (cross-seed variability — comparable to IBC paper's "± std")
+    #   - cross_sem : cross_std / √n  (standard error of the mean across
+    #     seeds — what IBC paper Table 2's ±65 most likely reports)
+    import math
+    from collections import defaultdict
+
+    # Skip trials with eval errors (those have avg_reward=0 and would distort
+    # cross-seed means if mixed with successful trials of the same config).
+    eval_ok = [t for t in valid if not t.get("eval_error")]
+
+    sig_groups: dict[str, list[dict]] = defaultdict(list)
+    for t in eval_ok:
+        p = dict(t.get("params") or {})
+        p.pop("trial_seed", None)
+        sig = json.dumps(p, sort_keys=True, default=str)
+        sig_groups[sig].append(t)
+
+    multi = [
+        (sig, ts) for sig, ts in sig_groups.items() if len(ts) >= 2
+    ]
+    if multi:
+        rows = []
+        for sig, ts in multi:
+            means = [float(t.get("avg_reward", 0)) for t in ts]
+            per_ep = [float(t.get("std_reward") or 0) for t in ts]
+            srs = [float(t.get("success_rate", 0)) for t in ts]
+            n = len(means)
+            mean_ = sum(means) / n
+            var = sum((m - mean_) ** 2 for m in means) / (n - 1)
+            cross_std = math.sqrt(var)
+            cross_sem = cross_std / math.sqrt(n)
+            avg_per_ep = sum(per_ep) / n
+            avg_sr = sum(srs) / n
+            seeds = sorted(
+                {(t.get("params") or {}).get("trial_seed") for t in ts}
+            )
+            tid_list = sorted(t.get("trial_id", 0) for t in ts)
+            rows.append((mean_, cross_std, cross_sem, avg_per_ep, avg_sr, n, seeds, tid_list))
+        rows.sort(key=lambda r: -r[0])
+
+        print("=" * 110)
+        print("Cross-seed aggregates (groups with ≥2 trials of same config, different trial_seed)")
+        print("=" * 110)
+        print(
+            f"{'n':>3} {'seeds':<14} {'trial_ids':<22} {'mean_R':>10} "
+            f"{'cross_std':>10} {'SEM':>8} {'σ_ep(avg)':>11} {'SR(avg)':>8}"
+        )
+        print("-" * 110)
+        for mean_, cstd, csem, pep, sr, n, seeds, tids in rows[:25]:
+            seed_str = ",".join(str(s) for s in seeds)
+            tid_str = ",".join(str(t) for t in tids[:6]) + ("…" if len(tids) > 6 else "")
+            print(
+                f"{n:>3} {seed_str:<14} {tid_str:<22} {mean_:>10.1f} "
+                f"{cstd:>10.2f} {csem:>8.2f} {pep:>11.1f} {sr*100:>7.1f}%"
+            )
+        print("=" * 110)
+        print(
+            "  σ_ep(avg)  : intrinsic per-episode reward spread, averaged across the group's seeds.\n"
+            "  cross_std  : sample stdev of per-seed means (sometimes printed as ± in papers).\n"
+            "  SEM        : cross_std / √n  — IBC paper Table 2 ±65 best matches this interpretation.\n"
+        )
+
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -1612,6 +1700,12 @@ def main() -> None:
     )
     mode.add_argument(
         "--analyze", action="store_true", help="Print summary of past trials"
+    )
+    parser.add_argument(
+        "--min-trial-id", type=int, default=0,
+        help="When analyzing, skip trials with id below this value. Useful "
+             "to scope cross-seed aggregation to a recent batch when env "
+             "protocol has changed (e.g. pen max_episode_steps 200→100).",
     )
 
     parser.add_argument(
@@ -1684,7 +1778,10 @@ def main() -> None:
 
     # ── Analyze mode ──────────────────────────────────────────────────────
     if args.analyze:
-        print_analysis(script_name, active_env=active_env_cli)
+        print_analysis(
+            script_name, active_env=active_env_cli,
+            min_trial_id=args.min_trial_id,
+        )
         return
 
     # ── Detect params and baseline ────────────────────────────────────────
