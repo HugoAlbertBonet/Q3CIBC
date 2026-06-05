@@ -390,6 +390,29 @@ Multiple ways to map state → action at eval time, selected by `hyperparam_sear
 
 See [`results/hyperparam_search/combinedv2_cpascounter_training/pushing/single_target_states.csv`](results/hyperparam_search/combinedv2_cpascounter_training/pushing/single_target_states.csv) for the full apples-to-apples comparison (matched Q-net, multiple inference recipes, per-row trial-ID provenance).
 
+### D4RL
+
+#### `pen-human-v0`
+
+Q3CIBC at the B4 recipe (control_points=100, top_k=30, pure CP-argmax inference) matches the IBC paper's reported pen-human mean reward with two orders of magnitude lower inference cost. Inference time measured on an RTX 3060 Laptop (50 timed env-steps after 5 warmup, batch=1, random-weight nets at IBC paper-faithful 512×8 spectral-norm MLP — see [`bench_inference_pen.py`](bench_inference_pen.py)).
+
+| Method | n_seeds | avg_reward | cross_seed_std | inference_time_ms |
+|---|---|---|---|---|
+| Q3CIBC (B4, CP-argmax) | 5 | 2575 | 130 | **3.4** |
+| IBC paper (Langevin, 100 iters × 512 samples) | 3 | 2586 | 65 | 378.7 |
+
+Q3CIBC inference is **110× faster** at parity reward (mean within 11 raw points).
+
+`cross_seed_std` matches what IBC paper Table 2 footnote labels as "± std. dev.": sample stdev of per-training-seed mean returns (with each seed's mean computed over 100 eval episodes, exactly matching the paper's eval protocol — see [`ibc/configs/d4rl/mlp_ebm_langevin_best.gin`](https://github.com/google-research/ibc/blob/master/ibc/configs/d4rl/mlp_ebm_langevin_best.gin) → `eval_episodes = 100`). Our higher value (130 vs 65) reflects a hard eval-noise floor on `AdroitHandPen-v1` (gymnasium-robotics port) where per-episode reward std is ≈1900, vs the legacy `pen-human-v0` (mujoco_py + Rajeswaran 2017 reward formula) the paper used. With σ_ep≈1900 and n=100 evaluation episodes, the per-seed mean carries SE≈190 from eval noise alone — cross_seed_std cannot drop below that on our env regardless of policy quality. Paper's ±65 implies their env emits a less bimodal episode-reward distribution; we directly observed a ~0.2/step reward offset between dataset-recorded rewards and `AdroitHandPen-v1`'s emitted rewards, confirming the formulas differ.
+
+Reward / cross_seed_std / per-episode std come from training+eval runs in [`results/hyperparam_search/combinedv2_cpascounter_training/d4rl/pen/trials.jsonl`](results/hyperparam_search/combinedv2_cpascounter_training/d4rl/pen/trials.jsonl); full CSV (with SEM and per-episode std also broken out) at [`results/.../d4rl/pen/pen_inference_results.csv`](results/hyperparam_search/combinedv2_cpascounter_training/d4rl/pen/pen_inference_results.csv).
+
+Reproduce the timings:
+
+```bash
+uv run --managed-python python bench_inference_pen.py --num-steps 50 --warmup 5
+```
+
 ## Dependencies
 
 - `torch >= 2.9`

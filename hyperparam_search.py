@@ -409,7 +409,14 @@ def _results_dir(script_name: str, active_env: str | None = None) -> Path:
         config = load_config()
         env_cfg = config.get("environments", {}).get(active_env, {})
 
-    results_dir = RESULTS_BASE_DIR / Path(script_name).stem / active_env
+    # Env → results-subpath mapping. D4RL-family envs go under d4rl/<env>
+    # so they can be grouped together as the codebase grows (kitchen, hammer,
+    # door, etc. all share the AdroitHand-like protocol).
+    _ENV_PATH_MAP: dict[str, str] = {
+        "pen": "d4rl/pen",
+    }
+    env_subpath = _ENV_PATH_MAP.get(active_env, active_env)
+    results_dir = RESULTS_BASE_DIR / Path(script_name).stem / env_subpath
 
     # For particle experiments, partition trials by n_dim to avoid mixing runs.
     if "n_dim" in env_cfg:

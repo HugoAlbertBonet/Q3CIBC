@@ -1,0 +1,3 @@
+method,n_seeds,avg_reward,std,SEM,cross_seed_std,inference_time_mean_ms,inference_time_std_ms,inference_time_median_ms,inference_time_min_ms,inference_time_max_ms,timed_steps,seeds
+"Q3C-B4 CP-argmax (cp=100, no refinement)",5,2575,1910,58,130,3.4228,1.2103,3.0731,1.9966,5.7593,50,"0,1,2,3,4"
+IBC paper-exact Langevin (100 iters x 512 samples),3,2586,,65,122,378.7180,24.6587,380.9797,285.7156,422.1480,50,"0,1,2"
