@@ -1,0 +1,64 @@
+# Batch penFlangevin — 8 trials testing gentle Langevin inference on Q3C.
+#
+# Hypothesis: penA-E's catastrophic inference Langevin (R<200) was driven by
+# paper hypers (lr_init=0.5, delta_clip=0.5, noise=0.5, 100 iters) being too
+# aggressive for Q3C's narrow-trained Q surface. Per-step displacement ≈0.3-0.5
+# means we leave the trained-good basin within 5 steps. Trying gentler step
+# sizes calibrated to DFO's working iteration_std=0.05 envelope.
+#
+# Two tiers tested across 3 train recipes + 2 iteration counts at tier 1.
+#
+# Tier definitions:
+#   VERY GENTLE: lr_init=0.01, lr_final=1e-6, delta_clip=0.01, noise=0.1,
+#                decay_power=2.0  → total walk envelope ≈ 0.05 (matches DFO)
+#   MEDIUM     : lr_init=0.05, lr_final=1e-5, delta_clip=0.05, noise=0.1,
+#                decay_power=2.0  → total walk envelope ≈ 0.15
+#
+# Train recipes:
+#   B4    : cp=100, top_k=30, 0 uniform, GP=1.0       (penC/D baseline winner)
+#   #70   : cp=100, top_k=30, 64 uniform, GP=5.0      (penE single-seed best with DFO)
+#   cp=80 : cp=80,  top_k=25, 0 uniform, GP=1.0       (penE #59 single-seed)
+#
+# All seed=0. If any single-seed hits >2600, validate multi-seed in penG.
+# If all stay below B4 base (2575), Langevin is closed for Q3C — DFO wins
+# the inference-refinement bucket cleanly.
+#
+# Compute: ~12h per trial × 8 = 8 SLURM jobs. ~96 GPU-hours total. Light vs
+# regular penA-F (20 trials each).
+
+# ===========================================================================
+# Very gentle Langevin × 3 train recipes (L1-L3)
+# ===========================================================================
+
+# ── penFlangevin1 (L1): B4 + very-gentle Langevin (25 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-6,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penFlangevin2 (L2): #70 train recipe + very-gentle Langevin (25 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":64,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-6,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":5.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penFlangevin3 (L3): cp=80 + very-gentle Langevin (25 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":80,"top_k_control_points":25,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-6,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ===========================================================================
+# Medium Langevin × 3 train recipes (L4-L6)
+# ===========================================================================
+
+# ── penFlangevin4 (L4): B4 + medium Langevin (25 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"inference_langevin_lr_init":0.05,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.05,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penFlangevin5 (L5): #70 train recipe + medium Langevin (25 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":64,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"inference_langevin_lr_init":0.05,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.05,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":5.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penFlangevin6 (L6): cp=80 + medium Langevin (25 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":80,"top_k_control_points":25,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"inference_langevin_lr_init":0.05,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.05,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ===========================================================================
+# Iteration sweep at very-gentle on B4 (L7-L8)
+# L1 is the 25-iter midpoint; bracket with 10 and 50.
+# ===========================================================================
+
+# ── penFlangevin7 (L7): B4 + very-gentle Langevin (10 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":10,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-6,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── penFlangevin8 (L8): B4 + very-gentle Langevin (50 iters)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":50,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-6,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'

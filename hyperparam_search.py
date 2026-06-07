@@ -228,6 +228,36 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_training",
     },
+    # Inference-time Langevin hyperparam overrides. When set, these REPLACE
+    # the corresponding training-Langevin values (langevin_lr_init, etc.)
+    # ONLY for the eval-time refinement chain — training Langevin negs still
+    # use the paper-faithful aggressive values. Use to test gentle inference
+    # refinement on Q3C's narrow-trained Q surface.
+    "inference_langevin_lr_init": {
+        "values": [0.005, 0.01, 0.05, 0.1, 0.5],
+        "type": "float",
+        "location": "env_training",
+    },
+    "inference_langevin_lr_final": {
+        "values": [1e-7, 1e-6, 1e-5, 1e-4],
+        "type": "float",
+        "location": "env_training",
+    },
+    "inference_langevin_decay_power": {
+        "values": [1.0, 2.0, 4.0],
+        "type": "float",
+        "location": "env_training",
+    },
+    "inference_langevin_delta_clip": {
+        "values": [0.005, 0.01, 0.02, 0.05, 0.1, 0.5],
+        "type": "float",
+        "location": "env_training",
+    },
+    "inference_langevin_noise_scale": {
+        "values": [0.0, 0.05, 0.1, 0.3, 1.0],
+        "type": "float",
+        "location": "env_training",
+    },
     # ── CP-DFO refinement at inference (Q3CIBC-specific) ────────────────────
     # When > 0, replaces inference-time Langevin with a DFO-style iterative
     # refinement starting from the CP cloud (optionally with a few extra
@@ -379,6 +409,29 @@ def effective_langevin_config(env_config: dict) -> dict:
     return base
 
 
+def effective_inference_langevin_config(env_config: dict) -> dict:
+    """Inference-time Langevin config: training defaults overridden by inference_* keys.
+
+    Lets callers run aggressive paper-faithful Langevin during training
+    (for hard negatives) while using a gentler inference chain to refine
+    actions on Q3C's narrow-trained Q surface. Falls back to training values
+    for any key not overridden, so an empty inference_* set = same as training.
+    """
+    cfg = effective_langevin_config(env_config)
+    training = env_config.get("training", {})
+    overrides = {
+        "lr_init": "inference_langevin_lr_init",
+        "lr_final": "inference_langevin_lr_final",
+        "noise_scale": "inference_langevin_noise_scale",
+        "delta_action_clip": "inference_langevin_delta_clip",
+        "polynomial_decay_power": "inference_langevin_decay_power",
+    }
+    for native_key, inf_key in overrides.items():
+        if inf_key in training:
+            cfg[native_key] = training[inf_key]
+    return cfg
+
+
 # ─── Config I/O ──────────────────────────────────────────────────────────────
 
 def load_config() -> dict:
@@ -483,6 +536,11 @@ def append_trial(script_name: str, record: dict, active_env: str | None = None) 
 # They must still appear in the search so they get tuned.
 INFERENCE_ONLY_PARAMS: set[str] = {
     "inference_langevin_iterations",
+    "inference_langevin_lr_init",
+    "inference_langevin_lr_final",
+    "inference_langevin_decay_power",
+    "inference_langevin_delta_clip",
+    "inference_langevin_noise_scale",
     "inference_dfo_iterations",
     "inference_dfo_iteration_std",
     "inference_dfo_iteration_std_decay",
@@ -698,8 +756,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     inference_dfo_num_uniform = int(
         env_config.get("training", {}).get("inference_dfo_num_uniform", 0)
     )
-    # Effective langevin hyperparams: env_training.langevin_* overrides env_model.langevin_config.
-    langevin_cfg = effective_langevin_config(env_config)
+    # Effective langevin hyperparams for INFERENCE chain. Starts from training
+    # Langevin config (env_model.langevin_config + langevin_* training overrides),
+    # then applies any inference_langevin_* overrides on top. Lets eval use
+    # gentler step sizes than training while keeping training paper-faithful.
+    langevin_cfg = effective_inference_langevin_config(env_config)
 
     cp_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
     q_path = os.path.join(checkpoint_dir, "q_estimator.pt")

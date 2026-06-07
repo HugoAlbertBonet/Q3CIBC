@@ -1,0 +1,58 @@
+# Batch pushingPixelsI3 — push 3-DFO-iter refinement toward 100% ± 0.
+#
+# 3 iters is sparsely tested in prior batches (most used 5 or 10).
+# This batch picks two well-formed 3-iter recipes and runs each at 5
+# seeds for robust comparison.
+#
+# Both recipes use C7 training base (150k + LR=3e-4) — the only training
+# recipe confirmed to land 0.93 single-seed.
+#
+# Strategy (10 trials = 2 recipes × 5 seeds):
+#
+#   Recipe A — tight + safety:
+#     inference_dfo_iterations=3, std=0.005, decay=0.5, 16 uniform safety
+#     Picks the F4 jitter (0.005) — tightest that worked single-seed — and
+#     adapts safety to match the stack's 16-unif setting. 3 iters means
+#     less convergence than F4's 5 iters, so safety samples matter more.
+#
+#   Recipe B — wider jitter, fewer iters:
+#     inference_dfo_iterations=3, std=0.02, decay=0.5, 16 uniform safety
+#     Compensates for fewer iters by exploring more per step. std=0.02
+#     was the D6 setting (0.91 single-seed). May need more safety.
+#
+# Honest expectations:
+#   3 iters has less refinement headroom than 5 or 10. Realistic mean
+#   for the better recipe: ~0.93. Hitting 100±0 would require either
+#   recipe to be unusually well-conditioned for this iter count.
+#
+# Compute: ~13h per trial, fits 25h SLURM.
+
+# ── I3_1: Recipe A (std=0.005, 16 unif, 3 iters, decay=0.5), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_2: Recipe A seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_3: Recipe A seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_4: Recipe A seed=3
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":3,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_5: Recipe A seed=4
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":4,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.005,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_6: Recipe B (std=0.02, 16 unif, 3 iters, decay=0.5), seed=0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_7: Recipe B seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_8: Recipe B seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_9: Recipe B seed=3
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":3,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── I3_10: Recipe B seed=4
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":4,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":16,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'

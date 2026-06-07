@@ -1,0 +1,33 @@
+# Batch pushingPixelsIC7 — anchor C7 baseline (no DFO refinement) on 4 more seeds.
+#
+# Standing on previous batches:
+#   C7 seed=0 (only seed run) = 0.93 without inference refinement.
+#   Without a multi-seed mean we can't compare cleanly to the
+#   DFO+safety stack (0.948 5-seed mean).
+#
+# This batch runs C7-exact at seeds 1, 2, 3, 4 → 5-seed mean for the
+# "no refinement" baseline. Combined with prior C7 (seed=0=0.93) and
+# the stack 5-seed mean (0.948), we lock the DFO-refinement lift number.
+#
+# Recipe (C7-exact):
+#   training_steps=150000, learning_rate=3e-4, estimator_learning_rate=3e-4
+#   control_points=20, top_k_control_points=8
+#   cp_network_kind=mlp, cp_width=256, cp_depth=2
+#   No extra negatives (uniform, Langevin, noisy expert all off)
+#   gradient_penalty_weight=1.0, margin=1.0
+#   inference_dfo_iterations=0, inference_langevin_iterations=0
+#     → routes to base PushingPixelsSimulation argmax-over-CPs
+#
+# Compute: ~13h each, fits 25h SLURM.
+
+# ── IC7_1: C7 seed=1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── IC7_2: C7 seed=2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── IC7_3: C7 seed=3
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":3,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
+
+# ── IC7_4: C7 seed=4
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":4,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":0,"inference_dfo_iterations":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":150000,"cosine_t_max":150000}'
