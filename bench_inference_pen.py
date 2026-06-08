@@ -78,13 +78,35 @@ IBC_INF_DELTA_CLIP = 0.5
 IBC_INF_NOISE = 0.5
 IBC_UNIFORM_BUFFER = 0.05
 
-# Q3C-B4 recipe.
+# Q3C-B4 recipe (pure CP-argmax inference, no refinement).
 Q3C_CP = 100
 Q3C_TOPK = 30
 Q3C_CP_WIDTH = 512
 Q3C_CP_DEPTH = 8
 Q3C_Q_WIDTH = 512
 Q3C_Q_DEPTH = 8
+
+# Q3C + DFO inference recipe ("#70" recipe — penE/F best DFO config).
+# Train differences vs B4: num_uniform_negatives=64, gradient_penalty_weight=5.
+# Inference: 10 DFO iters + 32 uniform safety samples.
+Q3C_DFO_CP = 100
+Q3C_DFO_TOPK = 30
+Q3C_DFO_ITERS = 10
+Q3C_DFO_ITER_STD = 0.05
+Q3C_DFO_STD_DECAY = 0.7
+Q3C_DFO_NUM_UNIFORM = 32
+
+# Q3C + gentle Langevin inference recipe (penFlangevin best — cp=80 + very-gentle 25 iters).
+# Train differences vs B4: control_points=80, top_k=25.
+# Inference: 25 Langevin iters at very-gentle settings (walk envelope ~0.05).
+Q3C_LANG_CP = 80
+Q3C_LANG_TOPK = 25
+Q3C_LANG_NUM_ITERS = 25
+Q3C_LANG_LR_INIT = 0.01
+Q3C_LANG_LR_FINAL = 1e-6
+Q3C_LANG_DECAY = 2.0
+Q3C_LANG_DELTA_CLIP = 0.01
+Q3C_LANG_NOISE = 0.1
 
 
 # ─── CUDA sync helpers (mirror bench_inference.py) ───────────────────────────
@@ -201,7 +223,106 @@ def make_method_q3c(device: torch.device):
     return name, select_action
 
 
-# ─── Method 2: IBC paper-exact Langevin inference ────────────────────────────
+# ─── Method 2: Q3C + CP-DFO inference (#70 recipe — penE/F best DFO config) ──
+
+def build_q3c_cpgen_n(device: torch.device, cp: int) -> ControlPointGenerator:
+    """Same arch as build_q3c_cpgen but parameterised CP count for cp!=100."""
+    return ControlPointGenerator(
+        input_dim=OBS_DIM,
+        output_dim=ACTION_DIM,
+        control_points=cp,
+        hidden_dims=[Q3C_CP_WIDTH] * Q3C_CP_DEPTH,
+        action_bounds=(ACTION_MIN, ACTION_MAX),
+        network_kind="mlp",
+        width=Q3C_CP_WIDTH,
+        depth=Q3C_CP_DEPTH,
+        use_spectral_norm=False,
+    ).to(device).eval()
+
+
+def make_method_q3c_dfo(device: torch.device):
+    """Q3C + DFO inference. Mirrors hyperparam_search.evaluate_q3c DFO path:
+    CP cloud (+optional uniform safety samples) → iterative softmax-resample
+    + Gaussian jitter + clip → argmax final scoring. No autograd.
+    """
+    cp_gen = build_q3c_cpgen_n(device, Q3C_DFO_CP)
+    q_net = build_q3c_q(device)
+    name = (f"Q3C+CP-DFO (cp={Q3C_DFO_CP}, {Q3C_DFO_ITERS} iters, "
+            f"+{Q3C_DFO_NUM_UNIFORM} uniform safety)")
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            cps = cp_gen(obs)                                          # (1, cp, A)
+            if Q3C_DFO_NUM_UNIFORM > 0:
+                unif = torch.empty(
+                    1, Q3C_DFO_NUM_UNIFORM, ACTION_DIM, device=device
+                ).uniform_(ACTION_MIN, ACTION_MAX)
+                candidates = torch.cat([cps, unif], dim=1)
+            else:
+                candidates = cps.clone()
+            N = candidates.shape[1]
+            obs_exp = obs.unsqueeze(1).expand(-1, N, -1)
+            std = Q3C_DFO_ITER_STD
+            for it in range(Q3C_DFO_ITERS):
+                log_probs = q_net(obs_exp, candidates).squeeze(-1)     # (1, N)
+                probs = torch.softmax(log_probs.squeeze(0), dim=-1)
+                idx = torch.multinomial(probs, N, replacement=True)
+                counts = torch.bincount(idx, minlength=N)
+                repeat_idx = torch.repeat_interleave(
+                    torch.arange(N, device=device), counts
+                )
+                candidates = candidates[:, repeat_idx, :]
+                if it < Q3C_DFO_ITERS - 1:
+                    candidates = candidates + torch.randn_like(candidates) * std
+                    candidates = candidates.clamp(ACTION_MIN, ACTION_MAX)
+                    std *= Q3C_DFO_STD_DECAY
+            final = q_net(obs_exp, candidates).squeeze(-1)
+            sel = final.argmax(dim=1)
+            action = candidates[0, sel[0], :]
+        return action
+
+    return name, select_action
+
+
+# ─── Method 3: Q3C + gentle Langevin inference (penFlangevin best) ───────────
+
+def make_method_q3c_langevin(device: torch.device):
+    """Q3C + gentle Langevin inference. Initialises chain at argmax-CP, then
+    runs `num_iters` Langevin steps with very-gentle hypers (walk envelope ~0.05).
+    Uses autograd. Mirrors hyperparam_search.evaluate_q3c LangevinRefined path.
+    """
+    cp_gen = build_q3c_cpgen_n(device, Q3C_LANG_CP)
+    q_net = build_q3c_q(device)
+    name = (f"Q3C+gentle Langevin (cp={Q3C_LANG_CP}, {Q3C_LANG_NUM_ITERS} iters, "
+            f"very-gentle)")
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            cps = cp_gen(obs)                                          # (1, cp, A)
+            obs_exp = obs.unsqueeze(1).expand(-1, cps.shape[1], -1)
+            q = q_net(obs_exp, cps).squeeze(-1)                        # (1, cp)
+            best = q.argmax(dim=1)
+            best_cp = cps[0, best[0], :].view(1, 1, -1).clone()        # (1, 1, A)
+
+        # Gentle Langevin refinement. Same loop as langevin_pass_ibc but
+        # applied to the single argmax-CP starting point.
+        refined = langevin_pass_ibc(
+            q_net, obs, best_cp,
+            num_iterations=Q3C_LANG_NUM_ITERS,
+            lr_init=Q3C_LANG_LR_INIT,
+            lr_final=Q3C_LANG_LR_FINAL,
+            decay_power=Q3C_LANG_DECAY,
+            delta_clip=Q3C_LANG_DELTA_CLIP,
+            noise_scale=Q3C_LANG_NOISE,
+        )
+        return refined[0, 0, :]
+
+    return name, select_action
+
+
+# ─── Method 4: IBC paper-exact Langevin inference ────────────────────────────
 
 def make_method_ibc_paper(device: torch.device):
     q_net = build_q_paper(device)
@@ -301,6 +422,89 @@ def q3c_b4_stats() -> dict:
     return _aggregate(deduped, label="Q3C-B4")
 
 
+def q3c_dfo_stats() -> dict:
+    """Q3C+DFO multi-seed aggregates (#70 recipe).
+
+    Filter: cp=100, top_k=30, inference_dfo_iterations=10, inference_dfo_num_uniform=32,
+    num_uniform_negatives=64, gradient_penalty_weight=5, training_steps=100k,
+    LR=5e-4, GP form=hinge, num_langevin_negatives=8, Q=512×8 SN.
+    Dedupe by seed (latest wins).
+    """
+    trials = _load_jsonl(Q3C_TRIALS)
+    keep = []
+    for t in trials:
+        if t.get("training_failed") or t.get("eval_error"):
+            continue
+        if int(t.get("trial_id", 0)) < Q3C_PROTOCOL_MIN_ID:
+            continue
+        p = t.get("params", {}) or {}
+        if (p.get("control_points") == 100
+                and p.get("top_k_control_points") == 30
+                and p.get("inference_langevin_iterations", 0) == 0
+                and p.get("inference_dfo_iterations") == 10
+                and p.get("inference_dfo_num_uniform") == 32
+                and p.get("training_steps") == 100000
+                and p.get("learning_rate") == 5e-4
+                and p.get("gradient_penalty_weight") == 5.0
+                and p.get("gradient_penalty_form") == "hinge"
+                and p.get("num_langevin_negatives") == 8
+                and p.get("num_uniform_negatives") == 64
+                and p.get("q_width") == 512
+                and p.get("q_depth") == 8
+                and p.get("langevin_init_kind", "uniform") == "uniform"
+                and p.get("entropy_bandwidth", 0.2) == 0.2
+                and p.get("cp_use_spectral_norm", False) is False
+                and p.get("noisy_expert_count", 0) == 0
+                and p.get("cp_width") == 512
+                and p.get("cp_depth") == 8):
+            keep.append(t)
+    keep.sort(key=lambda t: int(t.get("trial_id", 0)))
+    by_seed: dict[int, dict] = {}
+    for t in keep:
+        by_seed[(t.get("params") or {}).get("trial_seed")] = t
+    deduped = list(by_seed.values())
+    return _aggregate(deduped, label="Q3C+DFO")
+
+
+def q3c_langevin_stats() -> dict:
+    """Q3C+gentle Langevin aggregates (penFlangevin best — cp=80 + very-gentle 25).
+
+    Filter: cp=80, top_k=25, inference_langevin_iterations=25,
+    inference_langevin_lr_init=0.01, inference_langevin_delta_clip=0.01,
+    inference_langevin_noise_scale=0.1. Dedupe by seed.
+    """
+    trials = _load_jsonl(Q3C_TRIALS)
+    keep = []
+    for t in trials:
+        if t.get("training_failed") or t.get("eval_error"):
+            continue
+        if int(t.get("trial_id", 0)) < Q3C_PROTOCOL_MIN_ID:
+            continue
+        p = t.get("params", {}) or {}
+        if (p.get("control_points") == 80
+                and p.get("top_k_control_points") == 25
+                and p.get("inference_langevin_iterations") == 25
+                and p.get("inference_dfo_iterations", 0) == 0
+                and float(p.get("inference_langevin_lr_init", 0)) == 0.01
+                and float(p.get("inference_langevin_delta_clip", 0)) == 0.01
+                and float(p.get("inference_langevin_noise_scale", 0)) == 0.1
+                and p.get("training_steps") == 100000
+                and p.get("learning_rate") == 5e-4
+                and p.get("num_langevin_negatives") == 8
+                and p.get("num_uniform_negatives", 0) == 0
+                and p.get("q_width") == 512
+                and p.get("q_depth") == 8
+                and p.get("cp_width") == 512
+                and p.get("cp_depth") == 8):
+            keep.append(t)
+    keep.sort(key=lambda t: int(t.get("trial_id", 0)))
+    by_seed: dict[int, dict] = {}
+    for t in keep:
+        by_seed[(t.get("params") or {}).get("trial_seed")] = t
+    deduped = list(by_seed.values())
+    return _aggregate(deduped, label="Q3C+gentleLangevin")
+
+
 def ibc_paper_stats() -> dict:
     """IBC paper-exact multi-seed aggregates from ibc_dfo_pen reevals.
 
@@ -387,9 +591,15 @@ def main():
     torch.manual_seed(0)
     np.random.seed(0)
 
-    # ── Build + time both methods ────────────────────────────────────────────
+    # ── Build + time all four methods ───────────────────────────────────────
     methods = []
-    for builder in (make_method_q3c, make_method_ibc_paper):
+    builders = (
+        make_method_q3c,
+        make_method_q3c_dfo,
+        make_method_q3c_langevin,
+        make_method_ibc_paper,
+    )
+    for builder in builders:
         name, fn = builder(device)
         print(f"\nTiming: {name}")
         stats = time_block(fn, num_steps=args.num_steps, warmup=args.warmup, device=device)
@@ -398,13 +608,18 @@ def main():
         methods.append((name, stats))
 
     q3c_time = methods[0][1]
-    ibc_time = methods[1][1]
+    q3c_dfo_time = methods[1][1]
+    q3c_lang_time = methods[2][1]
+    ibc_time = methods[3][1]
 
     # ── Pull reward stats from existing trials ──────────────────────────────
     q3c_stats = q3c_b4_stats()
+    q3c_dfo_st = q3c_dfo_stats()
+    q3c_lang_st = q3c_langevin_stats()
     ibc_stats = ibc_paper_stats()
+    all_stats = (q3c_stats, q3c_dfo_st, q3c_lang_st, ibc_stats)
     print("\nReward stats (from existing trials):")
-    for s in (q3c_stats, ibc_stats):
+    for s in all_stats:
         if s["n_seeds"] == 0:
             print(f"  {s['label']}: NO MATCHING TRIALS FOUND")
             continue
@@ -416,9 +631,13 @@ def main():
     # ── Speed-vs-reward summary ─────────────────────────────────────────────
     if q3c_stats["avg_reward"] is not None and ibc_stats["avg_reward"] is not None:
         speedup = ibc_time["mean_ms"] / q3c_time["mean_ms"]
-        print(f"\nQ3C inference {speedup:.1f}× faster than IBC paper.")
-        print(f"Q3C reward = {q3c_stats['avg_reward']:.1f} ± {q3c_stats['SEM']:.1f} (SEM)")
-        print(f"IBC reward = {ibc_stats['avg_reward']:.1f} ± {ibc_stats['SEM']:.1f} (SEM)")
+        print(f"\nQ3C CP-argmax inference {speedup:.1f}× faster than IBC paper.")
+        print(f"Q3C CP-argmax reward       = {q3c_stats['avg_reward']:.1f}  ({q3c_time['mean_ms']:.2f} ms)")
+        if q3c_dfo_st["avg_reward"] is not None:
+            print(f"Q3C + DFO reward           = {q3c_dfo_st['avg_reward']:.1f}  ({q3c_dfo_time['mean_ms']:.2f} ms)")
+        if q3c_lang_st["avg_reward"] is not None:
+            print(f"Q3C + gentle Langevin      = {q3c_lang_st['avg_reward']:.1f}  ({q3c_lang_time['mean_ms']:.2f} ms)")
+        print(f"IBC paper Langevin reward  = {ibc_stats['avg_reward']:.1f}  ({ibc_time['mean_ms']:.2f} ms)")
 
     # ── Write CSV ────────────────────────────────────────────────────────────
     OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
@@ -428,7 +647,7 @@ def main():
         "inference_time_min_ms", "inference_time_max_ms", "timed_steps", "seeds",
     ]
     rows = []
-    for ((name, t), s) in zip(methods, (q3c_stats, ibc_stats)):
+    for ((name, t), s) in zip(methods, all_stats):
         rows.append({
             "method": name,
             "n_seeds": s["n_seeds"],

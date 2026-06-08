@@ -1,3 +1,5 @@
 method,n_seeds,avg_reward,std,SEM,cross_seed_std,inference_time_mean_ms,inference_time_std_ms,inference_time_median_ms,inference_time_min_ms,inference_time_max_ms,timed_steps,seeds
-"Q3C-B4 CP-argmax (cp=100, no refinement)",5,2575,1910,58,130,3.4228,1.2103,3.0731,1.9966,5.7593,50,"0,1,2,3,4"
-IBC paper-exact Langevin (100 iters x 512 samples),3,2586,,65,122,378.7180,24.6587,380.9797,285.7156,422.1480,50,"0,1,2"
+"Q3C-B4 CP-argmax (cp=100, no refinement)",5,2575,1924.1154,39.9539,126.3453,2.1276,0.7562,1.8452,1.6760,4.4473,50,"0,1,2,3,4,5,6,7,8,9"
+"Q3C+CP-DFO (cp=100, 10 iters, +32 uniform safety)",4,2482,1928.8145,106.1401,212.2802,23.4007,2.3594,22.8725,20.2520,31.1618,50,"1,2,3,4"
+"Q3C+gentle Langevin (cp=80, 25 iters, very-gentle)",1,2515,1988.8864,0.0000,0.0000,74.5446,11.2561,73.1689,58.1364,102.1800,50,0
+IBC paper-exact Langevin (100 iters x 512 samples),3,2586,,65,122,276.8408,24.0609,273.0874,236.8690,377.9234,50,"0,1,2"

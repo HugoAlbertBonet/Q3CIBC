@@ -122,6 +122,18 @@ IBC_SR_MEAN = 1.00
 IBC_SR_STD = 0.00
 IBC_SEEDS = 3
 
+# IBC paper Block Pushing — Pixels (MDN-BC, Appendix D.2 / Table 3).
+# 10.0% ± 4.3% across 3 seeds. MDN is the weakest pixel baseline IBC reports.
+MDN_SR_MEAN = 0.100
+MDN_SR_STD = 0.043
+MDN_SEEDS = 3
+
+# IBC paper Block Pushing — Pixels (MSE-BC, Appendix D.2 / Table 3).
+# 87.0% ± 4.1% across 3 seeds.
+MSE_SR_MEAN = 0.870
+MSE_SR_STD = 0.041
+MSE_SEEDS = 3
+
 
 # ─── Timing harness ───────────────────────────────────────────────────────
 
@@ -329,6 +341,196 @@ def make_ibc_dfo(device: torch.device):
     return "ibc", select_action, (q_net,)
 
 
+# ─── Method 3: IBC + MDN-BC (paper Simulated Pushing Pixels MDN) ──────────
+
+class _CoordConvEncoder(nn.Module):
+    """Standard 4-layer ConvMaxpool encoder with CoordConv channel prepend.
+
+    IBC paper Appendix D.2 marks `coord conv = True` for the MSE-BC pixels
+    config. Adds (x, y) coordinate channels to the input image before the
+    first conv. Coords are linspace [0, 1] over H and W, broadcast to (B, H, W).
+    Underlying encoder is built with `in_channels + 2`.
+    """
+
+    def __init__(self, in_channels: int, target_height: int, target_width: int,
+                 feature_dim: int = 256):
+        super().__init__()
+        self.encoder = ConvMaxpoolEncoder(
+            in_channels=in_channels + 2,
+            target_height=target_height,
+            target_width=target_width,
+            feature_dim=feature_dim,
+        )
+
+    def _add_coords(self, x: torch.Tensor) -> torch.Tensor:
+        # Match ConvMaxpoolEncoder's preprocessing: uint8 → float in [0, 1].
+        if x.dtype == torch.uint8:
+            x = x.float() / 255.0
+        elif x.max() > 1.5:
+            x = x / 255.0
+        B, C, H, W = x.shape
+        ys = torch.linspace(0.0, 1.0, H, device=x.device).view(1, 1, H, 1).expand(B, 1, H, W)
+        xs = torch.linspace(0.0, 1.0, W, device=x.device).view(1, 1, 1, W).expand(B, 1, H, W)
+        return torch.cat([x, xs, ys], dim=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self._add_coords(x)
+        # Now float in [0, 1]; encoder's normalization is a no-op (max ≤ 1).
+        return self.encoder(x)
+
+
+class _IBCPixelMDN(nn.Module):
+    """IBC paper Simulated Pushing, Pixels, MDN-BC.
+
+    Per Florence et al. 2021 Appendix D.2:
+      - Image size: 120×90 (smaller than EBM's 240×180).
+      - Conv Net: 4-layer ConvMaxPool.
+      - MLP: 512×8 (width × depth = 8 dense layers).
+      - Num components: 26 Gaussian mixture components.
+      - Dropout 0.1 (MLP only).
+      - Activation: ReLU.
+      - Test temperature 2.0, test variance exponent 4.0 (consumed by sampling;
+        for argmax-mode inference the temperature only affects mixing weights).
+
+    Inference path (paper-faithful argmax-mode):
+      1. Encoder → 256-D features.
+      2. MLP → (K, 2·A + 1) outputs per sample.
+      3. Mixing logits → argmax → pick best component.
+      4. Return that component's mean (tanh-bounded).
+    """
+
+    def __init__(self, in_channels: int, target_height: int, target_width: int,
+                 mlp_width: int = 512, mlp_depth: int = 8, n_components: int = 26,
+                 dropout: float = 0.1):
+        super().__init__()
+        self.encoder = ConvMaxpoolEncoder(
+            in_channels=in_channels,
+            target_height=target_height,
+            target_width=target_width,
+            feature_dim=256,
+        )
+        self.n_components = n_components
+        # Per component: mean (A), log_std (A), mixing logit (1).
+        self.out_dim = n_components * (2 * ACTION_DIM + 1)
+        layers = []
+        prev = 256
+        for _ in range(mlp_depth):
+            layers.append(nn.Linear(prev, mlp_width))
+            layers.append(nn.ReLU(inplace=True))
+            layers.append(nn.Dropout(dropout))
+            prev = mlp_width
+        layers.append(nn.Linear(mlp_width, self.out_dim))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        feats = self.encoder(obs)                       # (B, 256)
+        out = self.mlp(feats)                           # (B, K·(2A+1))
+        B = out.shape[0]
+        out = out.view(B, self.n_components, 2 * ACTION_DIM + 1)
+        means = out[:, :, :ACTION_DIM]                  # (B, K, A)
+        mix_logits = out[:, :, -1]                      # (B, K)
+        best = mix_logits.argmax(dim=1)                 # (B,)
+        idx = torch.arange(B, device=obs.device)
+        action = means[idx, best]                       # (B, A)
+        return action.tanh()
+
+
+def make_ibc_mdn(device: torch.device):
+    """IBC PixelMDN per Florence et al. 2021 Appendix D.2 (Pushing Pixels MDN-BC).
+
+    Inference is a single forward pass through encoder + MDN head (no DFO,
+    no Langevin, no sampling — argmax-mode picks the best mixture component
+    and returns its mean).
+    """
+    # MDN config: image size 120×90 (per paper Appendix D.2 table).
+    mdn_target_h = 90
+    mdn_target_w = 120
+    net = _IBCPixelMDN(
+        in_channels=IMAGE_CHANNELS,
+        target_height=mdn_target_h,
+        target_width=mdn_target_w,
+        mlp_width=512,
+        mlp_depth=8,
+        n_components=26,
+        dropout=0.1,
+    ).to(device).eval()
+
+    def select_action():
+        obs = torch.randint(0, 256, (1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH),
+                            dtype=torch.uint8, device=device)
+        with torch.no_grad():
+            action = net(obs)
+        return action[0]
+
+    return "ibc_mdn", select_action, (net,)
+
+
+# ─── Method 4: IBC + MSE-BC (paper Simulated Pushing Pixels MSE) ──────────
+
+class _IBCPixelMSE(nn.Module):
+    """IBC paper Simulated Pushing, Pixels, MSE-BC.
+
+    Per Florence et al. 2021 Appendix D.2:
+      - Image size: 240×180.
+      - Conv Net: 4-layer ConvMaxPool with CoordConv (2 extra coord channels).
+      - MLP: 512×4 (width × depth = 4 dense layers).
+      - Dropout 0.1 (MLP only).
+      - Activation: ReLU.
+
+    Inference is a single forward pass.
+    """
+
+    def __init__(self, in_channels: int, target_height: int, target_width: int,
+                 mlp_width: int = 512, mlp_depth: int = 4, dropout: float = 0.1):
+        super().__init__()
+        # CoordConv prepends 2 channels before encoder.
+        self.encoder = _CoordConvEncoder(
+            in_channels=in_channels,
+            target_height=target_height,
+            target_width=target_width,
+            feature_dim=256,
+        )
+        layers = []
+        prev = 256
+        for _ in range(mlp_depth):
+            layers.append(nn.Linear(prev, mlp_width))
+            layers.append(nn.ReLU(inplace=True))
+            layers.append(nn.Dropout(dropout))
+            prev = mlp_width
+        layers.append(nn.Linear(mlp_width, ACTION_DIM))
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        feats = self.encoder(obs)
+        action = self.mlp(feats)
+        return action.tanh()
+
+
+def make_ibc_mse(device: torch.device):
+    """IBC PixelMSE per Florence et al. 2021 Appendix D.2 (Pushing Pixels MSE-BC).
+
+    Inference is a single forward pass through CoordConv encoder + MLP +
+    tanh. No iterative refinement.
+    """
+    net = _IBCPixelMSE(
+        in_channels=IMAGE_CHANNELS,
+        target_height=ENCODER_TARGET_HEIGHT,   # 180
+        target_width=ENCODER_TARGET_WIDTH,     # 240
+        mlp_width=512,
+        mlp_depth=4,
+        dropout=0.1,
+    ).to(device).eval()
+
+    def select_action():
+        obs = torch.randint(0, 256, (1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH),
+                            dtype=torch.uint8, device=device)
+        with torch.no_grad():
+            action = net(obs)
+        return action[0]
+
+    return "ibc_mse", select_action, (net,)
+
+
 # ─── Driver ───────────────────────────────────────────────────────────────
 
 def param_count(*modules: torch.nn.Module) -> int:
@@ -392,6 +594,38 @@ def main():
     print(f"  Range:   [{t['min_ms']:7.3f}, {t['max_ms']:7.3f}] ms over {t['n']} runs")
     print(f"  SR:      {IBC_SR_MEAN*100:.1f}% ± {IBC_SR_STD*100:.1f}% over {IBC_SEEDS} seeds (from Florence et al. 2021 Table 3, NOT measured here)")
     rows.append(("ibc", IBC_SR_MEAN * 100, IBC_SR_STD * 100, IBC_SEEDS, IBC_SCORING_EVALS, t))
+    print()
+
+    print("=" * 78)
+    print("Method 3: IBC + MDN-BC (paper Simulated Pushing Pixels MDN, Appendix D.2)")
+    print("  ConvMaxPool encoder (target 120×90) + 512×8 MLP head + 26-component MDN")
+    print("  Inference: single forward pass, argmax(mixing_logits) → component mean → tanh")
+    method, fn, modules = make_ibc_mdn(device)
+    n_params = param_count(*modules)
+    print(f"  Param count: {n_params:,}")
+    t = time_block(fn, args.num_steps, args.warmup, device)
+    print(f"  Mean:    {t['mean_ms']:7.3f} ms  (median {t['median_ms']:7.3f} ms, std {t['stdev_ms']:6.3f} ms)")
+    print(f"  Range:   [{t['min_ms']:7.3f}, {t['max_ms']:7.3f}] ms over {t['n']} runs")
+    print(f"  SR:      {MDN_SR_MEAN*100:.1f}% ± {MDN_SR_STD*100:.1f}% over {MDN_SEEDS} seeds (from Florence et al. 2021 Table 3, NOT measured here)")
+    # MDN: 1 forward pass total (encoder + MLP head). "Scoring evals" doesn't
+    # apply (no iterative search); record 1 for consistency.
+    MDN_SCORING_EVALS = 1
+    rows.append(("ibc_mdn", MDN_SR_MEAN * 100, MDN_SR_STD * 100, MDN_SEEDS, MDN_SCORING_EVALS, t))
+    print()
+
+    print("=" * 78)
+    print("Method 4: IBC + MSE-BC (paper Simulated Pushing Pixels MSE, Appendix D.2)")
+    print("  CoordConv (+2 channels) ConvMaxPool encoder (target 240×180) + 512×4 MLP + tanh")
+    print("  Inference: single forward pass (no iterative refinement)")
+    method, fn, modules = make_ibc_mse(device)
+    n_params = param_count(*modules)
+    print(f"  Param count: {n_params:,}")
+    t = time_block(fn, args.num_steps, args.warmup, device)
+    print(f"  Mean:    {t['mean_ms']:7.3f} ms  (median {t['median_ms']:7.3f} ms, std {t['stdev_ms']:6.3f} ms)")
+    print(f"  Range:   [{t['min_ms']:7.3f}, {t['max_ms']:7.3f}] ms over {t['n']} runs")
+    print(f"  SR:      {MSE_SR_MEAN*100:.1f}% ± {MSE_SR_STD*100:.1f}% over {MSE_SEEDS} seeds (from Florence et al. 2021 Table 3, NOT measured here)")
+    MSE_SCORING_EVALS = 1
+    rows.append(("ibc_mse", MSE_SR_MEAN * 100, MSE_SR_STD * 100, MSE_SEEDS, MSE_SCORING_EVALS, t))
     print()
 
     # ─── CSV write ───────────────────────────────────────────────────────

@@ -1,3 +1,5 @@
 method,success_rate_pct,success_rate_std_pct,num_seeds,scoring_evals,inference_time_ms
-q3c,94.80,1.50,5,396,10.935
-ibc,100.00,0.00,3,12288,21.031
+q3c,94.80,1.50,5,396,12.970
+ibc,100.00,0.00,3,12288,22.498
+ibc_mdn,10.00,4.30,3,1,1.627
+ibc_mse,87.00,4.10,3,1,1.064
