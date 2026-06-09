@@ -101,7 +101,8 @@ class D4RLDataset(Dataset):
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
     ):
-        self.dataset = minari.load_dataset(root, download=download)
+        self.dataset_name = root
+        self.dataset = self._load_dataset(root, download=download)
         self.frame_stack = frame_stack
         self.normalize_actions = normalize_actions
         self.action_norm_range = action_norm_range
@@ -149,6 +150,17 @@ class D4RLDataset(Dataset):
 
         self.state_shape = self.observations.shape[1]  # obs_dim * frame_stack
         self.action_shape = self.actions.shape[1]
+
+    @staticmethod
+    def _load_dataset(root: str, download: bool):
+        """Load from Minari cache, downloading into it when the dataset is missing."""
+        try:
+            return minari.load_dataset(root, download=False)
+        except Exception:
+            if not download:
+                raise
+            print(f"Minari dataset {root!r} not found locally; downloading...")
+            return minari.load_dataset(root, download=True)
 
     def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
         """Inverse of the action normalization applied in __init__.
