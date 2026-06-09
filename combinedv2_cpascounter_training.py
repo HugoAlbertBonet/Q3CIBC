@@ -235,7 +235,7 @@ frame_stack = env_config.get("frame_stack", 1)
 
 def load_dataset():
     """Load the appropriate dataset based on active_env."""
-    if active_env == "pen":
+    if active_env in ("pen", "door"):
         from utils.datasets import D4RLDataset
         dataset_name = env_config["dataset_name"]
         return D4RLDataset(dataset_name, download=True, frame_stack=frame_stack)
@@ -460,7 +460,7 @@ def main():
         # batch loop branch and pass states straight through.
         obs_normalizer = None
         print("Observation normalizer: NONE (pixel encoder handles preprocessing)")
-    elif active_env in ("pushing", "pushing_multi", "pen"):
+    elif active_env in ("pushing", "pushing_multi", "pen", "door"):
         if not hasattr(dataset, "obs_mean") or not hasattr(dataset, "obs_std"):
             raise RuntimeError(
                 f"{active_env} dataset must expose `obs_mean`/`obs_std` for standardize "
@@ -804,7 +804,7 @@ def main():
     # uses these to recreate the exact same obs-standardize + action-denorm
     # transforms that training used. Mirrors `get_normalizers.py` in
     # google-research/ibc (stats computed from data, frozen, applied at eval).
-    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen"):
+    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen", "door"):
         norm_stats = {
             "act_min": dataset.act_min,
             "act_max": dataset.act_max,

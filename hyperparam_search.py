@@ -467,6 +467,7 @@ def _results_dir(script_name: str, active_env: str | None = None) -> Path:
     # door, etc. all share the AdroitHand-like protocol).
     _ENV_PATH_MAP: dict[str, str] = {
         "pen": "d4rl/pen",
+        "door": "d4rl/door",
     }
     env_subpath = _ENV_PATH_MAP.get(active_env, active_env)
     results_dir = RESULTS_BASE_DIR / Path(script_name).stem / env_subpath
@@ -696,6 +697,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env == "pen":
         from simulations.pen_human_v2_simulation import PenHumanV2Simulation
         SimulationCls = PenHumanV2Simulation
+    elif active_env == "door":
+        from simulations.door_human_v2_simulation import DoorHumanV2Simulation
+        SimulationCls = DoorHumanV2Simulation
     else:
         from simulations.particle_simulation import ParticleSimulation
         SimulationCls = ParticleSimulation
@@ -1183,10 +1187,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         sim_kwargs["goal_dist_tolerance"] = float(
             env_config.get("goal_dist_tolerance", 0.02)
         )
-    elif active_env == "pen":
-        # AdroitHandPen-v1 — no goal_dist_tolerance / n_dim knobs. Both pen sim
-        # and the Langevin/DFO wrappers ignore norm_stats here (action space is
-        # already env-native [-1, 1]).
+    elif active_env in ("pen", "door"):
+        # Adroit D4RL envs — no goal_dist_tolerance / n_dim knobs.
         pass
     else:
         sim_kwargs["n_dim"] = n_dim
@@ -1208,11 +1210,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     ep_lengths = [int(r.get("episode_length", 0)) for r in all_results]
     terminated_flags = [bool(r.get("terminated", False)) for r in all_results]
 
-    if active_env == "pen":
-        # IBC Table 2 reports avg return on pen-human (no per-step distance
+    if active_env in ("pen", "door"):
+        # IBC Table 2 reports avg return on D4RL Adroit human tasks (no per-step distance
         # metric like the pushing tasks have). We still log success_rate (from
         # the env's "is_success" info bit), but avg_reward is the canonical
-        # number to compare against the paper (their EBM hit 2586 ± 65).
+        # number to compare against the paper.
         return {
             "success_rate": float(np.mean(successes)),
             "success_rate_std": float(np.std(successes)),
