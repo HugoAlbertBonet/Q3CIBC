@@ -1612,9 +1612,15 @@ def print_analysis(
     print(header)
     print(separator)
 
-    sorted_trials = sorted(
-        trials, key=lambda t: t.get("success_rate", -1), reverse=True
-    )
+    env_names_for_sort = {t.get("active_env") for t in trials}
+    if env_names_for_sort <= {"pen", "door"}:
+        sorted_trials = sorted(
+            trials, key=lambda t: t.get("avg_reward", float("-inf")), reverse=True
+        )
+    else:
+        sorted_trials = sorted(
+            trials, key=lambda t: t.get("success_rate", -1), reverse=True
+        )
     for t in sorted_trials:
         row_vals: list[str] = [f"{t['trial_id']:>6}"]
         for p in all_param_names:
@@ -1648,10 +1654,10 @@ def print_analysis(
 
     valid = [t for t in trials if not t.get("training_failed")]
     if valid:
-        # Pen objective is reward (IBC paper Table 2 reports 2586 ± 65 on
-        # pen-human-v0). Other envs still ranked by success_rate.
+        # D4RL Adroit objectives are reward (IBC paper Table 2 reports raw
+        # returns for pen/door). Other envs still rank by success_rate.
         env_names = {t.get("active_env") for t in valid}
-        if env_names == {"pen"}:
+        if env_names <= {"pen", "door"}:
             best = max(valid, key=lambda t: t.get("avg_reward", float("-inf")))
         else:
             best = max(valid, key=lambda t: t.get("success_rate", 0))

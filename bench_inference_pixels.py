@@ -106,14 +106,22 @@ ACTION_MIN = -1.0
 ACTION_MAX = 1.0
 
 
-# ─── Success-rate constants ───────────────────────────────────────────────
-# Q3C stack 5-seed mean (G5, G6, H1, H2, H3 in
-# results/.../pushing_pixels/trials.jsonl):
-#   0.93, 0.94, 0.96, 0.94, 0.97 → mean 0.948, std 0.015
-# 100 eval episodes/seed × 5 seeds.
-Q3C_STACK_SR_MEAN = 0.948
-Q3C_STACK_SR_STD = 0.015
-Q3C_STACK_SEEDS = 5
+# ─── Q3C success-rate constants per iter count (best config each) ────────
+# All from results/.../pushing_pixels/trials.jsonl. SR % expressed as
+# (mean, std, n_seeds).
+#
+# 0 iters — I0A: 200k training + 30 CPs, pure argmax (no DFO).
+#   Trials #99 (seed=0=0.98), #100 (seed=1=0.93), #98 (seed=2=0.91).
+Q3C_0ITER  = (0.940, 0.030, 3)
+# 3 iters — J3: 200k+30CPs base, std=0.02, decay=0.5, 16 uniform safety.
+#   Trials #133 (seed=0=0.97), #134 (seed=1=0.90), #135 (seed=2=0.95).
+Q3C_3ITER  = (0.940, 0.029, 3)
+# 5 iters — J5 ⭐: 200k+30CPs base, std=0.005, decay=0.5, 24 uniform safety.
+#   Trials #136 (seed=0=0.98), #137 (seed=1=0.94), #138 (seed=2=0.95).
+Q3C_5ITER  = (0.957, 0.017, 3)
+# 10 iters — Stack: 150k+20CPs base, std=0.005, decay=0.5, 16 uniform safety.
+#   Trials G5/G6/H1/H2/H3 (seeds 0/1/2/3/4 = 0.93/0.94/0.96/0.94/0.97).
+Q3C_10ITER = (0.948, 0.015, 5)
 
 # IBC paper Block Pushing — Pixels (Implicit BC EBM, DFO inference).
 # Per Florence et al. 2021 Table 3: 100% ± 0% across 3 seeds.
@@ -168,13 +176,18 @@ def time_block(fn, num_steps: int, warmup: int, device: torch.device) -> dict:
     }
 
 
-# ─── Method 1: Q3C + CP-DFO stack recipe ──────────────────────────────────
+# ─── Method 1: Q3C + CP-DFO (parameterized by best-config per iter count) ─
 
-def make_q3c_stack(device: torch.device):
-    """Stack recipe: encoder once → 20 CPs + 16 uniform → 10 DFO iters."""
+def make_q3c(device: torch.device, control_points: int, n_uniform: int,
+             dfo_iters: int, dfo_std: float, dfo_decay: float, method_name: str):
+    """Q3C inference: encoder once → CPs (+ uniform safety) → DFO loop.
+
+    For dfo_iters=0 → pure CP argmax (skip DFO loop).
+    For dfo_iters>0 → resample + jitter inner loop on cached features.
+    """
     cp_gen = PixelControlPointGenerator(
         output_dim=ACTION_DIM,
-        control_points=20,
+        control_points=control_points,
         hidden_dims=[256, 256],
         action_bounds=(ACTION_MIN, ACTION_MAX),
         network_kind="mlp",
@@ -192,33 +205,31 @@ def make_q3c_stack(device: torch.device):
         value_num_blocks=1,
     ).to(device).eval()
 
-    # Stack recipe hyperparams
-    dfo_iters = 10
-    dfo_std = 0.005
-    dfo_decay = 0.5
-    n_uniform = 16
-
     def select_action():
-        # Random uint8 image batch (1, C, H, W) — matches PushingPixelsEnv
-        # obs shape after PushingPixelsSimulation._obs_to_tensor.
         obs = torch.randint(0, 256, (1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH),
                             dtype=torch.uint8, device=device)
 
         with torch.no_grad():
-            # Encode once (cached for entire DFO loop — this is the win)
             features = q_net.encode(obs)        # (1, 256)
-            cps = cp_gen(obs)                    # (1, 20, 2)
+            cps = cp_gen(obs)                    # (1, control_points, 2)
 
-            # Mix uniform safety samples into candidate pool
-            unif = torch.empty(1, n_uniform, ACTION_DIM, device=device).uniform_(ACTION_MIN, ACTION_MAX)
-            candidates = torch.cat([cps, unif], dim=1)  # (1, 36, 2)
+            if n_uniform > 0:
+                unif = torch.empty(1, n_uniform, ACTION_DIM, device=device).uniform_(ACTION_MIN, ACTION_MAX)
+                candidates = torch.cat([cps, unif], dim=1)
+            else:
+                candidates = cps
             N = candidates.shape[1]
+
+            if dfo_iters == 0:
+                # Pure argmax over candidates — no DFO.
+                log_probs = q_net.score(features, candidates).squeeze(-1)  # (1, N)
+                sel = log_probs.argmax(dim=1)
+                return candidates[0, sel[0], :]
 
             std = dfo_std
             log_probs = None
             for it in range(dfo_iters):
-                # All scoring uses cached features — encoder NOT re-run.
-                log_probs = q_net.score(features, candidates).squeeze(-1)  # (1, N)
+                log_probs = q_net.score(features, candidates).squeeze(-1)
                 probs = torch.softmax(log_probs.squeeze(0), dim=-1)
                 idx = torch.multinomial(probs, N, replacement=True)
                 counts = torch.bincount(idx, minlength=N)
@@ -230,12 +241,18 @@ def make_q3c_stack(device: torch.device):
                     candidates = candidates + torch.randn_like(candidates) * std
                     candidates = candidates.clamp(ACTION_MIN, ACTION_MAX)
                     std *= dfo_decay
-            # Re-score and pick best on the final reordered candidates
             final = q_net.score(features, candidates).squeeze(-1)
             sel = final.argmax(dim=1)
             return candidates[0, sel[0], :]
 
-    return "q3c", select_action, (cp_gen, q_net)
+    return method_name, select_action, (cp_gen, q_net)
+
+
+# Backward-compat shim: stack = 10-iter variant
+def make_q3c_stack(device: torch.device):
+    return make_q3c(device, control_points=20, n_uniform=16,
+                    dfo_iters=10, dfo_std=0.005, dfo_decay=0.5,
+                    method_name="q3c_10iter")
 
 
 # ─── Method 2: IBC + DFO (paper Simulated Pushing Pixels EBM) ─────────────
@@ -563,27 +580,45 @@ def main():
 
     rows = []  # (method, sr_mean_pct, sr_std_pct, num_seeds, scoring_evals, timings_dict)
     # Scoring evals = number of (state, action) → Q forward passes per env step.
-    # Q3C stack: 10 DFO iters (each scores 36 candidates) + 1 final re-score = 11×36 = 396.
+    # Q3C variants:
+    #   0 iters  (I0A):   1 score call × 30 CPs                            =   30
+    #   3 iters  (J3):    (3 + 1 final rescore) × (30 CPs + 16 unif)       =  184
+    #   5 iters  (J5):    (5 + 1 final rescore) × (30 CPs + 24 unif)       =  324
+    #   10 iters (stack): (10 + 1 final rescore) × (20 CPs + 16 unif)      =  396
     # IBC DFO: 3 iters × 4096 samples = 12,288. No final re-score (IBC convention).
-    Q3C_SCORING_EVALS = (10 + 1) * (20 + 16)  # 396
-    IBC_SCORING_EVALS = 3 * 4096               # 12288
+    IBC_SCORING_EVALS = 3 * 4096
+
+    # ── Q3C variants: best config per iter count ────────────────────────
+    q3c_variants = [
+        # (method_name, cps, n_uniform, iters, std, decay, sr_const, source_note)
+        ("q3c_0iter",  30,  0,  0,  0.000, 0.5, Q3C_0ITER,  "I0A: 200k+30CPs, pure argmax"),
+        ("q3c_3iter",  30, 16,  3,  0.020, 0.5, Q3C_3ITER,  "J3:  200k+30CPs, std=0.02,  16 unif"),
+        ("q3c_5iter",  30, 24,  5,  0.005, 0.5, Q3C_5ITER,  "J5:  200k+30CPs, std=0.005, 24 unif"),
+        ("q3c_10iter", 20, 16, 10, 0.005, 0.5, Q3C_10ITER, "Stack: 150k+20CPs, std=0.005, 16 unif"),
+    ]
+    for idx, (name, cps, n_uni, iters, std, decay, sr_const, note) in enumerate(q3c_variants, start=1):
+        print("=" * 78)
+        print(f"Method {idx}: Q3CIBC + CP-DFO ({iters} iters)  [{note}]")
+        method, fn, modules = make_q3c(device, control_points=cps, n_uniform=n_uni,
+                                       dfo_iters=iters, dfo_std=std, dfo_decay=decay,
+                                       method_name=name)
+        n_params = param_count(*modules)
+        print(f"  Param count: {n_params:,}")
+        t = time_block(fn, args.num_steps, args.warmup, device)
+        print(f"  Mean:    {t['mean_ms']:7.3f} ms  (median {t['median_ms']:7.3f} ms, std {t['stdev_ms']:6.3f} ms)")
+        print(f"  Range:   [{t['min_ms']:7.3f}, {t['max_ms']:7.3f}] ms over {t['n']} runs")
+        sr_mean, sr_std, n_seeds = sr_const
+        print(f"  SR:      {sr_mean*100:.1f}% ± {sr_std*100:.1f}% over {n_seeds} seeds")
+        # Scoring evals: 1*cps if iters=0, (iters+1)*(cps+n_uni) otherwise.
+        if iters == 0:
+            scoring_evals = cps
+        else:
+            scoring_evals = (iters + 1) * (cps + n_uni)
+        rows.append((name, sr_mean * 100, sr_std * 100, n_seeds, scoring_evals, t))
+        print()
 
     print("=" * 78)
-    print("Method 1: Q3CIBC + CP-DFO (stack recipe)")
-    print("  20 CPs + 16 uniform safety, 10 iters, std=0.005, decay=0.5")
-    print("  Late fusion: encoder runs ONCE per env step")
-    method, fn, modules = make_q3c_stack(device)
-    n_params = param_count(*modules)
-    print(f"  Param count: {n_params:,}")
-    t = time_block(fn, args.num_steps, args.warmup, device)
-    print(f"  Mean:    {t['mean_ms']:7.3f} ms  (median {t['median_ms']:7.3f} ms, std {t['stdev_ms']:6.3f} ms)")
-    print(f"  Range:   [{t['min_ms']:7.3f}, {t['max_ms']:7.3f}] ms over {t['n']} runs")
-    print(f"  SR:      {Q3C_STACK_SR_MEAN*100:.1f}% ± {Q3C_STACK_SR_STD*100:.1f}% over {Q3C_STACK_SEEDS} seeds (from G5/G6/H1/H2/H3 stack)")
-    rows.append(("q3c", Q3C_STACK_SR_MEAN * 100, Q3C_STACK_SR_STD * 100, Q3C_STACK_SEEDS, Q3C_SCORING_EVALS, t))
-    print()
-
-    print("=" * 78)
-    print("Method 2: IBC + DFO (paper Simulated Pushing Pixels EBM, Appendix D.2)")
+    print("Method 5: IBC + DFO (paper Simulated Pushing Pixels EBM, Appendix D.2)")
     print("  ConvMaxPool encoder + 1024×4 regular MLP value net")
     print("  DFO: 4096 samples × 3 iters, action boundary buffer=0.05, late fusion")
     method, fn, modules = make_ibc_dfo(device)
@@ -597,7 +632,7 @@ def main():
     print()
 
     print("=" * 78)
-    print("Method 3: IBC + MDN-BC (paper Simulated Pushing Pixels MDN, Appendix D.2)")
+    print("Method 6: IBC + MDN-BC (paper Simulated Pushing Pixels MDN, Appendix D.2)")
     print("  ConvMaxPool encoder (target 120×90) + 512×8 MLP head + 26-component MDN")
     print("  Inference: single forward pass, argmax(mixing_logits) → component mean → tanh")
     method, fn, modules = make_ibc_mdn(device)
@@ -614,7 +649,7 @@ def main():
     print()
 
     print("=" * 78)
-    print("Method 4: IBC + MSE-BC (paper Simulated Pushing Pixels MSE, Appendix D.2)")
+    print("Method 7: IBC + MSE-BC (paper Simulated Pushing Pixels MSE, Appendix D.2)")
     print("  CoordConv (+2 channels) ConvMaxPool encoder (target 240×180) + 512×4 MLP + tanh")
     print("  Inference: single forward pass (no iterative refinement)")
     method, fn, modules = make_ibc_mse(device)

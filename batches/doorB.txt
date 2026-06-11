@@ -1,0 +1,44 @@
+# Batch doorB - corrected D4RL door-human protocol.
+#
+# Diagnosis from doorA:
+#   - doorA used max_episode_steps=100 from the handoff.
+#   - Minari metadata for D4RL/door/human-v2 says AdroitHandDoor-v1 has
+#     max_episode_steps=200.
+#   - Dataset first-100-step return is ~-22.9 and no demos get positive
+#     success-like rewards before step 100; the first large rewards appear
+#     around steps 162-193. So doorA evaluated policies before the task can
+#     usually succeed.
+#   - config_json/config.json now sets door.max_episode_steps=200.
+#
+# doorA reward ranking at the bad 100-step horizon:
+#   #4 cp=50/top=20/lang=8/liter=100/inf=100: R=-21.291
+#   #1 cp=20/top=8/lang=0/liter=0/inf=100:   R=-21.302
+#   #2 cp=20/top=8/lang=8/liter=25/inf=100:  R=-21.556
+#   #7 cp=20/top=8/lang=8/liter=100/inf=100: R=-21.611
+#
+# doorB reruns the informative doorA configs at the corrected horizon and
+# adds cheap-inference variants for the best CP clouds. All seed=0.
+
+# -- doorB1: A6 rerun at 200 steps - best doorA reward, denser CP cloud.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- doorB2: A2 rerun at 200 steps - CP-only training negatives were tied for best.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- doorB3: A1 rerun at 200 steps - paper-style training Langevin baseline.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- doorB4: A7 rerun at 200 steps - cheaper training Langevin.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- doorB5: Dense CP cloud with pure CP-argmax inference.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- doorB6: CP-only training plus pure CP-argmax inference.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- doorB7: Dense CP cloud with gentle inference Langevin.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":25,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.1,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- doorB8: Larger CP cloud, pure CP-argmax. Tests whether door needs more coverage.
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
