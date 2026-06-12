@@ -256,6 +256,13 @@ def load_dataset():
         from utils.datasets import PushingPixelsDataset
         data_dir = env_config["data_dir"]
         return PushingPixelsDataset(data_dir=data_dir, frame_stack=frame_stack)
+    elif active_env == "libero_goal":
+        from utils.datasets import LiberoGoalDataset
+        return LiberoGoalDataset(
+            goal_embeddings_path=env_config["goal_embeddings_path"],
+            frame_stack=frame_stack,
+            max_demos_per_task=env_config.get("max_demos_per_task"),
+        )
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
         return DummyDataset(
@@ -460,6 +467,19 @@ def main():
         # batch loop branch and pass states straight through.
         obs_normalizer = None
         print("Observation normalizer: NONE (pixel encoder handles preprocessing)")
+    elif active_env == "libero_goal":
+        # Standardize over the FULL state vector (low-dim obs + goal embedding).
+        # frame_stack=1 here on purpose: the dataset already baked frame-stacking
+        # into obs BEFORE appending the goal embedding, so obs_mean/obs_std are
+        # full-length and must NOT be tiled again.
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_id,
+            device=device,
+            frame_stack=1,
+            obs_mean=dataset.obs_mean,
+            obs_std=dataset.obs_std,
+        )
+        print("Observation normalizer: standardize (full state vector, no tiling)")
     elif active_env in ("pushing", "pushing_multi", "pen", "door"):
         if not hasattr(dataset, "obs_mean") or not hasattr(dataset, "obs_std"):
             raise RuntimeError(
@@ -804,7 +824,7 @@ def main():
     # uses these to recreate the exact same obs-standardize + action-denorm
     # transforms that training used. Mirrors `get_normalizers.py` in
     # google-research/ibc (stats computed from data, frozen, applied at eval).
-    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen", "door"):
+    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen", "door", "libero_goal"):
         norm_stats = {
             "act_min": dataset.act_min,
             "act_max": dataset.act_max,
@@ -818,6 +838,17 @@ def main():
         if hasattr(dataset, "obs_mean"):
             norm_stats["obs_mean"] = dataset.obs_mean
             norm_stats["obs_std"] = dataset.obs_std
+        # LIBERO-Goal: persist the exact obs schema + per-task goal embeddings
+        # so the eval simulation rebuilds a byte-identical state vector and
+        # looks up the right goal per task. `state_shape` lets eval skip fragile
+        # state_dim*frame_stack arithmetic (goal dims aren't frame-stacked).
+        if active_env == "libero_goal":
+            norm_stats["libero_obs_keys"] = dataset.libero_obs_keys
+            norm_stats["libero_obs_dims"] = dataset.libero_obs_dims
+            norm_stats["goal_embeddings"] = dataset.goal_embeddings
+            norm_stats["goal_task_names"] = dataset.goal_task_names
+            norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
+            norm_stats["state_shape"] = dataset.state_shape
         torch.save(norm_stats, os.path.join(MODEL_SAVE_DIR, "norm_stats.pt"))
         print(f"norm_stats.pt saved (act range {dataset.act_min} → {dataset.act_max})")
 

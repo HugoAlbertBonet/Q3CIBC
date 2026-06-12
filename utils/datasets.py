@@ -962,3 +962,204 @@ class PushingPixelsDataset(Dataset):
 
     def __len__(self):
         return len(self._encoded_rgb)
+
+
+class LiberoGoalDataset(Dataset):
+    """LIBERO-Goal multi-task dataset (state-based, language-goal-conditioned).
+
+    Loads the 10 `libero_goal` tasks' human-teleop demos (50 each) from their
+    LIBERO HDF5 files, in the benchmark's canonical task order. Every task
+    shares the same scene/objects — only the language GOAL differs — which makes
+    a single, unconditioned policy degenerate (same start state → 10 different
+    correct actions). We therefore CONCATENATE a per-task language embedding to
+    each low-dim observation, turning the problem into goal-conditioned BC.
+
+    The model input ("state") is:
+        [ frame_stacked low-dim obs | goal_embedding(task) ]
+
+    Low-dim obs keys are DISCOVERED from the first demo file (image keys are
+    dropped) and recorded in `self.libero_obs_keys` / `self.libero_obs_dims`.
+    These, plus the goal-embedding matrix, are persisted by the training script
+    into `norm_stats.pt` so the eval simulation rebuilds an identical vector.
+
+    Goal embeddings come from a precomputed cache (see
+    `scripts/precompute_libero_goal_embs.py`) keyed by task name.
+
+    Action (7D): OSC delta (6) + gripper (1), natively in [-1, 1]; min-max
+    re-normalized for a uniform eval-time denorm path (near-identity here).
+    """
+
+    def __init__(
+        self,
+        goal_embeddings_path: str,
+        frame_stack: int = 1,
+        max_demos_per_task: Optional[int] = None,
+        max_samples: Optional[int] = None,
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
+    ):
+        try:
+            import h5py  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "h5py is required to load LIBERO HDF5 demos. Install the "
+                "`libero` extra (uv sync --extra libero)."
+            ) from e
+
+        from utils.libero import (
+            get_task_infos,
+            select_lowdim_obs_keys,
+            build_lowdim_vector,
+            load_goal_embeddings,
+            ACTION_DIM,
+        )
+
+        self.frame_stack = frame_stack
+        self.normalize_actions = normalize_actions
+        self.action_norm_range = action_norm_range
+
+        # ── Goal embeddings (per task, keyed by name) ──────────────────────
+        emb_names, emb_matrix, emb_instructions = load_goal_embeddings(
+            goal_embeddings_path
+        )
+        name_to_emb = {n: emb_matrix[i] for i, n in enumerate(emb_names)}
+        self.goal_emb_dim = int(emb_matrix.shape[1])
+
+        # ── Per-task demo loading (canonical benchmark order) ──────────────
+        task_infos = get_task_infos()
+        self.goal_task_names = [t["name"] for t in task_infos]
+        self.goal_instructions = [t["language"] for t in task_infos]
+        # Goal-embedding matrix aligned to task order (row i = task i).
+        self.goal_embeddings = np.stack(
+            [name_to_emb[t["name"]] for t in task_infos]
+        ).astype(np.float32)
+
+        all_obs: list[np.ndarray] = []
+        all_acts: list[np.ndarray] = []
+        ep_starts: list[bool] = []
+        task_ids: list[int] = []
+        self.libero_obs_keys: list[str] | None = None
+        total = 0
+
+        import h5py
+
+        for t in task_infos:
+            task_idx = t["index"]
+            demo_file = t["demo_file"]
+            if not os.path.exists(demo_file):
+                raise FileNotFoundError(
+                    f"LIBERO demo file missing for task {t['name']!r}: {demo_file}. "
+                    f"Download the libero_goal dataset (see batch README)."
+                )
+            with h5py.File(demo_file, "r") as f:
+                data = f["data"]
+                # Demos are named demo_0, demo_1, ...; sort numerically.
+                demo_keys = sorted(
+                    data.keys(), key=lambda k: int(k.split("_")[-1])
+                )
+                if max_demos_per_task is not None:
+                    demo_keys = demo_keys[:max_demos_per_task]
+
+                if self.libero_obs_keys is None:
+                    obs_grp = data[demo_keys[0]]["obs"]
+                    self.libero_obs_keys = select_lowdim_obs_keys(list(obs_grp.keys()))
+                    if not self.libero_obs_keys:
+                        raise RuntimeError(
+                            f"No low-dim obs keys found in {demo_file}; available: "
+                            f"{list(obs_grp.keys())}"
+                        )
+
+                for dk in demo_keys:
+                    grp = data[dk]
+                    obs_grp = grp["obs"]
+                    # Per-step concat of the selected low-dim keys.
+                    arrays = [
+                        np.asarray(obs_grp[key], dtype=np.float32)
+                        for key in self.libero_obs_keys
+                    ]
+                    ep_obs = np.concatenate(
+                        [a.reshape(a.shape[0], -1) for a in arrays], axis=1
+                    )
+                    ep_acts = np.asarray(grp["actions"], dtype=np.float32)
+                    n = min(len(ep_obs), len(ep_acts))
+                    ep_obs, ep_acts = ep_obs[:n], ep_acts[:n]
+
+                    starts = np.zeros(n, dtype=bool)
+                    starts[0] = True
+                    all_obs.append(ep_obs)
+                    all_acts.append(ep_acts)
+                    ep_starts.append(starts)
+                    task_ids.extend([task_idx] * n)
+                    total += n
+                    if max_samples is not None and total >= max_samples:
+                        break
+            if max_samples is not None and total >= max_samples:
+                break
+
+        observations = np.concatenate(all_obs).astype(np.float32)
+        raw_actions = np.concatenate(all_acts).astype(np.float32)
+        episode_starts = np.concatenate(ep_starts)
+        task_ids_arr = np.asarray(task_ids, dtype=np.int64)
+        if max_samples is not None:
+            observations = observations[:max_samples]
+            raw_actions = raw_actions[:max_samples]
+            episode_starts = episode_starts[:max_samples]
+            task_ids_arr = task_ids_arr[:max_samples]
+
+        # Per-key dims (for the eval sim to reconstruct the same layout).
+        self.libero_obs_dims = [
+            int(np.asarray(arr).reshape(arr.shape[0], -1).shape[1])
+            for arr in arrays
+        ]
+
+        if raw_actions.shape[1] != ACTION_DIM:
+            print(
+                f"[LiberoGoalDataset] WARNING: action_dim={raw_actions.shape[1]} "
+                f"!= expected {ACTION_DIM}."
+            )
+
+        # ── Frame-stack the low-dim obs only, then append the goal embedding ─
+        if frame_stack > 1:
+            observations = stack_frames(observations, episode_starts, frame_stack)
+        goal_vecs = self.goal_embeddings[task_ids_arr]  # (N, goal_emb_dim)
+        states = np.concatenate([observations, goal_vecs], axis=1).astype(np.float32)
+
+        # ── Action normalization (min-max → action_norm_range) ─────────────
+        self.act_min = raw_actions.min(axis=0).astype(np.float32)
+        self.act_max = raw_actions.max(axis=0).astype(np.float32)
+        if normalize_actions:
+            lo, hi = float(action_norm_range[0]), float(action_norm_range[1])
+            denom = self.act_max - self.act_min
+            denom = np.where(denom == 0, np.ones_like(denom), denom)
+            self.actions = (
+                lo + (raw_actions - self.act_min) * (hi - lo) / denom
+            ).astype(np.float32)
+        else:
+            self.actions = raw_actions
+
+        # ── Standardize stats over the FULL state vector (obs + goal) ──────
+        # The training script builds an ObservationNormalizer in standardize
+        # mode with frame_stack=1 (no tiling) from these full-length stats.
+        self.observations = states
+        self.obs_mean = states.mean(axis=0).astype(np.float32)
+        self.obs_std = (states.std(axis=0) + 1e-6).astype(np.float32)
+        self._task_ids = task_ids_arr
+        self._episode_starts = episode_starts
+
+        self.state_shape = states.shape[1]
+        self.action_shape = self.actions.shape[1]
+
+    def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
+        if not self.normalize_actions:
+            return np.asarray(normalized_action, dtype=np.float32)
+        lo, hi = float(self.action_norm_range[0]), float(self.action_norm_range[1])
+        scale = (self.act_max - self.act_min) / (hi - lo)
+        return (
+            self.act_min + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale
+        ).astype(np.float32)
+
+    def __getitem__(self, index):
+        return {"state": self.observations[index], "action": self.actions[index]}
+
+    def __len__(self):
+        return len(self.observations)

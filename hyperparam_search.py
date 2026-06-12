@@ -700,6 +700,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env == "door":
         from simulations.door_human_v2_simulation import DoorHumanV2Simulation
         SimulationCls = DoorHumanV2Simulation
+    elif active_env == "libero_goal":
+        from simulations.libero_goal_simulation import LiberoGoalSimulation
+        SimulationCls = LiberoGoalSimulation
     else:
         from simulations.particle_simulation import ParticleSimulation
         SimulationCls = ParticleSimulation
@@ -822,8 +825,15 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
         q_est.to(device).eval()
     else:
+        # libero_goal bakes the goal embedding into the state AFTER frame-stacking,
+        # so its input dim is NOT state_dim*frame_stack. Read the exact length
+        # the dataset used straight from norm_stats.
+        if active_env == "libero_goal" and norm_stats is not None and "state_shape" in norm_stats:
+            flat_input_dim = int(norm_stats["state_shape"])
+        else:
+            flat_input_dim = state_dim * frame_stack
         cp_gen = ControlPointGenerator(
-            input_dim=state_dim * frame_stack,
+            input_dim=flat_input_dim,
             output_dim=action_dim,
             control_points=control_points,
             hidden_dims=[cp_width] * cp_depth,
@@ -839,7 +849,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         cp_gen.to(device).eval()
 
         q_est = QEstimator(
-            state_dim=state_dim * frame_stack,
+            state_dim=flat_input_dim,
             action_dim=action_dim,
             hidden_dims=[q_width] * q_depth,
             use_spectral_norm=q_use_spectral_norm,
@@ -1190,6 +1200,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env in ("pen", "door"):
         # Adroit D4RL envs — no goal_dist_tolerance / n_dim knobs.
         pass
+    elif active_env == "libero_goal":
+        # Multi-task language-conditioned eval — obs schema + goal embeddings
+        # come from norm_stats; no n_dim / tolerance knobs.
+        pass
     else:
         sim_kwargs["n_dim"] = n_dim
     sim = sim_cls(**sim_kwargs)
@@ -1210,11 +1224,12 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     ep_lengths = [int(r.get("episode_length", 0)) for r in all_results]
     terminated_flags = [bool(r.get("terminated", False)) for r in all_results]
 
-    if active_env in ("pen", "door"):
-        # IBC Table 2 reports avg return on D4RL Adroit human tasks (no per-step distance
-        # metric like the pushing tasks have). We still log success_rate (from
-        # the env's "is_success" info bit), but avg_reward is the canonical
-        # number to compare against the paper.
+    if active_env in ("pen", "door", "libero_goal"):
+        # Adroit D4RL human tasks AND LIBERO-Goal report success_rate as the
+        # headline metric (LIBERO's canonical number is per-suite success rate;
+        # the env emits a binary success info bit). avg_reward is logged too but
+        # is secondary for libero_goal. per_seed here is per-eval-episode; for
+        # libero_goal the sim cycles tasks across episodes (see LiberoGoalSimulation).
         return {
             "success_rate": float(np.mean(successes)),
             "success_rate_std": float(np.std(successes)),
