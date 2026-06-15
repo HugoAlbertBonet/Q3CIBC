@@ -38,8 +38,11 @@ touch third_party/LIBERO/libero/__init__.py   # CRITICAL: upstream omits this
 echo "[2/4] uv sync --extra libero ..."
 uv sync --extra libero
 
-# Sanity: libero importable AND survives uv run's auto-sync.
-uv run --extra libero python -c "import libero, robosuite; print('import OK:', libero.__file__)"
+# Sanity: libero benchmark importable (this works on a login node). Do NOT
+# import robosuite here — it initializes an EGL/GL context at import and fails
+# on login nodes without a GPU; robosuite is only exercised later on a compute
+# node (extract/probe/eval) with MUJOCO_GL set.
+uv run --extra libero python -c "import libero; from libero.libero import benchmark; benchmark.get_benchmark_dict(); print('libero OK:', libero.__file__)"
 
 # 3. Download the libero_goal demos (~6 GB) if missing. LIBERO's downloader
 #    prompts twice interactively; we feed 'y'. utils/libero forces the config to
