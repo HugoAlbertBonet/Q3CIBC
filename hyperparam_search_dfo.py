@@ -54,6 +54,7 @@ CHECKPOINTS_BASE = ROOT_DIR / "checkpoints" / "hpsearch_dfo"
 _RESULTS_SLUG = {
     "particle": "ibc_dfo_particle",
     "pen": "ibc_dfo_pen",
+    "door": "ibc_dfo_door",
 }
 
 BASELINE_HPARAMS: dict = {
@@ -90,7 +91,7 @@ BASELINE_HPARAMS: dict = {
 }
 
 # Particle uses 50 eval seeds (legacy); pen uses 100 (matches IBC Table 2).
-_DEFAULT_NUM_EVAL_SEEDS = {"particle": 50, "pen": 100}
+_DEFAULT_NUM_EVAL_SEEDS = {"particle": 50, "pen": 100, "door": 100}
 NUM_EVAL_SEEDS = 50  # kept for particle backcompat (used when active_env="particle")
 
 
@@ -276,7 +277,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             env_id=env_cfg["env_id"], device=device,
             frame_stack=frame_stack, particle_n_dim=n_dim,
         )
-    elif active_env == "pen":
+    elif active_env in ("pen", "door"):
         from utils.datasets import D4RLDataset
         dataset = D4RLDataset(
             env_cfg["dataset_name"],
@@ -518,12 +519,12 @@ def evaluate_checkpoint(
             env_id=env_cfg["env_id"], device=device,
             frame_stack=frame_stack, particle_n_dim=n_dim,
         )
-    elif active_env == "pen":
+    elif active_env in ("pen", "door"):
         state_dim = int(env_cfg["state_dim"])
         max_steps = int(env_cfg.get("max_episode_steps", 100))
         if norm_stats is None or "obs_mean" not in norm_stats:
             raise RuntimeError(
-                "Pen DFO eval requires norm_stats with obs_mean/obs_std. "
+                f"{active_env} DFO eval requires norm_stats with obs_mean/obs_std. "
                 "Train with a fresh checkpoint."
             )
         model = QEstimator(
@@ -563,7 +564,7 @@ def evaluate_checkpoint(
             (norm_stats["act_max"] - norm_stats["act_min"]) == 0, 1.0,
             norm_stats["act_max"] - norm_stats["act_min"],
         )
-        if active_env == "pen":
+        if active_env in ("pen", "door"):
             scale = rng / (hi - lo)
             return norm_stats["act_min"] + (a - lo) * scale
         return a * rng + norm_stats["act_min"]
@@ -581,7 +582,7 @@ def evaluate_checkpoint(
         if active_env == "particle":
             from simulations.particle_env import ParticleEnv
             return ParticleEnv(n_dim=n_dim, n_steps=max_steps, render_mode=None)
-        # pen
+        # pen, door (both AdroitHand-* via gymnasium-robotics)
         import gymnasium as gym
         import gymnasium_robotics
         gym.register_envs(gymnasium_robotics)
@@ -631,12 +632,12 @@ def evaluate_checkpoint(
             frame_buf.append(obs.copy())
             total_reward += float(reward)
             ep_len += 1
-            # AdroitHandPen emits info["success"] each step while goal pose
-            # tolerance holds — track sticky any-step success for pen.
-            if active_env == "pen" and bool(info.get("success", info.get("is_success", False))):
+            # AdroitHandPen/Door emit info["success"] each step while goal
+            # pose tolerance holds — track sticky any-step success.
+            if active_env in ("pen", "door") and bool(info.get("success", info.get("is_success", False))):
                 any_step_success = True
 
-        if active_env == "pen":
+        if active_env in ("pen", "door"):
             successes.append(any_step_success)
         else:
             successes.append(bool(info.get("success", False)))
@@ -649,9 +650,9 @@ def evaluate_checkpoint(
 
     eval_time = time.time() - t0
 
-    # Env-branched metrics: pen has no first/second-goal distance; particle
-    # records them. Both record reward stats (paper-comparable for pen).
-    if active_env == "pen":
+    # Env-branched metrics: pen/door have no first/second-goal distance;
+    # particle records them. All record reward stats.
+    if active_env in ("pen", "door"):
         return {
             "success_rate": float(np.mean(successes)),
             "success_rate_std": float(np.std(successes)),
@@ -808,7 +809,7 @@ def run_trial(
             eval_results = evaluate_checkpoint(
                 train_meta["checkpoint_path"], inference_cfg, num_eval, active_env=active_env,
             )
-            if active_env == "pen":
+            if active_env in ("pen", "door"):
                 import math
                 ne = int(eval_results.get("num_seeds") or 1)
                 sem = float(eval_results["std_reward"]) / math.sqrt(ne) if ne > 0 else 0.0
@@ -893,9 +894,9 @@ def analyze(active_env: str = "particle", min_trial_id: int = 0):
     if min_trial_id > 0:
         trials = [t for t in trials if int(t.get("trial_id", 0)) >= min_trial_id]
 
-    # Sort by reward for pen (paper-aligned objective), success_rate elsewhere.
+    # Sort by reward for pen/door (paper-aligned objective), success_rate elsewhere.
     sort_key = (
-        (lambda t: -t.get("avg_reward", -1e9)) if active_env == "pen"
+        (lambda t: -t.get("avg_reward", -1e9)) if active_env in ("pen", "door")
         else (lambda t: -t.get("success_rate", 0))
     )
     trials.sort(key=sort_key)
@@ -932,7 +933,7 @@ def analyze(active_env: str = "particle", min_trial_id: int = 0):
 
     valid = [t for t in trials if not t.get("training_failed")]
     if valid:
-        if active_env == "pen":
+        if active_env in ("pen", "door"):
             best = max(valid, key=lambda t: t.get("avg_reward", float("-inf")))
         else:
             best = max(valid, key=lambda t: t.get("success_rate", 0))

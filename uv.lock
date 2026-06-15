@@ -852,11 +852,6 @@ wheels = [
 ]
 
 [[package]]
-name = "libero"
-version = "0.1.0"
-source = { git = "https://github.com/Lifelong-Robot-Learning/LIBERO.git#8f1084e3132a39270c3a13ebe37270a43ece2a01" }
-
-[[package]]
 name = "markdown"
 version = "3.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1637,7 +1632,6 @@ dependencies = [
 [package.optional-dependencies]
 libero = [
     { name = "h5py" },
-    { name = "libero" },
     { name = "sentence-transformers" },
     { name = "transformers" },
 ]
@@ -1656,7 +1650,6 @@ requires-dist = [
     { name = "gym", marker = "extra == 'pushing'", specifier = "==0.26.2" },
     { name = "gymnasium-robotics", specifier = ">=1.4.2" },
     { name = "h5py", marker = "extra == 'libero'", specifier = ">=3.10" },
-    { name = "libero", marker = "extra == 'libero'", git = "https://github.com/Lifelong-Robot-Learning/LIBERO.git" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "minari", extras = ["all"], specifier = ">=0.5.3" },
     { name = "numpy", specifier = ">=2.4.1" },

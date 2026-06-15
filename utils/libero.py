@@ -117,7 +117,13 @@ def resolve_live_obs(live_obs: dict, canonical_keys: Sequence[str]) -> np.ndarra
     """
     chunks = []
     for key in canonical_keys:
-        candidates = LIVE_KEY_ALIASES.get(key, (key,))
+        # Try the EXACT canonical (HDF5 demo) key first — LIBERO's live env
+        # post-processes robosuite obs into the same named keys it stored in
+        # the demos, so this is the common case and guarantees a dim match.
+        # Aliases are only a fallback for releases that rename keys.
+        candidates = (key,) + tuple(
+            c for c in LIVE_KEY_ALIASES.get(key, ()) if c != key
+        )
         for cand in candidates:
             if cand in live_obs:
                 chunks.append(np.asarray(live_obs[cand], dtype=np.float32).reshape(-1))

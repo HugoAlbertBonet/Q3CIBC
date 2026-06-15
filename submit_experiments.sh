@@ -86,6 +86,9 @@ for cmd in "${commands[@]}"; do
 set -euo pipefail
 cd "${PWD}"
 
+# Headless mujoco offscreen render (LIBERO eval). Harmless for non-render envs.
+export MUJOCO_GL=\${MUJOCO_GL:-egl}
+
 echo "=========================================="
 echo "Batch:   ${batch_name}"
 echo "Tag:     ${tag}"

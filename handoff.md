@@ -1,373 +1,344 @@
-# Handoff: Adding D4RL `door-human-v0` to Q3CIBC
+# Door-Human Handoff (Q3CIBC, D4RL `door-human`)
 
-This handoff is for a fresh agent session. Goal: add `door-human` as a new environment using the patterns we built for `pen-human`, then write the first batch of experiments (`doorA.txt`).
-
-The Q3CIBC repo's pen-human support was built from scratch during a prior session — this document distills the protocol mistakes we made, the decisions that worked, and the exact files+lines to mirror for door.
+You are inheriting the D4RL `door-human` work on Q3CIBC. Pen-human was the lead environment; door is the second. Pen is in a stable headline-ready state; door is mid-investigation with critical caveats. Read this end-to-end before doing anything.
 
 ---
 
-## What Q3CIBC is
+## Repo orientation (door-relevant only)
 
-Hybrid IBC variant: a **Control Point Generator** outputs N candidate actions per state, jointly trained with a **Q Estimator** via MSE + InfoNCE. At inference time, pure CP-argmax picks the best CP — no MCMC/DFO refinement needed.
-
-On `pen-human-v0` (5 seeds, 100 eval episodes each), Q3CIBC matches IBC paper EBM's raw return (2522 vs 2586) at **130× lower inference cost** (2.13 ms vs 276.8 ms per env-step on an RTX 3060). That headline is what we want to replicate on door.
-
-Two training scripts wrap this:
-- `combinedv2_cpascounter_training.py` — Q3CIBC main script (CP gen + Q est, joint training).
-- `hyperparam_search.py` — trial runner with per-trial config isolation, env override, atomic JSONL logging.
-
-Pure IBC paper reproduction is also implemented for sanity baselines:
-- `hyperparam_search_dfo.py` — paper-faithful Langevin EBM, no CP cloud. Drives the same protocol on D4RL envs (`--active-env pen` or `--active-env particle` today).
-
----
-
-## IBC paper's door-human target
-
-From Florence et al. 2021 *Implicit Behavioral Cloning*:
-
-**Table 2 (raw return, 3 seeds × 100 eval episodes each):**
-| Method | door-human |
+| File | What it does |
 |---|---|
-| BC (from CQL) | −41.7 |
-| CQL | 234.3 |
-| S4RL | 736.5 |
-| Explicit BC (MSE) ours | 79 ± 15 |
-| **Implicit BC (EBM) ours** | **361 ± 67** |
-| Explicit BC (MSE) w/ RWR | 17.9 ± 13.8 |
-| Implicit BC (EBM) w/ RWR | 399 ± 34 |
-
-**Table 7 (env dimensions):**
-- door-human: 25 demos, 39-D observations, **28-D actions** (1 dim less than pen's 24-D-... wait, pen has 24, door has 28 — door's hand has different joint count).
-
-Actually re-check carefully: paper says pen=24, door=28. We confirmed pen=24 in our work. The door action_dim should be **28**.
-
-**D4RL benchmark constants for normalization** (random=0, expert=100):
-- `door-human-v0` random raw: **−56.62**
-- `door-human-v0` expert raw: **2880.57**
-
-Normalized score for IBC EBM raw=361: `100 × (361 − −56.62) / (2880.57 − −56.62) ≈ 14.2`.
-
-That's the number to beat in the normalized-score table.
-
-**Hyperparameters (App. D.1, same recipe for ALL D4RL human tasks — no per-task tuning):**
-| Param | Value |
-|---|---|
-| EBM variant | Langevin |
-| train iterations | 100,000 |
-| batch size | 512 |
-| learning rate | 5e-4 |
-| LR decay | 0.99 every 100 steps |
-| network size | 512 × 8 |
-| dense layer type | **spectral norm** |
-| activation | ReLU |
-| train counter examples | 8 |
-| gradient penalty | margin=1, hinge, final-step only |
-| Langevin iterations (train) | 100 |
-| Langevin step (init/final) | 0.5 / 1e-5 |
-| Langevin noise scale | 0.5 |
-| Langevin delta clip | 0.5 |
-| Langevin decay power | 2.0 |
-| Inference Langevin iterations | 100 |
-
-Verified at: https://github.com/google-research/ibc/blob/master/ibc/configs/d4rl/mlp_ebm_langevin_best.gin (gin file lists `eval_episodes = 100`, confirming 3 seeds × 100 evals).
+| `config_json/config.json` | `environments.door` block. `max_episode_steps=200`, `action_dim=28`, `state_dim=39`, `num_eval_seeds=100`. Don't edit casually. |
+| `combinedv2_cpascounter_training.py` | Q3CIBC training script. Door already routed through D4RLDataset + standardize observations + per-dim action normalization. |
+| `hyperparam_search.py` | Trial runner for Q3CIBC. Door supported at all four dispatch sites. Results land in `results/hyperparam_search/combinedv2_cpascounter_training/d4rl/door/trials.jsonl`. |
+| `hyperparam_search_dfo.py` | Pure-IBC paper recipe runner (no CP cloud). Door supported alongside pen/particle. Results land in `results/hyperparam_search/ibc_dfo_door/trials.jsonl`. |
+| `simulations/door_human_v2_simulation.py` | Door eval simulation class. Built on `AdroitHandDoor-v1` via gymnasium-robotics. Sticky any-step `info["success"]` aggregation. |
+| `utils/datasets.py` | `D4RLDataset` is env-agnostic. Handles both pen and door via `dataset_name` from config. Computes `obs_mean`, `obs_std`, `act_min`, `act_max` from the dataset. Action normalization to `[-1, 1]` per-dim. |
+| `utils/normalizations.py` | `ObservationNormalizer` runs in standardize mode for door (mean/std from dataset, not JSON bounds). |
+| `config_json/observation_bounds.json` | Hand-authored minmax bounds. Door has a stub entry. Standardize routing means this is never actually called at runtime — it exists only to keep `ObservationNormalizer` constructor from crashing. |
+| `batches/doorA.txt`, `doorB.txt`, `doorC.txt` | Q3CIBC door batches in chronological order. |
+| `batches/doorAibc.txt` | IBC paper-exact recipe batch via `hyperparam_search_dfo.py`. Written but NOT yet submitted as of this handoff. |
 
 ---
 
-## Critical protocol gotchas (we hit ALL of these on pen)
+## Critical finding: reward formula mismatch on door
 
-### 1. Episode horizon: paper uses **100**, modern gymnasium-robotics defaults to **200**
+The IBC paper reports door-human EBM = 361 ± 67 raw return. That number is **not reproducible in our setup** for reasons unrelated to algorithm quality.
 
-D4RL `pen-human-v0` (legacy mujoco_py + Rajeswaran 2017) was registered with `max_episode_steps=100`. Modern `AdroitHandPen-v1` in gymnasium-robotics bumped to 200. Same dataset, different horizon. Paper numbers are at 100-step.
+### What was measured
 
-For door: assume same protocol — `AdroitHandDoor-v1` default is 200, **set `max_episode_steps=100`** in config to match paper.
-
-Penalty for ignoring: raw rewards integrate over 2× more steps; numbers not comparable to paper.
-
-### 2. Observation normalization: paper uses **standardize from dataset stats**, NOT JSON minmax
-
-IBC paper App. B.1: *"All {x} and {y} (i.e. o and a for observations and actions), in the training dataset are normalized to per-dimension zero-mean, unit variance."*
-
-We initially used JSON minmax bounds (`config_json/observation_bounds.json`) for pen. Wrong. After switching to dataset-derived `obs_mean`/`obs_std`, cross-seed variance tightened significantly.
-
-For door: D4RLDataset already computes `obs_mean`/`obs_std` (we added this for pen). Code in `combinedv2_cpascounter_training.py` routes pen → standardize. Add door to the same branch:
+Replay episode 0's expert actions in our env:
 
 ```python
-elif active_env in ("pushing", "pushing_multi", "pen"):
+env = gym.make('AdroitHandDoor-v1', reward_type='dense', max_episode_steps=300)
+obs, _ = env.reset(seed=0)
+env_cumulative = sum(env.step(ep.actions[t])[1] for t in range(300))
+# env_cumulative = -67.1
+# dataset.rewards[:300].sum() = +525.0
 ```
-becomes
+
+A ~600-point cumulative gap over 300 steps between dataset-recorded reward and env-emitted reward, using the same actions.
+
+### Caveat: I did NOT disentangle the cause
+
+The 600-point gap could be:
+1. **Initial state drift** — `env.reset(seed=0)` doesn't necessarily match the dataset recording's initial state (minari doesn't expose the recording seed).
+2. **Physics drift** — gymnasium-robotics' mujoco-python bindings vs legacy d4rl's mujoco_py + different XML model could produce different state evolution under identical actions.
+3. **Reward formula difference** — legacy d4rl `door-human-v0` (Rajeswaran 2017) may compute reward differently than gymnasium-robotics' `AdroitHandDoor-v1`.
+
+To isolate, you'd compare obs trajectories step-by-step:
 ```python
-elif active_env in ("pushing", "pushing_multi", "pen", "door"):
+for t in range(300):
+    obs_env, r, _, _, _ = env.step(ep.actions[t])
+    obs_ds = ep.observations[t+1]
+    print(t, np.abs(obs_env - obs_ds).max())  # if these track, the gap is pure reward formula
 ```
+I did not run this. **Do this before claiming "reward formula differs"** with certainty.
 
-### 3. Action normalization: paper uses **per-dim min-max → [−1, 1] from dataset**
+### Implications regardless of cause
 
-IBC App. B.3 for Langevin: *"all {y} (i.e. a for actions), in the training dataset are normalized per-dimension to span the range [ymin=−1, ymax=1]."*
+Our env produces a different reward signal than the paper's setup. Therefore:
+- Raw-reward comparison to paper's +361 is invalid (whatever the precise mechanism).
+- `D4RL normalized score` is broken on our env: dataset-replay expert (`-67`) is BELOW random (`-46`) when averaged per-step their numbers are comparable (~-0.23/step), but the anchors don't make sense.
+- `success_rate` (env emits `info["success"]`) is the only cross-env-fair metric, but the paper does NOT report SR — so no direct head-to-head against paper.
 
-`D4RLDataset(normalize_actions=True, action_norm_range=(-1, 1))` already does this. Just inherit the same setting.
+### The fix: option A — IBC baseline in our env
 
-### 4. Reward formula differs between mujoco_py and gymnasium-robotics ports
+Train IBC paper recipe in OUR env via `hyperparam_search_dfo.py --active-env door`. The result is whatever IBC achieves on our reward formula. Q3C's number is on the same scale. Comparison is then internal to our env. Paper's +361 becomes irrelevant — replaced by an internal head-to-head between Q3C and IBC under identical conditions.
 
-We measured a ~0.2/step reward offset between dataset-recorded rewards and `AdroitHandPen-v1`-emitted rewards. Same demonstrations, different reward formula → raw rewards are NOT directly comparable to paper. Use **D4RL normalized score** as the primary metric.
-
-For door: this WILL also apply. Compute and report normalized scores.
-
-### 5. Per-episode reward std is intrinsically high (~σ_ep≈1900 on pen)
-
-Pen reward is dense, summed over 100 steps. Bimodal episode outcomes (success ~3000-9000, failure ~−500). Median always far below mean. `np.std(rewards)` over 100 episodes gives σ_ep ≈ 1900 — that's **intrinsic to the env**, not a bug.
-
-Paper's reported "±65" is **cross-seed std of per-seed mean** (3 seeds × 100 eval episodes per seed). Different statistical object than per-episode std. Three reporting metrics matter:
-
-| metric | definition | when to report |
-|---|---|---|
-| `σ_ep` (per-episode std) | spread of 100 individual episode rewards in one trial | per-trial; env-intrinsic |
-| `cross_seed_std` | sample stdev of per-seed means over n training seeds | comparable to paper's "± std" label |
-| `SEM` | `cross_seed_std / √n` | tightest alternative if paper meant SEM |
-
-For door, expect similar bimodal reward structure (success = open door, failure = drop). Eval-noise floor on cross_seed_std will be `σ_ep / √100 ≈ ~σ_ep/10` regardless of policy quality.
-
-### 6. Pure CP-argmax wins; Langevin/DFO inference refinement HURTS Q3C
-
-We tried 30+ trials with `inference_langevin_iterations > 0` at paper hypers. All catastrophic (R = 60-200) regardless of training-time Q-coverage probes (uniform negatives, stronger gradient penalty, more Langevin train negatives).
-
-Root cause: Q is sharp at trained points (CPs + Langevin negs), uncalibrated everywhere else. In 24/28-D action space, ~50 trained points per batch is a tiny fraction of the box. Inference refinement walks off-distribution within ~5 steps at paper-aggressive step sizes.
-
-Gentle Langevin (lr_init=0.01, delta_clip=0.01, noise=0.1, 25 iters → walk envelope ~0.05) works (R≈2500 on pen) but doesn't beat pure CP-argmax (R≈2522 at 10 seeds).
-
-DFO refinement (matched walk envelope) also works single-seed but seed-unstable; multi-seed mean below CP-argmax.
-
-**Lesson for door:** start with `inference_langevin_iterations=0` from the very first batch. Skip all inference refinement experiments unless you have a specific reason.
+`batches/doorAibc.txt` was written for this and is queued (not yet submitted). **Submit this batch first.**
 
 ---
 
-## Files to add/modify for door support
+## Q3C door results so far
 
-### A. `config_json/config.json` — add door env block
+### doorA (IDs 1-8, horizon=100, ABANDONED)
 
-Mirror the pen block. Look at lines for "pen" in current `config_json/config.json`:
+Initial doorA used `max_episode_steps=100`. **Wrong.** Door demos reach success around steps 196-276 (mean ep length=269). Truncating at 100 cuts off the entire success phase. All trials hit R=-21 to -22 (= dataset's first-100-step expert return).
 
-```json
-"door": {
-    "dataset_name": "D4RL/door/human-v2",
-    "env_id": "AdroitHandDoor-v1",
-    "state_dim": 39,
-    "action_dim": 28,
-    "frame_stack": 1,
-    "action_bounds": [-1, 1],
-    "max_episode_steps": 100,
-    "num_eval_seeds": 100,
-    "training": { ... },
-    "model": { ... }
-}
-```
-
-Use pen's training + model blocks verbatim as a starting baseline. Same recipe across D4RL Adroit per paper.
-
-### B. `config_json/observation_bounds.json` — add `AdroitHandDoor-v1` entry
-
-This is FALLBACK only (the standardize path uses dataset stats, not this file). Still need a stub or the `ObservationNormalizer` minmax init crashes if it's ever invoked.
-
-Easy stub: copy the pen entry's structure but mark `observation_dim: 39`. Per-dim bounds can be conservative (e.g., joint angles in [−π, π], positions in [−1, 1]). Won't be hit at training/eval if standardize routing is set up correctly.
-
-### C. `simulations/door_human_v2_simulation.py` — new file, copy from pen
-
-`simulations/pen_human_v2_simulation.py` is the template. Differences:
-- `env_id = "AdroitHandDoor-v1"`
-- `_register_envs` already calls `gym.register_envs(gymnasium_robotics)` — same for door
-- Reward type: `"dense"` (same)
-- Success flag: door env emits `info["is_success"]` per step while goal is met — sticky any-step success aggregation (same as pen)
-- Action denormalization: same logic, per-dim from `norm_stats["act_min"]`/`act_max`
-
-Copy-paste the file, sed `pen` → `door`, `Pen` → `Door`, `PEN` → `DOOR`. Verify env name.
-
-### D. `simulations/__init__.py` — export
-
-Add the new sim class export if there's an init that lists them.
-
-### E. `hyperparam_search.py` — three sites
-
-**Site 1: `evaluate_q3c` env dispatch (~line 622).** Add door branch:
-```python
-elif active_env == "door":
-    from simulations.door_human_v2_simulation import DoorHumanV2Simulation
-    SimulationCls = DoorHumanV2Simulation
-```
-
-**Site 2: `sim_kwargs` build (~line 1116).** Add door alongside pen:
-```python
-elif active_env in ("pen", "door"):
-    pass  # no goal_dist_tolerance / n_dim args
-```
-
-**Site 3: metrics return (~line 1140).** Pen's return block (success_rate + reward triplet — mean/std/median) applies verbatim to door. Combine:
-```python
-if active_env in ("pen", "door"):
-    return { ... pen's existing return dict ... }
-```
-
-**Site 4: `_results_dir` path map (~line 412).** Already supports `_ENV_PATH_MAP = {"pen": "d4rl/pen"}`. Add `"door": "d4rl/door"`:
-```python
-_ENV_PATH_MAP: dict[str, str] = {
-    "pen": "d4rl/pen",
-    "door": "d4rl/door",
-}
-```
-
-Trials will land in `results/hyperparam_search/combinedv2_cpascounter_training/d4rl/door/trials.jsonl`.
-
-### F. `combinedv2_cpascounter_training.py` — add door to standardize routing + norm_stats save
-
-Two spots:
+Diagnosis confirmed by reading dataset directly:
 
 ```python
-elif active_env in ("pushing", "pushing_multi", "pen"):
-    if not hasattr(dataset, "obs_mean") or not hasattr(dataset, "obs_std"):
-        raise RuntimeError(...)
-```
-→ add `"door"`.
-
-```python
-if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen"):
-    norm_stats = {...}
-    torch.save(norm_stats, ...)
-```
-→ add `"door"`.
-
-Also `load_dataset()` — pen uses `D4RLDataset`. Add door:
-```python
-elif active_env == "door":
-    from utils.datasets import D4RLDataset
-    return D4RLDataset(env_config["dataset_name"], download=True, frame_stack=frame_stack)
+ds = minari.load_dataset('D4RL/door/human-v2')
+ep_lens = [len(ep.actions) for ep in ds.iterate_episodes()]
+# min=223, mean=269, max=300
+ep_first_success = [int(np.argmax(ep.rewards > 5)) for ep in ds.iterate_episodes()]
+# mean=196, min=156, max=276
 ```
 
-### G. `hyperparam_search_dfo.py` — optional, for IBC baseline reproduction
+`config_json/config.json` was patched to `max_episode_steps=200`.
 
-If you want to also run pure IBC paper-faithful baseline on door (mirror our `penAibc.txt`):
-- Add `"door": "ibc_dfo_door"` to `_RESULTS_SLUG` at top
-- Add door branch in `_make_env()` (eval loop env creation): use AdroitHandDoor-v1
-- Add `door` to `--active-env` choices
-- Add door to dataset loading branch (D4RLDataset)
+### doorB (IDs 9-16, horizon=200)
 
-Skip unless you have time. We already showed paper IBC reproduction is broken in our pipeline (R≈403 vs paper 2586 on pen — same code path on door will be similarly broken).
+| # | recipe | R | SR |
+|---|---|---|---|
+| 15 | cp=100/top_k=30, inf_lit=0 (B4 pattern) | **+37.9** | 7% |
+| 13 | cp=50/top_k=20, inf_lit=25 | -12.4 | 2% |
+| 9 | cp=20/top_k=8, no Langevin, inf_lit=0 | -14.1 | 3% |
+| 16 | cp=50/top_k=20, inf_lit=0 | -22.4 | 3% |
+| 10,11,12,14 | all inf_lit=100 | **-42 to -43** | 0% |
 
-### H. Test pre-batch — DO THIS BEFORE LAUNCHING DOORA
+**Confirmed: `inference_langevin_iterations=100` (paper recipe) catastrophic** on Q3C with door's narrow-trained Q. Same finding as pen. **Drop inf_lit > 0 from future batches.**
 
-1. `uv run --managed-python python -c "import minari; ds = minari.load_dataset('D4RL/door/human-v2', download=True); print(ds.total_episodes, ds.total_steps); ep = next(iter(ds.iterate_episodes())); print(ep.observations.shape, ep.actions.shape)"` — confirms dataset downloads, shows obs and action shapes (expect 39, 28).
+### doorC (IDs 17-33, 17/20 ran)
 
-2. `uv run --managed-python python -c "import gymnasium as gym; import gymnasium_robotics; gym.register_envs(gymnasium_robotics); env = gym.make('AdroitHandDoor-v1'); print(env.observation_space.shape, env.action_space.shape, env.spec.max_episode_steps)"` — confirms env shape and default horizon.
+| # | recipe | R | SR |
+|---|---|---|---|
+| 27 | **cp=300/top_k=80** | **+51.1** | 16% |
+| 20 | cp=100 seed=3 (B4) | +49.4 | 14% |
+| 33 | cp=100 + 16 Langevin negs | +44.2 | 11% |
+| 29 | cp=100 + GP=10 | +37.9 | 7% |
+| 25 | cp=200/top_k=50 | +30.8 | 11% |
+| ... | (many trials between +30 and -30) | | |
+| 21 | cp=100 seed=4 (B4) | **-30.3** | 2% |
 
-3. Run 1 trial at reduced steps to confirm config wiring:
-   ```bash
-   uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --reduced-steps 500 --fixed-params '{...minimal config...}'
-   ```
-   Verify trials.jsonl lands at `results/.../d4rl/door/trials.jsonl`.
+**Multi-seed B4 (cp=100, 5 seeds {0,1,2,3,4}):**
+- Mean R = 14.6
+- Cross-seed std = 31.1
+- SEM = 13.9
+- Brutal seed sensitivity (seed 4 = -30, seed 3 = +49)
+
+Three trials timed out (didn't fit 25h SLURM wall):
+- cp=100 + Q=1024×8 (bigger Q)
+- cp=100 + 200k training steps
+- cp=100 + 32 Langevin training negatives
+
+If you re-attempt them, bump wall to `--time=35:00:00`.
+
+### Single-seed promising but unvalidated
+
+- **cp=300/top_k=80 (#27): +51.1** — best single-seed result. Capacity push works.
+- **cp=100 + 16 Langevin negs (#33): +44.2** — broader Q coverage at training time.
+- **cp=100 + GP=10 (#29): +37.9** — stronger gradient penalty.
+
+All seed=0. Multi-seed validation needed before claiming any of these.
 
 ---
 
-## doorA.txt — first batch (8 trials, mirror penA structure)
+## Architecture/protocol audit (verified)
 
-Pattern from `batches/penA.txt`: 8 trials covering IBC paper-exact recipe + Q3CIBC's CP-cloud variants. All single-seed=0 to start.
+| Component | Paper App. D.1 | Ours | Match |
+|---|---|---|---|
+| Q net width × depth | 512 × 8 | q_width=512, q_depth=8 | ✓ |
+| Dense layer | spectral norm | q_use_spectral_norm=true | ✓ |
+| Activation | ReLU | ReLU | ✓ |
+| LR | 5e-4 | 5e-4 | ✓ |
+| Batch | 512 | 512 | ✓ |
+| Training steps | 100k | 100k | ✓ |
+| Counter examples | 8 | num_langevin_negatives=8 | ✓ |
+| Train Langevin: iters/lr_init/lr_final/noise/clip | 100/0.5/1e-5/0.5/0.5 | identical | ✓ |
+| Gradient penalty | margin=1, hinge | margin=1, hinge | ✓ |
+| Eval episodes/seed | 100 | num_eval_seeds=100 | ✓ |
+| Horizon | 200 (legacy d4rl door-human-v0) | max_episode_steps=200 | ✓ |
+| Action dim | 28 | 28 | ✓ |
+| Obs dim | 39 | 39 | ✓ |
 
-Recipe: same Adroit-D4RL hypers from IBC paper App. D.1, with Q3CIBC modifications.
+Q estimator architecture matches paper. Q3CIBC ADDS a CP generator (not in paper) — that's our addition.
 
-**Architecture (paper-faithful Q):**
-- `q_network_kind=mlp, q_width=512, q_depth=8, q_use_spectral_norm=true`
-- `cp_network_kind=mlp, cp_width=512, cp_depth=8`
-- `learning_rate=5e-4, batch_size=512, training_steps=100000`
-- `langevin_lr_init=0.5, langevin_lr_final=1e-5, langevin_decay_power=2.0, langevin_delta_clip=0.5, langevin_noise_scale=0.5`
-- `gradient_penalty_weight=1.0, gradient_penalty_margin=1.0, gradient_penalty_form=hinge`
+**The env is NOT the same as paper's env** (gymnasium-robotics port, different reward formula). This is the unfixable confound on raw reward; see the section above.
 
-**Per-trial overrides (the 8 trials):**
+---
 
-| # | description | key params |
-|---|---|---|
-| A1 | paper-faithful baseline + CP cloud as extra negs | cp=20, top_k=8, lang_neg=8, lang_iter=100, inf_lit=100 |
-| A2 | CP-only counter examples (no Langevin negs) | cp=20, top_k=8, lang_neg=0, lang_iter=0, inf_lit=100 |
-| A3 | minimal CP (cp=1) paper-style — calibration anchor | cp=1, top_k=1, lang_neg=8, lang_iter=100, inf_lit=100 |
-| A4 | A1 recipe + inference Langevin reduced 4× | cp=20, top_k=8, lang_neg=8, lang_iter=100, inf_lit=25 |
-| **A5** | **zero inference Langevin — argmax over CPs ONLY** | cp=20, top_k=8, lang_neg=8, lang_iter=100, **inf_lit=0** |
-| A6 | denser CP cloud | cp=50, top_k=20, lang_neg=8, lang_iter=100, inf_lit=100 |
-| A7 | shorter training Langevin (3× cheaper train) | cp=20, top_k=8, lang_neg=8, lang_iter=25, inf_lit=100 |
-| A8 | IBC mixture: CPs + Langevin + uniform negs | cp=20, top_k=8, lang_neg=8, unif_neg=16, lang_iter=100, inf_lit=100 |
+## Conventions to follow
 
-**A5 is the predicted winner** — pen-A5 was Q3CIBC's headline (CP-argmax inference, no refinement, dominated all 6 other inference settings).
+1. **Always set `inference_langevin_iterations=0`** in door batches. Aggressive Langevin (paper hypers: lr=0.5, delta_clip=0.5, noise=0.5, 100 iters) is catastrophic on Q3C's narrow-trained Q. Gentle Langevin (lr=0.01 etc.) works on pen but never beat pure CP-argmax there either. Skip both for door unless explicitly debugging the inference path.
+2. **Always multi-seed validate single-seed wins.** On pen, several single-seed configs that hit R>2700 dropped below B4 base when re-run at 4 more seeds. Same will happen on door.
+3. **Use `--active-env door`** for all door trials. Do NOT mutate `config_json/config.json`'s `active_env` field for SLURM batches — race condition between submit and record.
+4. **Trial IDs are global per env.** doorA = 1-8, doorB = 9-16, doorC = 17-33, etc. `--analyze --min-trial-id N` to scope a recent batch.
+5. **Q3C results path:** `results/hyperparam_search/combinedv2_cpascounter_training/d4rl/door/trials.jsonl`.
+6. **IBC results path:** `results/hyperparam_search/ibc_dfo_door/trials.jsonl` (separate file, populated when `doorAibc.txt` runs).
 
-Each command should look exactly like pen batches:
+---
+
+## Standard commands
+
+### Submit a batch
 ```bash
-uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env door --fixed-params '{...}'
+./submit_experiments.sh batches/doorAibc.txt doorAibc
+# Each line becomes one SLURM job. 25h wall per job by default. Pass a higher
+# --time= in the script template if you need heavier configs.
 ```
 
-Same as penA1 but s/pen/door/. Pen's penA.txt has the exact JSON structure to copy.
-
-After all 8 trials run, analyze:
+### Analyze results (cross-seed aggregator built-in)
 ```bash
-uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --analyze --active-env door
+# Q3C results
+uv run python hyperparam_search.py combinedv2_cpascounter_training.py \
+    --analyze --active-env door --min-trial-id 17
+
+# IBC paper-recipe results
+uv run python hyperparam_search_dfo.py --analyze --active-env door
 ```
 
-The cross-seed aggregator and SEM/cross_std reporting already work for any env (env-agnostic).
+Both analyzers print:
+- Sorted trial table
+- Cross-seed aggregates (groups of trials with identical config except `trial_seed`)
+- Per group: mean_R, cross_std, SEM, σ_ep(avg), SR(avg)
+
+### Inspect dataset / env quickly
+```bash
+uv run --managed-python python -c "
+import minari, numpy as np
+ds = minari.load_dataset('D4RL/door/human-v2')
+ep = next(iter(ds.iterate_episodes()))
+print('obs', ep.observations.shape, 'act', ep.actions.shape)
+print('reward range:', ep.rewards.min(), ep.rewards.max(), 'sum:', ep.rewards.sum())
+"
+
+uv run --managed-python python -c "
+import gymnasium as gym, gymnasium_robotics
+gym.register_envs(gymnasium_robotics)
+env = gym.make('AdroitHandDoor-v1', reward_type='dense', max_episode_steps=200)
+print(env.observation_space, env.action_space, env.spec.max_episode_steps)
+"
+```
 
 ---
 
-## Pen-human results to anchor expectations
+## Immediate next steps for the new agent
 
-| metric | Q3C B4 (cp=100 multi-seed) | IBC paper EBM |
+In recommended order:
+
+### 1. Submit `batches/doorAibc.txt`
+
+10 trials, IBC paper-exact recipe in our env. Result is the IBC baseline measured under our reward formula. This is the comparison anchor for Q3C — replaces paper's +361 (unreachable in our env).
+
+After it completes, run:
+```bash
+uv run python hyperparam_search_dfo.py --analyze --active-env door
+```
+
+You'll get a triseed mean ± std/SEM. That's the IBC baseline number.
+
+### 2. Diagnose the env/reward gap definitively
+
+Before drawing conclusions about Q3C's door performance, run the obs-drift test I skipped:
+
+```python
+# In a uv run --managed-python python session
+import minari, numpy as np
+import gymnasium as gym, gymnasium_robotics
+
+gym.register_envs(gymnasium_robotics)
+ds = minari.load_dataset('D4RL/door/human-v2')
+ep = next(iter(ds.iterate_episodes()))
+
+env = gym.make('AdroitHandDoor-v1', reward_type='dense', max_episode_steps=300)
+obs, _ = env.reset(seed=0)
+drift = []
+reward_diffs = []
+for t in range(300):
+    obs_t, r_t, _, _, _ = env.step(ep.actions[t])
+    drift.append(float(np.abs(obs_t - ep.observations[t+1]).max()))
+    reward_diffs.append(r_t - float(ep.rewards[t]))
+print(f'max obs drift: {max(drift):.4f}')
+print(f'final cumulative obs drift over 300 steps: monotonic? {drift[-1] > drift[0]}')
+print(f'per-step reward diff: mean={np.mean(reward_diffs):.4f} std={np.std(reward_diffs):.4f}')
+print(f'cumulative reward diff (env - dataset): {sum(reward_diffs):+.1f}')
+```
+
+If `max obs drift` is tiny (< 0.01) → state trajectories track, the 600-point gap IS the reward formula difference. If drift grows large → mixed confound, can't pin down.
+
+Either way, **document the result** somewhere (this handoff or a fresh `door_env_audit.md`).
+
+### 3. Continue Q3CIBC exploration: doorD
+
+Promising directions identified from doorC results:
+- **cp=300/top_k=80 multi-seed** (penD #27 hit +51 single-seed)
+- **cp=400 / cp=500** (extend capacity sweep further)
+- **cp=100 + 16/32 Langevin negs multi-seed** (#33 hit +44 single-seed)
+- **75k or 200k training steps revisit** (both hurt single-seed but multi-seed may differ)
+- **Larger Q (1024×8) retry** with `--time=35:00:00` (timed out before)
+
+Suggested doorD layout (20 trials):
+- 5 trials: cp=300 multi-seed (seeds 0-4) — validate single-seed winner
+- 3 trials: cp=400, cp=500, cp=600 — push capacity further
+- 4 trials: cp=100 + 16 Langevin negs multi-seed (seeds 0-3)
+- 4 trials: cp=100 + 32 Langevin negs multi-seed (seeds 0-3) — re-attempt timed-out config with extra wall
+- 4 trials: best capacity-validated config + GP=2/5/10 sweep
+
+Always `inference_langevin_iterations=0`. Mirror `batches/doorC.txt` JSON structure exactly — just change relevant param keys.
+
+### 4. Once everything's in: build the comparison table
+
+After doorAibc and doorD complete, you'll have:
+
+| metric | Q3C-best (door) | IBC paper-recipe (door) |
 |---|---|---|
-| Raw reward | 2522 ± 130 cross_std (10 seeds) | 2586 ± 65 (3 seeds) |
-| D4RL normalized | 82.7 | 83.5 |
-| Inference (RTX 3060) | 2.13 ms/env-step | 276.8 ms/env-step (130× slower) |
-| Recipe | cp=100, top_k=30, **inf_lit=0** | 100 Langevin iters × 512 samples |
+| n_seeds | TBD | 3 |
+| avg_reward (on OUR env reward formula) | TBD | TBD |
+| cross_seed_std | TBD | TBD |
+| success_rate | TBD | TBD |
+| inference time (ms/env-step) | TBD | TBD |
 
-For door, paper EBM hit 361 ± 67 (normalized 14.2). Q3C target: match that (within statistical noise of the env's noise floor) with pure CP-argmax inference.
+Run the inference-timing bench equivalent to `bench_inference_pen.py` but for door (you'll have to write `bench_inference_door.py`; the pen one is the template — just change `OBS_DIM=39`, `ACTION_DIM=28`, dataset path, etc).
 
----
-
-## Common failure modes we hit
-
-1. **Spectral-norm checkpoint reload bug** — the `weight` keys get renamed to `weight_orig` under `torch.nn.utils.spectral_norm`. Naive `endswith(".weight")` filter sees zero matches → hidden_dims=[]. Fixed by inferring layer indices from `.bias` keys (unchanged under SN), and detecting SN via `weight_orig OR parametrizations.weight` keys. See `hyperparam_search_dfo.py:evaluate_checkpoint` (this fix already in place — door reuse should inherit it).
-
-2. **Training duplicate trial-id silent grouping** — `--analyze` groups by params dict minus `trial_seed`. If 2 trials have identical params except seed, they get grouped — good. But if a hyperparam changes mid-batch (e.g., we changed protocol mid-experiment), trials look identical but aren't comparable. Use `--min-trial-id N` to scope to a recent batch.
-
-3. **Reward-formula mismatch confused us early** — initially thought our pipeline was broken because our raw rewards (~2500) didn't match paper's exact 2586. They differ because env reward formulas differ. **Use D4RL normalized score** as the primary metric for door results. Footnote env port as the reason.
-
-4. **Aggressive inference refinement is catastrophic** — every penA-E batch with `inference_langevin_iterations > 0` at paper hypers (lr=0.5, delta_clip=0.5, noise=0.5, 100 iters) gave R=60-200. Gentle hypers (lr=0.01, delta_clip=0.01, noise=0.1, 25 iters) work but don't beat pure CP-argmax.
-
-   **For door, skip all `inf_lit>0` experiments unless explicitly debugging.**
-
-5. **Single-seed wins don't multi-seed** — we found 3 single-seed configurations beating B4 base on pen (#70 = 2704, #59 = 2686, #43 = 2793). Multi-seed validation dropped all of them below B4 base. **Always multi-seed validate any single-seed winner before claiming.**
+Update `README.md` with a door section under `### D4RL` (the pen section is the template; mirror its structure). Footnote the env-port confound openly — don't try to compare to paper's +361.
 
 ---
 
-## Compute budget
+## Tripwires you might step on
 
-- Per trial: ~12h SLURM at 100k steps + 100-episode eval (RTX 3060 or similar GPU).
-- `submit_experiments.sh batches/doorA.txt doorA` creates 8 SLURM jobs from the batch file.
-- 25h wall per job. All 8 trials fit comfortably.
-
-After doorA: triseed the winner (likely the inf_lit=0 variant) in doorB to get 3-seed mean for paper-comparable SEM/cross_std.
-
----
-
-## Critical lesson: the headline isn't "match paper" — it's "match paper at 130× cheaper inference"
-
-The interesting Q3CIBC story is the **inference compute reduction**, not raw reward parity (which is within statistical noise of paper's number on pen, and likely similar on door). Lead the write-up and READMEs with the speedup. Reward is the control variable.
-
-Already documented this framing in README.md's `### D4RL` section for pen. Door should follow the same pattern. After doorA + doorB completes, update README with door table mirroring the pen one.
+1. **`max_episode_steps` is at env config level, not training params.** If you want to test horizon=300, edit `config_json/config.json`'s `environments.door.max_episode_steps` directly — `--fixed-params` won't override it.
+2. **Single trials use `--reduced-steps N` for smoke tests.** Don't accidentally submit a 500-step trial to SLURM. Test wiring with `--reduced-steps 500` locally first.
+3. **Aggregator filter strictness matters.** The cross-seed aggregator groups trials with identical params dict (sans `trial_seed`). Tiny param differences (e.g. `entropy_bandwidth=0.05` vs `0.2`) create separate groups. If you change a param mid-batch the aggregation will miss seed pairings.
+4. **Spectral-norm checkpoint reload bug** was fixed in `hyperparam_search_dfo.py`. The fix infers layer indices from `.bias` keys (unchanged under SN) and detects SN via `weight_orig` OR `parametrizations.weight`. If you see a `Missing key(s): network.0.weight, Unexpected key(s): network.0.weight_orig` error, check that the fix is still in place.
+5. **Penalty if you forget `inf_lit=0`** — you'll waste 10+ hours of GPU time per trial on the dead Langevin inference path.
 
 ---
 
-## Final checklist for the receiving agent
+## Reference: pen-human numbers (for sanity-checking proportions)
 
-- [ ] Read this entire doc + skim `README.md` D4RL section + skim `batches/penA.txt`
-- [ ] Verify `D4RL/door/human-v2` is loadable via minari (run the smoke command above)
-- [ ] Verify `AdroitHandDoor-v1` env in gymnasium-robotics (run the smoke command above)
-- [ ] Add door to config.json (mirror pen entry, set action_dim=28 obs_dim=39 max_steps=100)
-- [ ] Add door observation_bounds.json stub (39-D, conservative ranges)
-- [ ] Copy pen_human_v2_simulation.py → door_human_v2_simulation.py + sed pen → door + verify env_id
-- [ ] Patch hyperparam_search.py at the 4 sites (env dispatch, sim_kwargs, metrics, _ENV_PATH_MAP)
-- [ ] Patch combinedv2_cpascounter_training.py at the 3 sites (load_dataset, obs normalizer branch, norm_stats save)
-- [ ] Run reduced-steps smoke test (`--reduced-steps 500`) to verify wiring
-- [ ] Write batches/doorA.txt (8 trials, mirror penA pattern, seed=0 only)
-- [ ] Submit and wait for results
-- [ ] After doorA: write doorB (multi-seed validate winner; expect inf_lit=0 to win)
-- [ ] Update README with door D4RL table once doorB completes
+| metric | Pen Q3C B4 (10 seeds) | Pen IBC paper-recipe in our env (3 seeds) | Pen paper IBC EBM (paper env, 3 seeds) |
+|---|---|---|---|
+| avg_reward | 2522 | 403 | 2586 |
+| cross_seed_std | 126 | 123 | 65 |
+| SEM | 40 | 71 | (likely SEM-mislabeled in paper) |
+| success_rate | ~67% | ~15% | (not reported) |
+| inference time | 2.13 ms | 276.8 ms | — |
+| reward gap to paper | -64 (within noise) | -2183 (broken IBC port) | — |
 
-You're set up to land Q3CIBC on door-human within ~2-3 batches if the pen pattern transfers directly. Good luck.
+Pen Q3C is the publishable headline. Pen IBC reproduction in our env is broken (403 vs paper 2586). Door is harder than pen and the env confound is worse — expect proportionally weaker Q3C numbers and don't conflate "lower raw reward" with "worse algorithm."
+
+---
+
+## What's already updated in the codebase (DO NOT redo)
+
+- `config_json/config.json` has `door` block fully populated.
+- `combinedv2_cpascounter_training.py` routes door through `D4RLDataset` + standardize obs + per-dim action norm + `norm_stats.pt` save.
+- `hyperparam_search.py` dispatches door at sim selection, sim_kwargs, metrics return, and `_ENV_PATH_MAP` (results land at `d4rl/door/`).
+- `hyperparam_search_dfo.py` dispatches door at all sites: `_RESULTS_SLUG["door"] = "ibc_dfo_door"`, `_DEFAULT_NUM_EVAL_SEEDS["door"] = 100`, train branch, eval branch, env factory, success tracking, metrics return, analyze sort.
+- `simulations/door_human_v2_simulation.py` exists.
+
+**Door is wired end-to-end.** You shouldn't need to add any env support — just write batches and analyze.
+
+---
+
+## Quick decision tree
+
+- "What should I submit first?" → `batches/doorAibc.txt` (gets the IBC baseline).
+- "What's Q3C's best result on door?" → cp=300/top_k=80 hit +51.1 single-seed (#27 in trials.jsonl). Multi-seed unvalidated.
+- "Should I run pure CP-argmax or refinement?" → Always CP-argmax (`inference_langevin_iterations=0`, `inference_dfo_iterations=0`). Refinement paths confirmed dead on Q3C across pen and door.
+- "Why is my reward so far below paper's 361?" → Different env reward formula. Compare to doorAibc results (Q3C vs IBC in same env), NOT to paper's 361.
+- "Should I switch to a different env?" → No. Run option A first (IBC in our env).
+
+Good luck.

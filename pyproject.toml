@@ -26,16 +26,16 @@ pushing = [
     "pybullet==3.1.6",
 ]
 
-# LIBERO-Goal env deps. Kept OUT of the main list (heavy: robosuite + mujoco +
-# bddl, pulled transitively by the LIBERO package's own setup). The embedding
-# encoder (sentence-transformers, default) and h5py are NOT LIBERO deps so we
-# list them here explicitly. Install with `uv sync --extra libero`.
-# NOTE: LIBERO targets python <=3.10 upstream; on the project's 3.12 you may hit
-# robosuite/mujoco build friction. If the git resolve fails, pin LIBERO to a
-# known commit (append `@<sha>`), or install LIBERO into the venv manually and
-# drop the first line here.
+# LIBERO-Goal env deps. The embedding encoder (sentence-transformers, default)
+# and h5py are listed here. LIBERO itself is NOT here: its setup.py produces a
+# broken non-editable wheel (ships only dist-info, empty top_level.txt → the
+# `libero` package isn't importable). Install it EDITABLE from a clone instead:
+#     git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
+#     uv pip install --no-deps -e ../LIBERO
+#     uv pip install robosuite bddl easydict thop  # LIBERO's runtime deps
+# (LIBERO targets python <=3.10 upstream; on this project's 3.12 you may hit
+# robosuite/mujoco friction — pin robosuite>=1.4,<1.5 if it mis-resolves.)
 libero = [
-    "libero @ git+https://github.com/Lifelong-Robot-Learning/LIBERO.git",
     "h5py>=3.10",
     "sentence-transformers>=2.2",
     "transformers>=4.30",
