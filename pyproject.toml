@@ -26,16 +26,22 @@ pushing = [
     "pybullet==3.1.6",
 ]
 
-# LIBERO-Goal env deps. The embedding encoder (sentence-transformers, default)
-# and h5py are listed here. LIBERO itself is NOT here: its setup.py produces a
-# broken non-editable wheel (ships only dist-info, empty top_level.txt → the
-# `libero` package isn't importable). Install it EDITABLE from a clone instead:
-#     git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
-#     uv pip install --no-deps -e ../LIBERO
-#     uv pip install robosuite bddl easydict thop  # LIBERO's runtime deps
-# (LIBERO targets python <=3.10 upstream; on this project's 3.12 you may hit
-# robosuite/mujoco friction — pin robosuite>=1.4,<1.5 if it mis-resolves.)
+# LIBERO-Goal env deps. LIBERO is referenced as an EDITABLE PATH source (see
+# [tool.uv.sources] below) — its own wheel build is broken (ships only dist-info
+# because upstream is missing `libero/__init__.py`; we `touch` it in the clone).
+# Everything LIBERO needs at runtime is pinned here so `uv sync`/`uv run` keep
+# them in the env (out-of-band `uv pip install` gets PRUNED by uv's auto-sync).
+# robosuite/gym/bddl/easydict pins match what LIBERO 0.1.0 requires.
 libero = [
+    "libero",
+    "robosuite==1.4.0",
+    "bddl==1.0.1",
+    "easydict==1.9",
+    "gym==0.26.2",
+    "numba>=0.59",
+    "opencv-python-headless>=4.8",
+    "termcolor>=2.0",
+    "pynput>=1.7",
     "h5py>=3.10",
     "sentence-transformers>=2.2",
     "transformers>=4.30",
@@ -51,3 +57,11 @@ dev = [
 # than reuse whatever interpreter happens to be on PATH.
 [tool.uv]
 python-preference = "managed"
+
+# LIBERO is installed editable from a sibling clone (NOT from its broken PyPI/git
+# wheel). The clone must have `libero/__init__.py` (missing upstream):
+#     git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
+#     touch ../LIBERO/libero/__init__.py
+# Path is relative to this pyproject; adjust if your clone lives elsewhere.
+[tool.uv.sources]
+libero = { path = "../LIBERO", editable = true }
