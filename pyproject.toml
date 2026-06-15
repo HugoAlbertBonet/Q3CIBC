@@ -41,7 +41,6 @@ libero = [
     "numba>=0.59",
     "opencv-python-headless>=4.8",
     "termcolor>=2.0",
-    "pynput>=1.7",
     "h5py>=3.10",
     "sentence-transformers>=2.2",
     "transformers>=4.30",
@@ -57,6 +56,11 @@ dev = [
 # than reuse whatever interpreter happens to be on PATH.
 [tool.uv]
 python-preference = "managed"
+# robosuite hard-requires `opencv-python` (links libGL → fails to import on
+# headless SLURM nodes). Override it out with an always-false marker so the
+# `cv2` module is provided by `opencv-python-headless` (in the libero extra)
+# instead. Keeps robosuite's `import cv2` working without libGL.
+override-dependencies = ["opencv-python; sys_platform == 'never'"]
 
 # LIBERO is installed editable from an in-repo clone (NOT its broken PyPI/git
 # wheel). Kept INSIDE the project (gitignored) so everything is self-contained
