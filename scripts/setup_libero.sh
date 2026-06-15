@@ -49,9 +49,8 @@ uv run --extra libero python -c "import libero; from libero.libero import benchm
 #    <repo>/.libero so paths stay in-repo and node-mount-agnostic.
 DEMO_DIR="third_party/LIBERO/libero/datasets/libero_goal"
 if ! ls "$DEMO_DIR"/*.hdf5 >/dev/null 2>&1; then
-  echo "[3/4] downloading libero_goal demos ..."
-  printf 'y\ny\n' | uv run --extra libero python \
-    third_party/LIBERO/benchmark_scripts/download_libero_datasets.py --datasets libero_goal
+  echo "[3/4] downloading libero_goal demos (HuggingFace, non-interactive) ..."
+  uv run --extra libero python scripts/download_libero_goal.py
 else
   echo "[3/4] demos already present ($(ls "$DEMO_DIR"/*.hdf5 | wc -l) files)."
 fi
