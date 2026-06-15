@@ -1,11 +1,12 @@
+wandb/
+checkpoints/
+slurm_jobs/
+ghtoken
+datasets/
+datasets.tar.gz
+slurm*
+
 # Project-specific ignores
 papers/
 wandb/
-checkpoints/
-#datasets/
-datasets/
-datasets.tar.gz
-slurm*.out
-slurm*.err
-third_party/
 .libero/
