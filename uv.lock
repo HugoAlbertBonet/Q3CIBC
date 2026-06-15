@@ -952,7 +952,7 @@ wheels = [
 [[package]]
 name = "libero"
 version = "0.1.0"
-source = { editable = "../LIBERO" }
+source = { editable = "third_party/LIBERO" }
 
 [[package]]
 name = "llvmlite"
@@ -1965,7 +1965,7 @@ requires-dist = [
     { name = "gym", marker = "extra == 'pushing'", specifier = "==0.26.2" },
     { name = "gymnasium-robotics", specifier = ">=1.4.2" },
     { name = "h5py", marker = "extra == 'libero'", specifier = ">=3.10" },
-    { name = "libero", marker = "extra == 'libero'", editable = "../LIBERO" },
+    { name = "libero", marker = "extra == 'libero'", editable = "third_party/LIBERO" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "minari", extras = ["all"], specifier = ">=0.5.3" },
     { name = "numba", marker = "extra == 'libero'", specifier = ">=0.59" },

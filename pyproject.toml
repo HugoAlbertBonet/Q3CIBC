@@ -58,10 +58,12 @@ dev = [
 [tool.uv]
 python-preference = "managed"
 
-# LIBERO is installed editable from a sibling clone (NOT from its broken PyPI/git
-# wheel). The clone must have `libero/__init__.py` (missing upstream):
-#     git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
-#     touch ../LIBERO/libero/__init__.py
-# Path is relative to this pyproject; adjust if your clone lives elsewhere.
+# LIBERO is installed editable from an in-repo clone (NOT its broken PyPI/git
+# wheel). Kept INSIDE the project (gitignored) so everything is self-contained
+# and the path resolves the same on every node regardless of the /home vs
+# /home1 home-mount alias. The clone must have `libero/__init__.py` (missing
+# upstream — `touch third_party/LIBERO/libero/__init__.py` after cloning):
+#     git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git third_party/LIBERO
+#     touch third_party/LIBERO/libero/__init__.py
 [tool.uv.sources]
-libero = { path = "../LIBERO", editable = true }
+libero = { path = "third_party/LIBERO", editable = true }

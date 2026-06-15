@@ -38,6 +38,41 @@ from typing import Sequence
 
 import numpy as np
 
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_LIBERO_PKG = os.path.join(_REPO_ROOT, "third_party", "LIBERO", "libero", "libero")
+
+
+def _ensure_libero_config() -> None:
+    """Keep LIBERO self-contained inside the repo and node-mount-agnostic.
+
+    LIBERO stores absolute paths (to demos/bddl/assets) in a config file and,
+    on first import, PROMPTS interactively to create it. We:
+      - point LIBERO_CONFIG_PATH at <repo>/.libero (not ~/.libero), and
+      - (re)write config.yaml every import with paths derived from THIS module's
+        __file__, so they always match the current node's home-mount alias
+        (this cluster exposes home as both /home/<user> and /home1/<user>).
+    Must run before any `import libero`; all our entry points import this module
+    first, so importing utils.libero is enough.
+    """
+    cfg_dir = os.environ.setdefault(
+        "LIBERO_CONFIG_PATH", os.path.join(_REPO_ROOT, ".libero")
+    )
+    os.makedirs(cfg_dir, exist_ok=True)
+    cfg = {
+        "benchmark_root": _LIBERO_PKG,
+        "bddl_files": os.path.join(_LIBERO_PKG, "bddl_files"),
+        "init_states": os.path.join(_LIBERO_PKG, "init_files"),
+        "datasets": os.path.normpath(os.path.join(_LIBERO_PKG, "..", "datasets")),
+        "assets": os.path.join(_LIBERO_PKG, "assets"),
+    }
+    import yaml
+
+    with open(os.path.join(cfg_dir, "config.yaml"), "w") as f:
+        yaml.dump(cfg, f)
+
+
+_ensure_libero_config()
+
 # Benchmark suite name in LIBERO's registry.
 BENCHMARK_NAME = "libero_goal"
 NUM_TASKS = 10
