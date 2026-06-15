@@ -23,8 +23,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
 
 import numpy as np
+
+# Make `utils` importable when run as `python scripts/...` from the repo root.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def main() -> None:
