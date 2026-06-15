@@ -4,3 +4,8 @@ wandb/
 checkpoints/
 #datasets/
 datasets/
+datasets.tar.gz
+slurm*.out
+slurm*.err
+third_party/
+.libero/
