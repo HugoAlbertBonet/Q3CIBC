@@ -81,6 +81,17 @@ ACTION_DIM = 7  # OSC position+orientation delta (6) + gripper (1), all in [-1, 
 # Substrings that mark an obs key as an image / non-low-dim modality.
 _IMAGE_KEY_MARKERS = ("rgb", "image", "depth", "segmentation", "seg")
 
+# LIBERO demo-only keys we DROP from the obs vector because the LIVE robosuite
+# env has no matching key (so they can't be reconstructed identically at eval):
+#   - `ee_ori`    : demos store euler(3); the live env only exposes the EEF
+#                   orientation as a quaternion (robot0_eef_quat, dim 4).
+#   - `ee_states` : demos store [eef_pos, eef_euler] (6) — redundant with
+#                   ee_pos + ee_ori, and again euler-based with no live key.
+# EEF orientation is still implied by the 7 joint positions (joint_states),
+# which DO match the live env. Keeping these would make train/eval obs differ
+# in both dim and meaning. Drop them for a consistent, bridgeable schema.
+_EXCLUDE_LOWDIM_KEYS = ("ee_ori", "ee_states")
+
 # Preferred ordering for known low-dim keys. Keys not in this list are appended
 # afterwards in sorted order, so discovery stays deterministic and stable.
 _PREFERRED_KEY_ORDER = (
@@ -121,7 +132,10 @@ def select_lowdim_obs_keys(available_keys: Sequence[str]) -> list[str]:
     Preferred keys first (in `_PREFERRED_KEY_ORDER`), then any remaining
     low-dim keys in sorted order. Image keys are dropped.
     """
-    low = [k for k in available_keys if is_lowdim_key(k)]
+    low = [
+        k for k in available_keys
+        if is_lowdim_key(k) and k not in _EXCLUDE_LOWDIM_KEYS
+    ]
     preferred = [k for k in _PREFERRED_KEY_ORDER if k in low]
     rest = sorted(k for k in low if k not in preferred)
     return preferred + rest

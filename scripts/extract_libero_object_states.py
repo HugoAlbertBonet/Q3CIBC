@@ -114,9 +114,18 @@ def main() -> None:
             "multi-task vector requires a constant dim. Inspect the tasks above."
         )
     obj_dim = uniq[0]
-    proprio = 21  # ee_pos3+ee_ori3+ee_states6+gripper2+joint7 (discovered earlier)
+    # Report the proprio dim from the ACTUAL selected keys (after exclusions),
+    # so this stays correct if the schema changes.
+    from utils.libero import select_lowdim_obs_keys
+    import h5py as _h5
+
+    with _h5.File(infos[0]["demo_file"], "r") as f:
+        og = f["data"][sorted(f["data"].keys(), key=lambda k: int(k.split("_")[-1]))[0]]["obs"]
+        keys = select_lowdim_obs_keys(list(og.keys()))
+        proprio = sum(int(og[k].shape[1]) for k in keys if k != "object-state")
+        print(f"\nselected low-dim keys: {keys}")
     print(
-        f"\nDONE. New low-dim obs = {proprio} proprio + {obj_dim} object = "
+        f"DONE. New low-dim obs = {proprio} proprio + {obj_dim} object = "
         f"{proprio + obj_dim}.  With MiniLM goal (384): "
         f"state_dim = {proprio + obj_dim + 384}."
     )
