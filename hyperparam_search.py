@@ -35,6 +35,24 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# torch>=2.6 defaults torch.load to weights_only=True, which rejects the numpy
+# arrays inside our norm_stats.pt (obs mean/std, action min/max, and the LIBERO
+# goal-embedding matrix) with:
+#   "Unsupported global: numpy.core.multiarray._reconstruct".
+# We trust our own checkpoints, so allowlist the numpy globals so any load
+# tolerates them regardless of the weights_only flag.
+try:
+    import numpy.core.multiarray as _np_multiarray
+
+    _SAFE = [_np_multiarray._reconstruct, np.ndarray, np.dtype]
+    for _name in ("Float32DType", "Float64DType", "Int64DType", "BoolDType"):
+        _dt = getattr(getattr(np, "dtypes", None), _name, None)
+        if _dt is not None:
+            _SAFE.append(_dt)
+    torch.serialization.add_safe_globals(_SAFE)
+except Exception:
+    pass
+
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 

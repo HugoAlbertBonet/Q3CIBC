@@ -58,18 +58,13 @@ fi
 out_dir="slurm_jobs/${batch_name}"
 mkdir -p "$out_dir"
 
-# Pre-build the shared .venv ONCE here on the submit node. Every SLURM job
-# below runs `uv run` against this same .venv. If the env is missing/stale when
-# the jobs fire, each `uv run` would try to (re)sync it concurrently and they
-# race -- one job removing .venv/bin while another reads it, or numpy half
-# reinstalled mid-import. Symptoms seen on the cluster:
-#   error: failed to remove file `.venv/bin`: No such file or directory
-#   ModuleNotFoundError: No module named 'numpy.random'
-# Syncing once up front, then forcing every job to read-only (UV_NO_SYNC /
-# UV_FROZEN in the job script), removes the race. Concurrent reads are safe.
-echo "Pre-syncing shared .venv (so jobs never sync concurrently)..."
-uv sync --frozen
-echo
+# NOTE: the jobs run read-only against the shared .venv (UV_NO_SYNC / UV_FROZEN
+# in each job script) so concurrent jobs never race on syncing it. That means
+# the .venv must already be built BEFORE submitting, with the extras your batch
+# needs, e.g.:
+#   uv sync --extra libero
+# (No pre-sync is done here on purpose — a bare `uv sync` would prune the extra
+# packages the jobs depend on.)
 
 echo "Batch: ${batch_name}  (${#commands[@]} jobs)"
 echo "Per-job scripts and logs: ${out_dir}/"
