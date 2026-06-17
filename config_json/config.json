@@ -138,7 +138,7 @@
         "libero_goal": {
             "goal_embeddings_path": "datasets/libero/libero_goal_goal_embs.npz",
             "env_id": "LiberoGoal-v0",
-            "state_dim": 405,
+            "state_dim": 461,
             "action_dim": 7,
             "frame_stack": 1,
             "max_demos_per_task": null,

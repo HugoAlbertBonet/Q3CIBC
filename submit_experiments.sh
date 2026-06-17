@@ -58,6 +58,19 @@ fi
 out_dir="slurm_jobs/${batch_name}"
 mkdir -p "$out_dir"
 
+# Pre-build the shared .venv ONCE here on the submit node. Every SLURM job
+# below runs `uv run` against this same .venv. If the env is missing/stale when
+# the jobs fire, each `uv run` would try to (re)sync it concurrently and they
+# race -- one job removing .venv/bin while another reads it, or numpy half
+# reinstalled mid-import. Symptoms seen on the cluster:
+#   error: failed to remove file `.venv/bin`: No such file or directory
+#   ModuleNotFoundError: No module named 'numpy.random'
+# Syncing once up front, then forcing every job to read-only (UV_NO_SYNC /
+# UV_FROZEN in the job script), removes the race. Concurrent reads are safe.
+echo "Pre-syncing shared .venv (so jobs never sync concurrently)..."
+uv sync --frozen
+echo
+
 echo "Batch: ${batch_name}  (${#commands[@]} jobs)"
 echo "Per-job scripts and logs: ${out_dir}/"
 echo
@@ -85,6 +98,14 @@ for cmd in "${commands[@]}"; do
 
 set -euo pipefail
 cd "${PWD}"
+
+# The shared .venv was already built once by the submit script. Force every
+# `uv run` in this job to be READ-ONLY against it -- never sync, never touch
+# the lockfile. This is what prevents concurrent jobs from racing on .venv
+# (the "failed to remove .venv/bin" / "No module named 'numpy.random'" bug).
+export UV_NO_SYNC=1
+export UV_FROZEN=1
+export PYTHONDONTWRITEBYTECODE=1
 
 # Headless mujoco offscreen render (LIBERO eval). Harmless for non-render envs.
 export MUJOCO_GL=\${MUJOCO_GL:-egl}
