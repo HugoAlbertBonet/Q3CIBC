@@ -95,9 +95,9 @@ set -euo pipefail
 cd "${PWD}"
 
 # The shared .venv was already built once by the submit script. Force every
-# `uv run` in this job to be READ-ONLY against it -- never sync, never touch
-# the lockfile. This is what prevents concurrent jobs from racing on .venv
-# (the "failed to remove .venv/bin" / "No module named 'numpy.random'" bug).
+# uv run in this job to be READ-ONLY against it: never sync, never touch the
+# lockfile. This is what prevents concurrent jobs from racing on .venv (the
+# remove-.venv-bin / numpy.random-missing bug).
 export UV_NO_SYNC=1
 export UV_FROZEN=1
 export PYTHONDONTWRITEBYTECODE=1

@@ -66,7 +66,8 @@ class LiberoGoalSimulation(BaseSimulation):
         self.frame_stack = frame_stack
         self.render_mode = render_mode
         self.results = []
-        self._envs: dict[int, object] = {}  # task_idx -> renderless env (cached)
+        self.env = None
+        self._env_task_idx: int | None = None
         self.camera_height = camera_height
         self.camera_width = camera_width
 
@@ -112,29 +113,34 @@ class LiberoGoalSimulation(BaseSimulation):
         return self._init_states[task_idx]
 
     def create_env(self, task_idx: int = 0):
-        """Get a RENDERLESS LIBERO env for *task_idx*, cached per task.
+        """Get a RENDERLESS LIBERO env for *task_idx* (single env, recreated).
 
-        State-based eval only needs `object-state` (computed from object
-        sensors), not pixels — so we run the base ControlEnv with the offscreen
-        renderer and camera obs OFF. This avoids EGL entirely (no MUJOCO_GL
-        needed, no segfault from repeatedly creating/destroying GL contexts).
-        Envs are cached per task and reused across that task's episodes, so we
-        never thrash env construction in the round-robin eval loop.
+        State-based eval only needs `object-state` (from object sensors), not
+        pixels — so the base ControlEnv runs with the offscreen renderer and
+        camera obs OFF. No EGL → no MUJOCO_GL dependency, and recreating it on
+        task change is safe (no GL context to leak/segfault). We hold ONE env at
+        a time (close the previous before opening the next) so eval memory stays
+        bounded — caching all 10 task envs OOM-killed the job.
         """
-        env = self._envs.get(task_idx)
-        if env is not None:
-            return env
+        if self.env is not None and self._env_task_idx == task_idx:
+            return self.env
+        if self.env is not None:
+            try:
+                self.env.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.env = None
         from libero.libero.envs.env_wrapper import ControlEnv
 
         info = self._lazy_task_infos()[task_idx]
-        env = ControlEnv(
+        self.env = ControlEnv(
             bddl_file_name=info["bddl_file"],
             has_renderer=False,
             has_offscreen_renderer=False,
             use_camera_obs=False,
         )
-        self._envs[task_idx] = env
-        return env
+        self._env_task_idx = task_idx
+        return self.env
 
     # ── action selection (appends goal embedding) ────────────────────────
     def _build_state(self, live_obs: dict) -> np.ndarray:
@@ -227,9 +233,10 @@ class LiberoGoalSimulation(BaseSimulation):
         }
 
     def close(self) -> None:
-        for env in self._envs.values():
+        if self.env is not None:
             try:
-                env.close()
+                self.env.close()
             except Exception:  # noqa: BLE001
                 pass
-        self._envs.clear()
+            self.env = None
+            self._env_task_idx = None
