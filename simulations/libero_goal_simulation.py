@@ -240,3 +240,72 @@ class LiberoGoalSimulation(BaseSimulation):
                 pass
             self.env = None
             self._env_task_idx = None
+
+
+class LiberoGoalIBCSimulation(LiberoGoalSimulation):
+    """Original-IBC (pure EBM) eval on LIBERO-Goal.
+
+    Reuses LiberoGoalSimulation's renderless multitask env + goal-conditioned
+    obs vector, but selects actions by Langevin MCMC on the energy network (no
+    control-point generator) — matching the DFO/IBC pipeline in
+    hyperparam_search_dfo.py. This is the state-based IBC ablation analog of the
+    Q3CIBC LiberoGoalSimulation used by liberoGoalA.
+    """
+
+    def __init__(
+        self,
+        energy_net,
+        device: str,
+        max_episode_steps: int,
+        frame_stack: int,
+        norm_stats: dict,
+        langevin_cfg: dict,
+        action_in_model_range: tuple[float, float] = (-1.0, 1.0),
+        uniform_boundary_buffer: float = 0.05,
+        render_mode: str | None = None,
+    ) -> None:
+        super().__init__(
+            control_point_generator=None,
+            q_estimator=energy_net,
+            device=device,
+            max_episode_steps=max_episode_steps,
+            render_mode=render_mode,
+            frame_stack=frame_stack,
+            norm_stats=norm_stats,
+        )
+        self.energy_net = energy_net
+        self.langevin_cfg = langevin_cfg
+        lo, hi = float(action_in_model_range[0]), float(action_in_model_range[1])
+        buf = float(uniform_boundary_buffer)
+        adim = int(np.asarray(self._raw_act_min).shape[0])
+        self._amin = torch.full((adim,), lo - buf, device=device)
+        self._amax = torch.full((adim,), hi + buf, device=device)
+        # Denorm maps the model's action range -> raw env action (base uses
+        # self._act_lo/_act_hi + raw act min/max). Force model range here.
+        self._act_lo, self._act_hi = lo, hi
+
+    def select_action(self, state_vec: np.ndarray) -> np.ndarray:
+        from utils.sampling import sample_langevin
+
+        st = torch.tensor(state_vec, dtype=torch.float32).unsqueeze(0).to(self.device)
+        st_n = self.obs_normalizer.normalize(st)
+        c = self.langevin_cfg
+        samples = sample_langevin(
+            energy_function=self.energy_net,
+            observations=st_n,
+            num_samples=int(c["num_samples"]),
+            action_min=self._amin,
+            action_max=self._amax,
+            num_iterations=int(c["num_iterations"]),
+            lr_init=float(c["lr_init"]),
+            lr_final=float(c["lr_final"]),
+            polynomial_decay_power=float(c.get("polynomial_decay_power", 2.0)),
+            delta_action_clip=float(c.get("delta_action_clip", 0.1)),
+            noise_scale=float(c["noise_scale"]),
+            device=self.device,
+        )
+        with torch.no_grad():
+            se = st_n.unsqueeze(1).expand(-1, samples.shape[1], -1)
+            e = self.energy_net(se, samples).squeeze(-1)
+            best = samples[0, e.argmin(dim=-1)[0]].cpu().numpy()
+        return self._denormalize_action(best)

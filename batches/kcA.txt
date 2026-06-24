@@ -1,0 +1,61 @@
+# Batch kcA - Q3CIBC on Franka kitchen-complete (FrankaKitchen-v1).
+# 10 trials via hyperparam_search.py + combinedv2_cpascounter_training.py
+# --active-env kitchen.  (Q3C, NOT the IBC paper recipe — that lives in a
+# separate kcAibc batch via hyperparam_search_dfo.py.)
+#
+# Why kitchen-complete (vs the door dead-end):
+#   door/hammer/relocate Adroit ports emit a DIFFERENT dense reward than the
+#   legacy-d4rl env the IBC paper measured, so raw-return comparison is invalid
+#   (replaying the dataset's OWN expert actions scored -67 vs paper-scale +525).
+#   kitchen does NOT have this problem: reward is a threshold-based subtask
+#   COUNT (0..4), not a dense physics integral, so it survives the port.
+#   Verified: open-loop replay of dataset expert actions reproduces dataset
+#   reward to <2% AND completes all 4 subtasks. pen-like, not door-like.
+#
+# Headline metric: avg_tasks_completed (0..4), matching IBC Table 2
+#   kitchen-complete EBM = 3.37 / 4.  success_rate = fraction solving ALL 4.
+#   A failed policy floors at 0 tasks / 0 reward (clean signal, no -45 noise).
+#
+# Env facts: obs=59-D (Dict 'observation'), action=9-D in [-1,1],
+#   max_episode_steps=280, 19 demos (~4.2k transitions), num_eval_seeds=100.
+#
+# Recipe: doorC-proven Q3C base (cp cloud + argmax, paper-faithful training
+#   Langevin negatives) with inference_langevin_iterations=0 ALWAYS (handoff
+#   rule #1: aggressive inference Langevin is catastrophic on Q3C's narrow Q).
+#
+# Trials:
+#   kcA1-5 : base cp=100/top_k=30, seeds 0-4 -> baseline mean + cross-seed std.
+#   kcA6-9 : capacity sweep cp in {200,300,400,50} @ seed 0.
+#   kcA10  : base + num_langevin_negatives=16 (broader training-time Q coverage).
+#
+# Compute: ~12h per trial, 10 SLURM jobs, 30h wall (set in submit_experiments.sh).
+
+# -- kcA1: base cp=100/top_k=30 @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA2: base cp=100/top_k=30 @ seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA3: base cp=100/top_k=30 @ seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":2,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA4: base cp=100/top_k=30 @ seed=3
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":3,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA5: base cp=100/top_k=30 @ seed=4
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":4,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA6: cp=200/top_k=50 @ seed=0 (capacity)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":200,"top_k_control_points":50,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA7: cp=300/top_k=80 @ seed=0 (doorC best capacity)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":300,"top_k_control_points":80,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA8: cp=400/top_k=100 @ seed=0 (push capacity further)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":400,"top_k_control_points":100,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA9: cp=50/top_k=20 @ seed=0 (lower capacity check)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- kcA10: base cp=100/top_k=30 + num_langevin_negatives=16 @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'

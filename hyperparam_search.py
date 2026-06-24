@@ -485,6 +485,7 @@ def _results_dir(script_name: str, active_env: str | None = None) -> Path:
     _ENV_PATH_MAP: dict[str, str] = {
         "pen": "d4rl/pen",
         "door": "d4rl/door",
+        "kitchen": "d4rl/kitchen",
     }
     env_subpath = _ENV_PATH_MAP.get(active_env, active_env)
     results_dir = RESULTS_BASE_DIR / Path(script_name).stem / env_subpath
@@ -717,6 +718,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env == "door":
         from simulations.door_human_v2_simulation import DoorHumanV2Simulation
         SimulationCls = DoorHumanV2Simulation
+    elif active_env == "kitchen":
+        from simulations.kitchen_simulation import KitchenSimulation
+        SimulationCls = KitchenSimulation
     elif active_env == "libero_goal":
         from simulations.libero_goal_simulation import LiberoGoalSimulation
         SimulationCls = LiberoGoalSimulation
@@ -1214,8 +1218,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         sim_kwargs["goal_dist_tolerance"] = float(
             env_config.get("goal_dist_tolerance", 0.02)
         )
-    elif active_env in ("pen", "door"):
-        # Adroit D4RL envs — no goal_dist_tolerance / n_dim knobs.
+    elif active_env in ("pen", "door", "kitchen"):
+        # Adroit D4RL + FrankaKitchen — no goal_dist_tolerance / n_dim knobs.
         pass
     elif active_env == "libero_goal":
         # Multi-task language-conditioned eval — obs schema + goal embeddings
@@ -1240,6 +1244,34 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     rewards = [float(r.get("total_reward", 0.0)) for r in all_results]
     ep_lengths = [int(r.get("episode_length", 0)) for r in all_results]
     terminated_flags = [bool(r.get("terminated", False)) for r in all_results]
+
+    if active_env == "kitchen":
+        # FrankaKitchen headline metric = avg_tasks_completed (0..N), matching
+        # IBC Table 2 (kitchen-complete = 3.37/4). success = solved ALL tasks.
+        tasks_done = [int(r.get("tasks_completed", 0)) for r in all_results]
+        return {
+            "success_rate": float(np.mean(successes)),
+            "success_rate_std": float(np.std(successes)),
+            "avg_tasks_completed": float(np.mean(tasks_done)),
+            "std_tasks_completed": float(np.std(tasks_done)),
+            "median_tasks_completed": float(np.median(tasks_done)),
+            "avg_reward": float(np.mean(rewards)),
+            "std_reward": float(np.std(rewards)),
+            "median_reward": float(np.median(rewards)),
+            "avg_episode_length": float(np.mean(ep_lengths)),
+            "num_seeds": len(seeds),
+            "per_seed": [
+                {
+                    "seed": seeds[i],
+                    "success": successes[i],
+                    "tasks_completed": tasks_done[i],
+                    "reward": rewards[i],
+                    "episode_length": ep_lengths[i],
+                    "terminated": terminated_flags[i],
+                }
+                for i in range(len(seeds))
+            ],
+        }
 
     if active_env in ("pen", "door", "libero_goal"):
         # Adroit D4RL human tasks AND LIBERO-Goal report success_rate as the
@@ -1594,8 +1626,10 @@ def run_single_trial(
         rw_str = f"{rw:.3f} ± {sem:.3f} (SEM, n={n_eval}; σ_ep={rw_std:.1f})"
     else:
         rw_str = f"{rw:.3f}"
+    tc = record.get("avg_tasks_completed")
+    tc_str = f", avg_tasks_completed={tc:.3f}" if tc is not None else ""
     print(
-        f"\n  Result (trial #{trial_id}): success_rate={sr:.2%}, avg_reward={rw_str}"
+        f"\n  Result (trial #{trial_id}): success_rate={sr:.2%}{tc_str}, avg_reward={rw_str}"
     )
     return record
 

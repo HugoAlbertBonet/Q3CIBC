@@ -112,7 +112,13 @@ class D4RLDataset(Dataset):
         episode_starts = []
 
         for ep in self.dataset.iterate_episodes():
-            obs = ep.observations[:-1]  # exclude terminal observation
+            # FrankaKitchen episodes carry a Dict observation
+            # {observation, achieved_goal, desired_goal}; the policy trains on
+            # the flat 'observation' vector (goal is fixed for -complete).
+            ep_obs = ep.observations
+            if isinstance(ep_obs, dict):
+                ep_obs = np.asarray(ep_obs["observation"])
+            obs = ep_obs[:-1]  # exclude terminal observation
             acts = ep.actions
             starts = np.zeros(len(obs), dtype=bool)
             starts[0] = True

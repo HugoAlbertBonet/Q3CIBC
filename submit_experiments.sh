@@ -94,10 +94,12 @@ for cmd in "${commands[@]}"; do
 set -euo pipefail
 cd "${PWD}"
 
-# The shared .venv was already built once by the submit script. Force every
-# uv run in this job to be READ-ONLY against it: never sync, never touch the
-# lockfile. This is what prevents concurrent jobs from racing on .venv (the
-# remove-.venv-bin / numpy.random-missing bug).
+# The shared .venv is built ONCE manually before submitting (see the NOTE near
+# the top of this script). Force every uv run in this job to be READ-ONLY
+# against it: never sync, never touch the lockfile. This both prevents
+# concurrent jobs from racing on .venv (the remove-.venv-bin /
+# numpy.random-missing bug) AND stops any job from pruning the `libero` extra
+# that liberoGoal runs depend on.
 export UV_NO_SYNC=1
 export UV_FROZEN=1
 export PYTHONDONTWRITEBYTECODE=1

@@ -55,7 +55,14 @@ _RESULTS_SLUG = {
     "particle": "ibc_dfo_particle",
     "pen": "ibc_dfo_pen",
     "door": "ibc_dfo_door",
+    "kitchen": "ibc_dfo_kitchen",
+    "libero_goal": "ibc_dfo_libero_goal",
 }
+
+# Envs that share the D4RL standardize-obs / [-1,1]-action / reward-eval path.
+# kitchen rides the same pipeline as pen/door (D4RLDataset, standardize obs,
+# per-dim [-1,1] actions) but reports an extra tasks-completed (0..N) metric.
+_D4RL_REWARD_ENVS = ("pen", "door", "kitchen")
 
 BASELINE_HPARAMS: dict = {
     # Training
@@ -91,7 +98,7 @@ BASELINE_HPARAMS: dict = {
 }
 
 # Particle uses 50 eval seeds (legacy); pen uses 100 (matches IBC Table 2).
-_DEFAULT_NUM_EVAL_SEEDS = {"particle": 50, "pen": 100, "door": 100}
+_DEFAULT_NUM_EVAL_SEEDS = {"particle": 50, "pen": 100, "door": 100, "kitchen": 100, "libero_goal": 50}
 NUM_EVAL_SEEDS = 50  # kept for particle backcompat (used when active_env="particle")
 
 
@@ -277,7 +284,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             env_id=env_cfg["env_id"], device=device,
             frame_stack=frame_stack, particle_n_dim=n_dim,
         )
-    elif active_env in ("pen", "door"):
+    elif active_env in _D4RL_REWARD_ENVS:
         from utils.datasets import D4RLDataset
         dataset = D4RLDataset(
             env_cfg["dataset_name"],
@@ -305,6 +312,41 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         obs_normalizer = ObservationNormalizer(
             env_id=env_cfg["env_id"], device=device,
             frame_stack=frame_stack,
+            obs_mean=dataset.obs_mean,
+            obs_std=dataset.obs_std,
+        )
+    elif active_env == "libero_goal":
+        from utils.datasets import LiberoGoalDataset
+        dataset = LiberoGoalDataset(
+            goal_embeddings_path=env_cfg["goal_embeddings_path"],
+            frame_stack=frame_stack,
+            max_demos_per_task=env_cfg.get("max_demos_per_task"),
+        )
+        # LiberoGoalDataset already min-max normalizes actions to [-1, 1] and
+        # bakes the goal embedding into the FULL state vector; standardize over
+        # that full vector with frame_stack=1 (no tiling), mirroring the Q3C
+        # libero_goal training path.
+        action_in_model_range = (-1.0, 1.0)
+        per_batch_action_norm = False
+        norm_stats = {
+            "obs_mean": dataset.obs_mean.astype(np.float32),
+            "obs_std": dataset.obs_std.astype(np.float32),
+            "act_min": dataset.act_min.astype(np.float32),
+            "act_max": dataset.act_max.astype(np.float32),
+            "action_norm_range": (-1.0, 1.0),
+            "frame_stack": frame_stack,
+            "env_id": env_cfg["env_id"],
+            # LIBERO schema so eval rebuilds an identical state vector.
+            "libero_obs_keys": dataset.libero_obs_keys,
+            "libero_obs_dims": dataset.libero_obs_dims,
+            "goal_embeddings": dataset.goal_embeddings,
+            "goal_task_names": dataset.goal_task_names,
+            "goal_emb_dim": dataset.goal_emb_dim,
+            "state_shape": dataset.state_shape,
+        }
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_cfg["env_id"], device=device,
+            frame_stack=1,
             obs_mean=dataset.obs_mean,
             obs_std=dataset.obs_std,
         )
@@ -519,7 +561,7 @@ def evaluate_checkpoint(
             env_id=env_cfg["env_id"], device=device,
             frame_stack=frame_stack, particle_n_dim=n_dim,
         )
-    elif active_env in ("pen", "door"):
+    elif active_env in _D4RL_REWARD_ENVS:
         state_dim = int(env_cfg["state_dim"])
         max_steps = int(env_cfg.get("max_episode_steps", 100))
         if norm_stats is None or "obs_mean" not in norm_stats:
@@ -539,6 +581,51 @@ def evaluate_checkpoint(
             obs_mean=np.asarray(norm_stats["obs_mean"], dtype=np.float32),
             obs_std=np.asarray(norm_stats["obs_std"], dtype=np.float32),
         )
+    elif active_env == "libero_goal":
+        # IBC state-based eval on LIBERO-Goal: rebuild the energy net from the
+        # full goal-conditioned state vector, then run the renderless multitask
+        # eval with Langevin action selection (LiberoGoalIBCSimulation). Returns
+        # early — the inline gym loop below is for particle/pen/door only.
+        if norm_stats is None or "state_shape" not in norm_stats:
+            raise RuntimeError(
+                "libero_goal DFO eval requires norm_stats with the libero schema "
+                "(state_shape, libero_obs_keys, goal_embeddings). Retrain."
+            )
+        max_steps = int(env_cfg.get("max_episode_steps", 300))
+        model = QEstimator(
+            state_dim=int(norm_stats["state_shape"]), action_dim=action_dim,
+            hidden_dims=hidden, use_spectral_norm=use_sn,
+        )
+        model.load_state_dict(sd)
+        model.to(device).eval()
+        if num_seeds is None:
+            num_seeds = int(env_cfg.get("num_eval_seeds", _DEFAULT_NUM_EVAL_SEEDS.get(active_env, 50)))
+        from simulations.libero_goal_simulation import LiberoGoalIBCSimulation
+
+        sim = LiberoGoalIBCSimulation(
+            energy_net=model, device=device, max_episode_steps=max_steps,
+            frame_stack=frame_stack, norm_stats=norm_stats, langevin_cfg=langevin_cfg,
+            action_in_model_range=action_in_model_range, uniform_boundary_buffer=0.05,
+        )
+        t0 = time.time()
+        succ, rews, eplens, terms = [], [], [], []
+        for seed in range(num_seeds):
+            r = sim.run_episode(seed=seed)
+            succ.append(bool(r["success"]))
+            rews.append(float(r["total_reward"]))
+            eplens.append(int(r["episode_length"]))
+            terms.append(bool(r["terminated"]))
+        sim.close()
+        return {
+            "success_rate": float(np.mean(succ)),
+            "success_rate_std": float(np.std(succ)),
+            "avg_reward": float(np.mean(rews)),
+            "std_reward": float(np.std(rews)),
+            "median_reward": float(np.median(rews)),
+            "avg_episode_length": float(np.mean(eplens)),
+            "num_seeds": int(num_seeds),
+            "eval_time_s": time.time() - t0,
+        }
     else:
         raise ValueError(f"Unsupported active_env for DFO eval: {active_env}")
 
@@ -564,14 +651,22 @@ def evaluate_checkpoint(
             (norm_stats["act_max"] - norm_stats["act_min"]) == 0, 1.0,
             norm_stats["act_max"] - norm_stats["act_min"],
         )
-        if active_env in ("pen", "door"):
+        if active_env in _D4RL_REWARD_ENVS:
             scale = rng / (hi - lo)
             return norm_stats["act_min"] + (a - lo) * scale
         return a * rng + norm_stats["act_min"]
 
+    # FrankaKitchen-v1 returns a Dict observation; the policy consumes only the
+    # proprio/world 'observation' vector (desired_goal is fixed for -complete).
+    def _obs_vec(o):
+        if isinstance(o, dict):
+            return np.asarray(o["observation"], dtype=np.float32)
+        return np.asarray(o, dtype=np.float32)
+
     seeds = list(range(num_seeds))
     successes: list[bool] = []
     rewards: list[float] = []
+    tasks_completed: list[int] = []   # kitchen: subtasks done (0..N), paper metric
     dists_first: list[float] = []
     dists_second: list[float] = []
     ep_lengths: list[int] = []
@@ -582,6 +677,13 @@ def evaluate_checkpoint(
         if active_env == "particle":
             from simulations.particle_env import ParticleEnv
             return ParticleEnv(n_dim=n_dim, n_steps=max_steps, render_mode=None)
+        if active_env == "kitchen":
+            # Recover the exact FrankaKitchen-v1 the dataset was recorded with
+            # (correct tasks_to_complete + obs layout). Avoids reward_type kwarg
+            # mismatch and guarantees the eval task set matches the demos.
+            import minari
+            ds = minari.load_dataset(env_cfg["dataset_name"], download=True)
+            return ds.recover_environment(eval_env=True)
         # pen, door (both AdroitHand-* via gymnasium-robotics)
         import gymnasium as gym
         import gymnasium_robotics
@@ -595,6 +697,7 @@ def evaluate_checkpoint(
     for seed in seeds:
         env = _make_env()
         obs, _ = env.reset(seed=seed)
+        obs = _obs_vec(obs)
         frame_buf = deque(maxlen=frame_stack)
         for _ in range(frame_stack):
             frame_buf.append(obs.copy())
@@ -605,6 +708,7 @@ def evaluate_checkpoint(
         truncated = False
         info: dict = {}
         any_step_success = False
+        ep_tasks_done = 0
         while not (terminated or truncated):
             stacked = np.concatenate(list(frame_buf)) if frame_stack > 1 else frame_buf[-1]
             st = torch.from_numpy(stacked).float().unsqueeze(0).to(device)
@@ -629,6 +733,7 @@ def evaluate_checkpoint(
             action = np.clip(denorm(best_a), action_bounds[0], action_bounds[1])
 
             obs, reward, terminated, truncated, info = env.step(action)
+            obs = _obs_vec(obs)
             frame_buf.append(obs.copy())
             total_reward += float(reward)
             ep_len += 1
@@ -636,8 +741,17 @@ def evaluate_checkpoint(
             # pose tolerance holds — track sticky any-step success.
             if active_env in ("pen", "door") and bool(info.get("success", info.get("is_success", False))):
                 any_step_success = True
+            # FrankaKitchen: count of target subtasks completed so far (0..N).
+            # episode_task_completions accumulates over the episode.
+            if active_env == "kitchen":
+                ep_tasks_done = len(info.get("episode_task_completions", []))
 
-        if active_env in ("pen", "door"):
+        if active_env == "kitchen":
+            # Total targets = completed + still-remaining at episode end.
+            n_targets = ep_tasks_done + len(info.get("tasks_to_complete", []))
+            tasks_completed.append(ep_tasks_done)
+            successes.append(n_targets > 0 and ep_tasks_done >= n_targets)
+        elif active_env in ("pen", "door"):
             successes.append(any_step_success)
         else:
             successes.append(bool(info.get("success", False)))
@@ -652,6 +766,34 @@ def evaluate_checkpoint(
 
     # Env-branched metrics: pen/door have no first/second-goal distance;
     # particle records them. All record reward stats.
+    if active_env == "kitchen":
+        # Headline metric is avg_tasks_completed (0..N), matching IBC Table 2
+        # (kitchen-complete = 3.37/4). success_rate = fraction solving ALL tasks.
+        return {
+            "success_rate": float(np.mean(successes)),
+            "success_rate_std": float(np.std(successes)),
+            "avg_tasks_completed": float(np.mean(tasks_completed)),
+            "std_tasks_completed": float(np.std(tasks_completed)),
+            "median_tasks_completed": float(np.median(tasks_completed)),
+            "avg_reward": float(np.mean(rewards)),
+            "std_reward": float(np.std(rewards)),
+            "median_reward": float(np.median(rewards)),
+            "avg_episode_length": float(np.mean(ep_lengths)),
+            "num_seeds": len(seeds),
+            "eval_time_s": eval_time,
+            "per_seed": [
+                {
+                    "seed": seeds[i],
+                    "success": successes[i],
+                    "tasks_completed": tasks_completed[i],
+                    "reward": rewards[i],
+                    "episode_length": ep_lengths[i],
+                    "terminated": terminated_flags[i],
+                }
+                for i in range(len(seeds))
+            ],
+        }
+
     if active_env in ("pen", "door"):
         return {
             "success_rate": float(np.mean(successes)),
@@ -809,7 +951,18 @@ def run_trial(
             eval_results = evaluate_checkpoint(
                 train_meta["checkpoint_path"], inference_cfg, num_eval, active_env=active_env,
             )
-            if active_env in ("pen", "door"):
+            if active_env == "kitchen":
+                import math
+                ne = int(eval_results.get("num_seeds") or 1)
+                sem = float(eval_results["std_tasks_completed"]) / math.sqrt(ne) if ne > 0 else 0.0
+                print(
+                    f"\n  Result: avg_tasks_completed={eval_results['avg_tasks_completed']:.3f}/N "
+                    f"± {sem:.3f} (SEM, n={ne}) "
+                    f"(median={eval_results['median_tasks_completed']:.1f}), "
+                    f"all-tasks success_rate={eval_results['success_rate']*100:.2f}%, "
+                    f"eval_time={eval_results['eval_time_s']:.1f}s"
+                )
+            elif active_env in ("pen", "door", "libero_goal"):
                 import math
                 ne = int(eval_results.get("num_seeds") or 1)
                 sem = float(eval_results["std_reward"]) / math.sqrt(ne) if ne > 0 else 0.0
@@ -845,6 +998,10 @@ def run_trial(
         "avg_reward": eval_results.get("avg_reward", 0.0),
         "std_reward": eval_results.get("std_reward"),
         "median_reward": eval_results.get("median_reward"),
+        # kitchen headline metric (None for other envs)
+        "avg_tasks_completed": eval_results.get("avg_tasks_completed"),
+        "std_tasks_completed": eval_results.get("std_tasks_completed"),
+        "median_tasks_completed": eval_results.get("median_tasks_completed"),
         "num_seeds": eval_results.get("num_seeds"),
         "avg_min_dist_first_goal": eval_results.get("avg_min_dist_first_goal"),
         "avg_min_dist_second_goal": eval_results.get("avg_min_dist_second_goal"),
@@ -894,11 +1051,14 @@ def analyze(active_env: str = "particle", min_trial_id: int = 0):
     if min_trial_id > 0:
         trials = [t for t in trials if int(t.get("trial_id", 0)) >= min_trial_id]
 
-    # Sort by reward for pen/door (paper-aligned objective), success_rate elsewhere.
-    sort_key = (
-        (lambda t: -t.get("avg_reward", -1e9)) if active_env in ("pen", "door")
-        else (lambda t: -t.get("success_rate", 0))
-    )
+    # Sort by the paper-aligned objective: tasks-completed (kitchen), reward
+    # (pen/door), else success_rate.
+    if active_env == "kitchen":
+        sort_key = lambda t: -(t.get("avg_tasks_completed") or -1e9)
+    elif active_env in ("pen", "door"):
+        sort_key = lambda t: -t.get("avg_reward", -1e9)
+    else:
+        sort_key = lambda t: -t.get("success_rate", 0)
     trials.sort(key=sort_key)
 
     print(f"\n{'=' * 140}")
@@ -933,7 +1093,9 @@ def analyze(active_env: str = "particle", min_trial_id: int = 0):
 
     valid = [t for t in trials if not t.get("training_failed")]
     if valid:
-        if active_env in ("pen", "door"):
+        if active_env == "kitchen":
+            best = max(valid, key=lambda t: (t.get("avg_tasks_completed") or float("-inf")))
+        elif active_env in ("pen", "door"):
             best = max(valid, key=lambda t: t.get("avg_reward", float("-inf")))
         else:
             best = max(valid, key=lambda t: t.get("success_rate", 0))
@@ -943,8 +1105,10 @@ def analyze(active_env: str = "particle", min_trial_id: int = 0):
             if rw_std is not None
             else f"{best.get('avg_reward', 0):.1f}"
         )
+        tc = best.get("avg_tasks_completed")
+        tc_str = f"  avg_tasks_completed={tc:.3f}" if tc is not None else ""
         print(f"\nBest trial: #{best.get('trial_id')}  "
-              f"success_rate={best.get('success_rate', 0):.2%}  "
+              f"success_rate={best.get('success_rate', 0):.2%}{tc_str}  "
               f"avg_reward={rw_str}")
         print(f"  hparams: {json.dumps(best.get('hparams', {}), indent=2, default=str)}")
 
