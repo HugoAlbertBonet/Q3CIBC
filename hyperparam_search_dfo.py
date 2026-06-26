@@ -38,6 +38,21 @@ from pathlib import Path
 import numpy as np
 import torch
 
+# torch>=2.6 defaults torch.load to weights_only=True, which rejects the numpy
+# arrays in our norm_stats (obs mean/std, action min/max, LIBERO goal-emb matrix)
+# — add_safe_globals is unreliable under numpy 2.x (module-path rename). We trust
+# our own checkpoints, so force every torch.load in this process to
+# weights_only=False. Same fix as hyperparam_search.py (separate process here).
+_ORIG_TORCH_LOAD = torch.load
+
+
+def _trusted_torch_load(*args, **kwargs):
+    kwargs["weights_only"] = False
+    return _ORIG_TORCH_LOAD(*args, **kwargs)
+
+
+torch.load = _trusted_torch_load
+
 ROOT_DIR = Path(__file__).parent
 sys.path.insert(0, str(ROOT_DIR))
 
