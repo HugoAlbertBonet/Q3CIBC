@@ -1169,3 +1169,161 @@ class LiberoGoalDataset(Dataset):
 
     def __len__(self):
         return len(self.observations)
+
+
+class LiberoGoalPixelsDataset(Dataset):
+    """LIBERO-Goal multi-task PIXEL dataset (standard protocol).
+
+    Standard LIBERO obs: per-camera RGB (agentview + eye-in-hand, 128x128x3)
+    channel-stacked, PLUS low-dim proprio (ee_pos + gripper + joint = 12), and a
+    per-task language (goal) embedding. No object-state (privileged) — the policy
+    infers objects from pixels.
+
+    __getitem__ returns:
+        state:  (3*2*frame_stack, H, W) uint8  — [agentview, wrist] channel-stack
+        cond:   (proprio_dim*frame_stack + goal_emb_dim,) float32  — proprio | goal
+        action: (7,) float32 in [-1, 1]
+
+    The conv encoder (utils.models.ConvMaxpoolEncoder) does its own /255 + resize.
+    Actions are min-max normalized to [-1, 1]; act_min/max exposed for eval denorm.
+
+    Images held in RAM as uint8 (≈7 GB for the full suite) — needs a 32 GB node;
+    keep DataLoader num_workers=0.
+    """
+
+    _IMAGE_KEYS = ("agentview_rgb", "eye_in_hand_rgb")
+    # Proprio keys that have an exact live-env match (see utils.libero); NO
+    # ee_ori/ee_states (euler, no live key) and NO object-state (privileged).
+    _PROPRIO_KEYS = ("ee_pos", "gripper_states", "joint_states")
+    _H = 128
+    _W = 128
+
+    def __init__(
+        self,
+        goal_embeddings_path: str,
+        frame_stack: int = 1,
+        max_demos_per_task: Optional[int] = None,
+        max_samples: Optional[int] = None,
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
+    ):
+        try:
+            import h5py  # noqa: F401
+        except ImportError as e:
+            raise ImportError("h5py required for LIBERO demos (uv sync --extra libero).") from e
+        import h5py
+        from utils.libero import get_task_infos, load_goal_embeddings
+
+        self.frame_stack = frame_stack
+        self.normalize_actions = normalize_actions
+        self.action_norm_range = action_norm_range
+
+        emb_names, emb_matrix, _ = load_goal_embeddings(goal_embeddings_path)
+        name_to_emb = {n: emb_matrix[i] for i, n in enumerate(emb_names)}
+        self.goal_emb_dim = int(emb_matrix.shape[1])
+
+        task_infos = get_task_infos()
+        self.goal_task_names = [t["name"] for t in task_infos]
+        self.goal_embeddings = np.stack(
+            [name_to_emb[t["name"]] for t in task_infos]
+        ).astype(np.float32)
+
+        agv: list[np.ndarray] = []   # per-frame (H,W,3) uint8
+        wrist: list[np.ndarray] = []
+        proprio: list[np.ndarray] = []
+        acts: list[np.ndarray] = []
+        starts: list[bool] = []
+        task_ids: list[int] = []
+        self.libero_obs_keys = list(self._PROPRIO_KEYS)
+        total = 0
+
+        for t in task_infos:
+            demo_file = t["demo_file"]
+            if not os.path.exists(demo_file):
+                raise FileNotFoundError(f"Missing LIBERO demo: {demo_file}")
+            with h5py.File(demo_file, "r") as f:
+                data = f["data"]
+                demo_keys = sorted(data.keys(), key=lambda k: int(k.split("_")[-1]))
+                if max_demos_per_task is not None:
+                    demo_keys = demo_keys[:max_demos_per_task]
+                for dk in demo_keys:
+                    obsg = data[dk]["obs"]
+                    a = np.asarray(obsg["agentview_rgb"], dtype=np.uint8)        # (T,H,W,3)
+                    w = np.asarray(obsg["eye_in_hand_rgb"], dtype=np.uint8)
+                    pr = np.concatenate(
+                        [np.asarray(obsg[k], dtype=np.float32).reshape(a.shape[0], -1)
+                         for k in self._PROPRIO_KEYS], axis=1)               # (T,12)
+                    ac = np.asarray(data[dk]["actions"], dtype=np.float32)
+                    n = min(len(a), len(w), len(pr), len(ac))
+                    for i in range(n):
+                        agv.append(a[i]); wrist.append(w[i]); proprio.append(pr[i]); acts.append(ac[i])
+                        starts.append(i == 0); task_ids.append(t["index"])
+                    total += n
+                    if max_samples is not None and total >= max_samples:
+                        break
+            if max_samples is not None and total >= max_samples:
+                break
+
+        self._agv = np.stack(agv)        # (N,H,W,3) uint8
+        self._wrist = np.stack(wrist)
+        self._proprio = np.stack(proprio).astype(np.float32)   # (N,12)
+        raw_actions = np.stack(acts).astype(np.float32)
+        self._episode_starts = np.asarray(starts, dtype=bool)
+        self._task_ids = np.asarray(task_ids, dtype=np.int64)
+        if max_samples is not None:
+            self._agv = self._agv[:max_samples]; self._wrist = self._wrist[:max_samples]
+            self._proprio = self._proprio[:max_samples]; raw_actions = raw_actions[:max_samples]
+            self._episode_starts = self._episode_starts[:max_samples]
+            self._task_ids = self._task_ids[:max_samples]
+
+        self.proprio_dim = int(self._proprio.shape[1])
+        self.act_min = raw_actions.min(axis=0).astype(np.float32)
+        self.act_max = raw_actions.max(axis=0).astype(np.float32)
+        if normalize_actions:
+            lo, hi = float(action_norm_range[0]), float(action_norm_range[1])
+            denom = np.where((self.act_max - self.act_min) == 0, 1.0, self.act_max - self.act_min)
+            self.actions = (lo + (raw_actions - self.act_min) * (hi - lo) / denom).astype(np.float32)
+        else:
+            self.actions = raw_actions
+
+        self._stack_idx = self._build_stack_index_map()
+        self.in_channels = 3 * len(self._IMAGE_KEYS) * frame_stack
+        self.cond_dim = self.proprio_dim * frame_stack + self.goal_emb_dim
+        self.state_shape = (self.in_channels, self._H, self._W)
+        self.action_shape = self.actions.shape[1]
+
+    def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
+        if not self.normalize_actions:
+            return np.asarray(normalized_action, dtype=np.float32)
+        lo, hi = float(self.action_norm_range[0]), float(self.action_norm_range[1])
+        scale = (self.act_max - self.act_min) / (hi - lo)
+        return (self.act_min + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale).astype(np.float32)
+
+    def _build_stack_index_map(self) -> np.ndarray:
+        n = len(self._agv)
+        fs = self.frame_stack
+        episode_id = np.cumsum(self._episode_starts).astype(np.int64) - 1
+        starts_abs = np.where(self._episode_starts)[0]
+        ep_start_for_step = starts_abs[episode_id]
+        stack = np.empty((n, fs), dtype=np.int64)
+        for k in range(fs):
+            offset = fs - 1 - k
+            raw = np.arange(n) - offset
+            stack[:, k] = np.maximum(raw, ep_start_for_step)
+        return stack
+
+    def __getitem__(self, index):
+        idxs = self._stack_idx[index]
+        frames = []
+        for i in idxs:                       # oldest -> newest
+            frames.append(self._agv[int(i)])
+            frames.append(self._wrist[int(i)])
+        stacked = np.concatenate(frames, axis=-1)        # (H,W,3*2*fs)
+        stacked = np.transpose(stacked, (2, 0, 1)).copy()  # (C,H,W) uint8
+        proprio_stack = np.concatenate([self._proprio[int(i)] for i in idxs]).astype(np.float32)
+        goal = self.goal_embeddings[self._task_ids[index]]
+        cond = np.concatenate([proprio_stack, goal]).astype(np.float32)
+        return {"state": stacked, "cond": cond, "action": self.actions[index]}
+
+    def __len__(self):
+        return len(self._agv)

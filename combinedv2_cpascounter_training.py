@@ -264,6 +264,13 @@ def load_dataset():
             frame_stack=frame_stack,
             max_demos_per_task=env_config.get("max_demos_per_task"),
         )
+    elif active_env == "libero_goal_pixels":
+        from utils.datasets import LiberoGoalPixelsDataset
+        return LiberoGoalPixelsDataset(
+            goal_embeddings_path=env_config["goal_embeddings_path"],
+            frame_stack=frame_stack,
+            max_demos_per_task=env_config.get("max_demos_per_task"),
+        )
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
         return DummyDataset(
@@ -342,20 +349,23 @@ def main():
             )
     
     # Create models
-    if active_env == "pushing_pixels":
+    if active_env in ("pushing_pixels", "libero_goal_pixels"):
         # Image-conditioned models with vendored IBC ConvMaxpoolEncoder.
         # dataset.state_shape is (C, H, W); only C and the encoder target
         # resolution are passed to the model (the encoder bilinearly resizes
         # any input to target_h × target_w internally, matching IBC's
         # image_prepro.preprocess).
-        in_channels = dataset.state_shape[0]  # 3 * frame_stack
+        in_channels = dataset.state_shape[0]  # 3 * n_cams * frame_stack
         enc_h = env_config.get("encoder_target_height", 180)
         enc_w = env_config.get("encoder_target_width", 240)
         value_width = env_model.get("value_width", 1024)
         value_num_blocks = env_model.get("value_num_blocks", 1)
+        # libero_goal_pixels conditions the pixel nets on proprio + goal embed
+        # (dataset.cond_dim); pushing_pixels has no conditioning (cond_dim=0).
+        cond_dim = int(getattr(dataset, "cond_dim", 0))
         print(
             f"CP generator: PIXEL kind={cp_network_kind} width={cp_width} "
-            f"depth={cp_depth} in_ch={in_channels} enc={enc_h}x{enc_w}"
+            f"depth={cp_depth} in_ch={in_channels} enc={enc_h}x{enc_w} cond={cond_dim}"
         )
         control_point_generator = PixelControlPointGenerator(
             output_dim=dataset.action_shape,
@@ -369,10 +379,11 @@ def main():
             in_channels=in_channels,
             encoder_target_height=enc_h,
             encoder_target_width=enc_w,
+            cond_dim=cond_dim,
         ).to(device)
         print(
             f"Q estimator:  PIXEL value=DenseResnetValue(w={value_width}, "
-            f"blocks={value_num_blocks}) in_ch={in_channels} enc={enc_h}x{enc_w}"
+            f"blocks={value_num_blocks}) in_ch={in_channels} enc={enc_h}x{enc_w} cond={cond_dim}"
         )
         estimator = PixelQEstimator(
             action_dim=dataset.action_shape,
@@ -381,6 +392,7 @@ def main():
             encoder_target_width=enc_w,
             value_width=value_width,
             value_num_blocks=value_num_blocks,
+            cond_dim=cond_dim,
         ).to(device)
     else:
         print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
@@ -460,12 +472,13 @@ def main():
     # bounds. The pushing stats also feed `norm_stats.pt` so the eval-time
     # PushingSimulation can recreate the exact same normalizer.
     particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
-    if active_env == "pushing_pixels":
+    if active_env in ("pushing_pixels", "libero_goal_pixels"):
         # The ConvMaxpoolEncoder handles its own preprocessing (uint8 → float
-        # → /255 → bilinear resize to 180×240) on every forward, matching
-        # IBC's image_prepro.preprocess. So we skip the standardize/minmax
+        # → /255 → bilinear resize) on every forward, matching IBC's
+        # image_prepro.preprocess. So we skip the standardize/minmax
         # ObservationNormalizer entirely here: setting it to None makes the
-        # batch loop branch and pass states straight through.
+        # batch loop branch and pass states straight through. (libero_goal_pixels
+        # proprio+goal conditioning is fed raw via the model's _cond attribute.)
         obs_normalizer = None
         print("Observation normalizer: NONE (pixel encoder handles preprocessing)")
     elif active_env == "libero_goal":
@@ -529,6 +542,16 @@ def main():
                 states = obs_normalizer.normalize(states)
             actions = batch['action'].float().to(device)
             B = states.shape[0]
+
+            # libero_goal_pixels: feed the per-state conditioning (proprio +
+            # goal embedding) to the pixel nets via their `_cond` attribute, so
+            # every forward in this batch (CP gen, Q est, Langevin negatives,
+            # gradient penalty) sees the same (B, cond_dim) vector without
+            # threading it through each call site.
+            if active_env == "libero_goal_pixels":
+                cond = batch['cond'].float().to(device)
+                control_point_generator._cond = cond
+                estimator._cond = cond
             
             # ==================== Generator Loss (MSE + Separation) ====================
             predicted_actions = control_point_generator(states)
@@ -825,7 +848,7 @@ def main():
     # uses these to recreate the exact same obs-standardize + action-denorm
     # transforms that training used. Mirrors `get_normalizers.py` in
     # google-research/ibc (stats computed from data, frozen, applied at eval).
-    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen", "door", "kitchen", "libero_goal"):
+    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen", "door", "kitchen", "libero_goal", "libero_goal_pixels"):
         norm_stats = {
             "act_min": dataset.act_min,
             "act_max": dataset.act_max,
@@ -833,6 +856,20 @@ def main():
             "frame_stack": frame_stack,
             "env_id": env_id,
         }
+        # libero_goal_pixels: persist the pixel + conditioning schema so the
+        # render-eval sim rebuilds an identical (image, cond) input.
+        if active_env == "libero_goal_pixels":
+            norm_stats["libero_obs_keys"] = dataset.libero_obs_keys      # proprio keys
+            norm_stats["goal_embeddings"] = dataset.goal_embeddings
+            norm_stats["goal_task_names"] = dataset.goal_task_names
+            norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
+            norm_stats["proprio_dim"] = dataset.proprio_dim
+            norm_stats["cond_dim"] = dataset.cond_dim
+            norm_stats["in_channels"] = dataset.in_channels
+            norm_stats["image_hw"] = [dataset._H, dataset._W]
+            norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 128)
+            norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 128)
+            norm_stats["state_shape"] = list(dataset.state_shape)
         # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
         # its own [0,1] scaling + bilinear resize on every forward, matching
         # IBC's image_prepro.preprocess). Only persist these when present.

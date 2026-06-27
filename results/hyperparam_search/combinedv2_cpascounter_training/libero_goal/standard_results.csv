@@ -1,0 +1,13 @@
+# SOTA baselines — LIBERO-Goal under the STANDARD protocol
+# (pixels: agentview + wrist RGB + proprio; language/task embedding; multitask;
+#  success rate = mean over all 10 tasks x rollouts).
+# HAND-EDITED ONLY. No script reads or writes this file. Add rows as you collect
+# numbers; keep a source URL per row. Our Q3CIBC pixel results (Astandardlibero)
+# are protocol-comparable but use an IBC ConvMaxpool encoder, not ResNet/ViT.
+method,obs,task_conditioning,libero_goal_success_rate,source
+Diffusion Policy (scratch),pixel,language,68.3,https://arxiv.org/abs/2406.09246
+OpenVLA,pixel-VLA,language,79.2,https://arxiv.org/abs/2406.09246
+Octo (fine-tuned),pixel,language,84.6,https://arxiv.org/abs/2406.09246
+ProgressVLA,pixel-VLA,language,86.0,https://arxiv.org/pdf/2603.27670
+Dream-VLA,pixel-VLA,language,97.2,https://arxiv.org/pdf/2512.22615
+OpenVLA-OFT,pixel-VLA,language,97.9,https://openvla-oft.github.io/

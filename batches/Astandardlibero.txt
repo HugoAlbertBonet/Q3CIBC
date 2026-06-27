@@ -1,0 +1,51 @@
+# Batch Astandardlibero — Q3CIBC on LIBERO-Goal, STANDARD (pixel) protocol.
+#
+# First pixel batch: agentview + eye-in-hand RGB (128x128, channel-stacked = 6ch)
+# + proprio (ee_pos+gripper+joint = 12) + MiniLM goal embedding (384), fused into
+# the pixel CP/Q nets via their _cond attribute. active_env=libero_goal_pixels,
+# combinedv2_cpascounter_training.py. Multitask over all 10 tasks, render eval
+# grouped-by-task, num_eval_seeds=50, success_rate headline. Comparable (protocol,
+# not encoder) to the published table in
+# results/hyperparam_search/combinedv2_cpascounter_training/libero_goal/standard_results.csv.
+#
+# PREREQUISITES (server): `uv sync --extra libero`, demos downloaded, embeddings
+# cached (datasets/libero/libero_goal_goal_embs.npz). Object-state NOT needed
+# here (pixels). Eval RENDERS -> needs MUJOCO_GL=egl (submit template sets it),
+# GPU compute node, --mem >= 32G (pixel dataset ~7GB uint8 in RAM).
+# Do NOT use --managed-python.
+#
+# NOTES:
+#   - Pure CP-argmax inference (inference_langevin_iterations=0); refinement
+#     wrappers don't thread the goal embedding.
+#   - value_width / value_num_blocks / frame_stack come from the config model
+#     block (not in SEARCH_SPACE, so --fixed-params can't override them).
+#   - Pixel training is ~5-10x the state variant; batch_size 128 (image memory).
+#     Expect long wall per trial.
+#   - UNVERIFIED end-to-end on the server — first pixel run, expect to debug the
+#     live image-key/orientation bridging (see standard_libero.md gotchas).
+#
+# Goals:
+#   A1-A3 CP-cloud density (cp=20/50/100) at the pen/door winner top_k ratios
+#   A4    bigger CP head (512x4)
+#   A5-A7 lr / batch / budget probes
+
+# -- A1: baseline cp=20/top_k=8
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- A2: cp=50/top_k=20
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"control_points":50,"top_k_control_points":20,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- A3: cp=100/top_k=30 (pen+door+state-libero winner pattern)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- A4: cp=100 + bigger CP head (512x4)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- A5: cp=100 + lr 1e-3
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":1e-3,"estimator_learning_rate":1e-3,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- A6: cp=100 + batch_size 256
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":256,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- A7: cp=100 + 150k steps
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'

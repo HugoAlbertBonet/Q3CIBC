@@ -724,6 +724,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env == "libero_goal":
         from simulations.libero_goal_simulation import LiberoGoalSimulation
         SimulationCls = LiberoGoalSimulation
+    elif active_env == "libero_goal_pixels":
+        from simulations.libero_goal_pixels_simulation import LiberoGoalPixelsSimulation
+        SimulationCls = LiberoGoalPixelsSimulation
     else:
         from simulations.particle_simulation import ParticleSimulation
         SimulationCls = ParticleSimulation
@@ -809,16 +812,16 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if active_env == "pushing_pixels":
+    if active_env in ("pushing_pixels", "libero_goal_pixels"):
         from utils.models import PixelControlPointGenerator, PixelQEstimator
-        # state_dim is [C, H, W]. frame_stack is already baked into C
-        # (PushingPixelsDataset reports state_shape=(3*frame_stack, H, W)),
-        # so DON'T multiply by frame_stack here.
+        # state_dim is [C, H, W]; frame_stack/cameras are already baked into C.
         in_channels = int(state_dim[0])
         enc_h = int(env_config.get("encoder_target_height", 180))
         enc_w = int(env_config.get("encoder_target_width", 240))
         value_width = int(em.get("value_width", 1024))
         value_num_blocks = int(em.get("value_num_blocks", 1))
+        # libero_goal_pixels conditions on proprio+goal (cond_dim from norm_stats).
+        cond_dim = int(norm_stats["cond_dim"]) if (norm_stats and "cond_dim" in norm_stats) else 0
         cp_gen = PixelControlPointGenerator(
             output_dim=action_dim,
             control_points=control_points,
@@ -831,6 +834,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             in_channels=in_channels,
             encoder_target_height=enc_h,
             encoder_target_width=enc_w,
+            cond_dim=cond_dim,
         )
         cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
         cp_gen.to(device).eval()
@@ -842,6 +846,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             encoder_target_width=enc_w,
             value_width=value_width,
             value_num_blocks=value_num_blocks,
+            cond_dim=cond_dim,
         )
         q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
         q_est.to(device).eval()
@@ -1225,6 +1230,12 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         # Multi-task language-conditioned eval — obs schema + goal embeddings
         # come from norm_stats; no n_dim / tolerance knobs.
         pass
+    elif active_env == "libero_goal_pixels":
+        # Render eval grouped by task needs the eval-episode count to map seeds
+        # task-major (avoids per-episode EGL env churn).
+        sim_kwargs["num_eval_seeds"] = int(
+            env_config.get("num_eval_seeds", len(seeds))
+        )
     else:
         sim_kwargs["n_dim"] = n_dim
     sim = sim_cls(**sim_kwargs)
@@ -1273,7 +1284,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             ],
         }
 
-    if active_env in ("pen", "door", "libero_goal"):
+    if active_env in ("pen", "door", "libero_goal", "libero_goal_pixels"):
         # Adroit D4RL human tasks AND LIBERO-Goal report success_rate as the
         # headline metric (LIBERO's canonical number is per-suite success rate;
         # the env emits a binary success info bit). avg_reward is logged too but

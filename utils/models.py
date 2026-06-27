@@ -358,8 +358,15 @@ class PixelControlPointGenerator(nn.Module):
 		encoder_target_height: int = 180,
 		encoder_target_width: int = 240,
 		encoder_feature_dim: int = 256,
+		cond_dim: int = 0,
 	) -> None:
 		super().__init__()
+		# `cond_dim` > 0 conditions the CP head on an extra per-state vector
+		# (e.g. LIBERO proprio + goal-language embedding), concatenated to the
+		# conv features. Set via the `_cond` attribute per batch (default None →
+		# unconditioned, so pushing_pixels is unaffected with cond_dim=0).
+		self.cond_dim = int(cond_dim)
+		self._cond: torch.Tensor | None = None
 		self.encoder = ConvMaxpoolEncoder(
 			in_channels=in_channels,
 			target_height=encoder_target_height,
@@ -367,7 +374,7 @@ class PixelControlPointGenerator(nn.Module):
 			feature_dim=encoder_feature_dim,
 		)
 		self.head = ControlPointGenerator(
-			input_dim=encoder_feature_dim,
+			input_dim=encoder_feature_dim + self.cond_dim,
 			output_dim=output_dim,
 			hidden_dims=hidden_dims,
 			activation=activation,
@@ -382,6 +389,10 @@ class PixelControlPointGenerator(nn.Module):
 	def forward(self, images: torch.Tensor) -> torch.Tensor:
 		"""Args: images (B, C, H, W). Returns: (B, control_points, output_dim)."""
 		features = self.encoder(images)
+		if self.cond_dim > 0:
+			if self._cond is None:
+				raise RuntimeError("PixelControlPointGenerator.cond_dim>0 but ._cond not set.")
+			features = torch.cat([features, self._cond], dim=-1)
 		return self.head(features)
 
 
@@ -406,8 +417,14 @@ class PixelQEstimator(nn.Module):
 		encoder_feature_dim: int = 256,
 		value_width: int = 1024,
 		value_num_blocks: int = 1,
+		cond_dim: int = 0,
 	) -> None:
 		super().__init__()
+		# `cond_dim` > 0 late-fuses an extra per-state vector (LIBERO proprio +
+		# goal embedding) alongside the image features and action. Set via the
+		# `_cond` attribute per batch (default None → unconditioned).
+		self.cond_dim = int(cond_dim)
+		self._cond: torch.Tensor | None = None
 		self.encoder = ConvMaxpoolEncoder(
 			in_channels=in_channels,
 			target_height=encoder_target_height,
@@ -415,7 +432,7 @@ class PixelQEstimator(nn.Module):
 			feature_dim=encoder_feature_dim,
 		)
 		self.value = DenseResnetValue(
-			in_dim=encoder_feature_dim + action_dim,
+			in_dim=encoder_feature_dim + self.cond_dim + action_dim,
 			width=value_width,
 			num_blocks=value_num_blocks,
 		)
@@ -437,6 +454,17 @@ class PixelQEstimator(nn.Module):
 		if action.ndim == 3:
 			B, N, _ = action.shape
 			features = features.unsqueeze(1).expand(B, N, -1)
+			if self.cond_dim > 0:
+				if self._cond is None:
+					raise RuntimeError("PixelQEstimator.cond_dim>0 but ._cond not set.")
+				cond = self._cond.unsqueeze(1).expand(B, N, -1)
+				x = torch.cat([features, cond, action], dim=-1)
+				return self.value(x)
+		elif self.cond_dim > 0:
+			if self._cond is None:
+				raise RuntimeError("PixelQEstimator.cond_dim>0 but ._cond not set.")
+			x = torch.cat([features, self._cond, action], dim=-1)
+			return self.value(x)
 		x = torch.cat([features, action], dim=-1)
 		return self.value(x)
 
