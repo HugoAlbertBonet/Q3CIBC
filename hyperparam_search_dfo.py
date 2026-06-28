@@ -312,23 +312,34 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         # [-1, 1] (IBC paper App. B.3). Skip per-batch action normalize.
         action_in_model_range = (-1.0, 1.0)
         per_batch_action_norm = False
-        # Norm stats include obs mean/std AND raw act min/max so eval can
+        # Obs normalization divisor. IBC's D4RL best.gin sets
+        # `compute_dataset_statistics.use_sqrt_std = True`: obs are normalized as
+        # (x - mean) / sqrt(std), NOT the textbook (x - mean) / std. This damps
+        # the whitening (normalized dims keep std = std**0.5) and is what the
+        # paper actually trained on. Default True to match IBC; set
+        # USE_SQRT_STD=false to recover plain standardize.
+        use_sqrt_std = bool(hparams.get("USE_SQRT_STD", True))
+        obs_std_divisor = (
+            np.sqrt(dataset.obs_std) if use_sqrt_std else dataset.obs_std
+        ).astype(np.float32)
+        # Norm stats include obs mean/divisor AND raw act min/max so eval can
         # both standardize obs and denormalize the model's [-1, 1] action
         # back to the env's per-dim native range.
         norm_stats = {
             "obs_mean": dataset.obs_mean.astype(np.float32),
-            "obs_std": dataset.obs_std.astype(np.float32),
+            "obs_std": obs_std_divisor,
             "act_min": dataset.act_min.astype(np.float32),
             "act_max": dataset.act_max.astype(np.float32),
             "action_norm_range": (-1.0, 1.0),
             "frame_stack": frame_stack,
             "env_id": env_cfg["env_id"],
+            "use_sqrt_std": use_sqrt_std,
         }
         obs_normalizer = ObservationNormalizer(
             env_id=env_cfg["env_id"], device=device,
             frame_stack=frame_stack,
             obs_mean=dataset.obs_mean,
-            obs_std=dataset.obs_std,
+            obs_std=obs_std_divisor,
         )
     elif active_env == "libero_goal":
         from utils.datasets import LiberoGoalDataset
@@ -372,11 +383,32 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
 
     obs_dim = dataset.state_shape
     act_dim = dataset.action_shape
+    # IBC's D4RL best.gin builds the EBM as `MLPEBM.layers='ResNetPreActivation'`
+    # (depth 8, width 512, spectral_norm) — NOT a plain MLP. A deep plain MLP
+    # with spectral norm trains poorly (no skip connections → vanishing grads),
+    # which is why our prior IBC reproduction had a near-random energy surface
+    # (NCE ~= ln(K)). Default to resnet to match the paper; width/depth derive
+    # from HIDDEN_DIMS (all-equal widths). Set NETWORK_KIND='mlp' to revert.
+    network_kind = str(hparams.get("NETWORK_KIND", "resnet"))
+    hd = hparams["HIDDEN_DIMS"]
+    q_width = int(hd[0])
+    if network_kind == "resnet":
+        # IBC's `depth` counts DENSE layers; its ResNetPreActivationLayer pairs
+        # them into residual units of 2. Our ResNetPreActivationBlock IS one
+        # 2-layer unit, so #blocks = dense_layers / 2. HIDDEN_DIMS=[512]*8
+        # (= IBC depth 8) -> 4 blocks = 8 dense layers, matching the paper.
+        q_depth = max(1, len(hd) // 2)
+    else:
+        q_depth = len(hd)
+    print(f"  EBM backbone: {network_kind} (width={q_width}, depth={q_depth})")
     energy_model = QEstimator(
         state_dim=obs_dim,
         action_dim=act_dim,
-        hidden_dims=hparams["HIDDEN_DIMS"],
+        hidden_dims=hd,
         use_spectral_norm=bool(hparams.get("Q_USE_SPECTRAL_NORM", False)),
+        network_kind=network_kind,
+        width=q_width,
+        depth=q_depth,
     ).to(device)
 
     optimizer = torch.optim.Adam(energy_model.parameters(), lr=hparams["LEARNING_RATE"])
@@ -488,6 +520,11 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         "run_id": run_id,
         "active_env": active_env,
         "action_in_model_range": action_in_model_range,
+        # Backbone spec so eval rebuilds the EXACT architecture (resnet keys
+        # can't be inferred from a flat bias list like the MLP path).
+        "network_kind": network_kind,
+        "q_width": q_width,
+        "q_depth": q_depth,
     }, ckpt_path)
     # Persist the exact hparams next to the checkpoint for traceability.
     with open(save_dir / "hparams.json", "w") as f:
@@ -540,19 +577,11 @@ def evaluate_checkpoint(
     frame_stack = int(env_cfg.get("frame_stack", 1))
     action_bounds = tuple(env_cfg.get("action_bounds", [0, 1]))
 
-    # Layer indices come from `.bias` keys (always present, unchanged under
-    # spectral_norm — which renames `weight` → `weight_orig`). Using `.weight`
-    # alone misses every layer when SN is on. Hidden dims are output dims of
-    # each Linear EXCEPT the final one (which is the model output, dim=1 for
-    # the energy estimator).
-    bias_indices = sorted(
-        {int(k.split(".")[1]) for k in sd if k.startswith("network.") and k.endswith(".bias")}
-    )
-    if not bias_indices:
-        raise RuntimeError(
-            f"Cannot infer architecture from checkpoint keys: {list(sd.keys())[:5]}..."
-        )
-    hidden = [int(sd[f"network.{i}.bias"].shape[0]) for i in bias_indices[:-1]]
+    # Backbone spec: prefer the values saved at train time. Older checkpoints
+    # (pre-resnet-fix) lack these → default to the plain-MLP reconstruction.
+    network_kind = str(ckpt.get("network_kind", "mlp")) if isinstance(ckpt, dict) else "mlp"
+    ckpt_q_width = ckpt.get("q_width") if isinstance(ckpt, dict) else None
+    ckpt_q_depth = ckpt.get("q_depth") if isinstance(ckpt, dict) else None
 
     # Detect spectral norm under either API:
     #   - old (torch.nn.utils.spectral_norm): keys `weight_orig`, `weight_u`, `weight_v`
@@ -562,14 +591,41 @@ def evaluate_checkpoint(
         for k in sd.keys()
     )
 
+    def _build_eval_model(state_dim_in: int) -> QEstimator:
+        """Rebuild the EBM matching the trained backbone.
+
+        resnet: width/depth come from the checkpoint (the flat bias-key
+        inference below only works for the plain-MLP Sequential).
+        mlp: hidden dims inferred from the `.bias` shapes (output dim of each
+        Linear except the final dim-1 energy projection).
+        """
+        if network_kind == "resnet":
+            w = int(ckpt_q_width)
+            d = int(ckpt_q_depth)
+            return QEstimator(
+                state_dim=state_dim_in, action_dim=action_dim,
+                hidden_dims=[w] * d, use_spectral_norm=use_sn,
+                network_kind="resnet", width=w, depth=d,
+            )
+        bias_indices = sorted(
+            {int(k.split(".")[1]) for k in sd
+             if k.startswith("network.") and k.endswith(".bias")}
+        )
+        if not bias_indices:
+            raise RuntimeError(
+                f"Cannot infer architecture from checkpoint keys: {list(sd.keys())[:5]}..."
+            )
+        hidden = [int(sd[f"network.{i}.bias"].shape[0]) for i in bias_indices[:-1]]
+        return QEstimator(
+            state_dim=state_dim_in, action_dim=action_dim,
+            hidden_dims=hidden, use_spectral_norm=use_sn,
+        )
+
     if active_env == "particle":
         state_dim = int(env_cfg["state_dim"])
         max_steps = int(cfg.get("simulation", {}).get("max_episode_steps", 50))
         n_dim = int(env_cfg["n_dim"])
-        model = QEstimator(
-            state_dim=state_dim * frame_stack, action_dim=action_dim,
-            hidden_dims=hidden, use_spectral_norm=use_sn,
-        )
+        model = _build_eval_model(state_dim * frame_stack)
         model.load_state_dict(sd)
         model.to(device).eval()
         obs_normalizer = ObservationNormalizer(
@@ -584,12 +640,11 @@ def evaluate_checkpoint(
                 f"{active_env} DFO eval requires norm_stats with obs_mean/obs_std. "
                 "Train with a fresh checkpoint."
             )
-        model = QEstimator(
-            state_dim=state_dim * frame_stack, action_dim=action_dim,
-            hidden_dims=hidden, use_spectral_norm=use_sn,
-        )
+        model = _build_eval_model(state_dim * frame_stack)
         model.load_state_dict(sd)
         model.to(device).eval()
+        # obs_std here is the SAME divisor saved at train time (already
+        # sqrt-std when USE_SQRT_STD was on) — eval matches training exactly.
         obs_normalizer = ObservationNormalizer(
             env_id=env_cfg["env_id"], device=device,
             frame_stack=frame_stack,
@@ -607,10 +662,7 @@ def evaluate_checkpoint(
                 "(state_shape, libero_obs_keys, goal_embeddings). Retrain."
             )
         max_steps = int(env_cfg.get("max_episode_steps", 300))
-        model = QEstimator(
-            state_dim=int(norm_stats["state_shape"]), action_dim=action_dim,
-            hidden_dims=hidden, use_spectral_norm=use_sn,
-        )
+        model = _build_eval_model(int(norm_stats["state_shape"]))
         model.load_state_dict(sd)
         model.to(device).eval()
         if num_seeds is None:

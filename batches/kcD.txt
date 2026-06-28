@@ -1,0 +1,61 @@
+# Batch kcD - Q3CIBC kitchen-complete: does the ResNet EBM fix help Q3C too?
+# 10 trials via hyperparam_search.py + combinedv2_cpascounter_training.py
+# --active-env kitchen.
+#
+# Motivation:
+#   The IBC reproduction jumped from ~0 to (expected) much higher once the
+#   energy net switched from plain 8-layer MLP to ResNetPreActivation (see
+#   kcBibc). Q3C's Q-estimator is ALSO a plain MLP (q_network_kind='mlp' in
+#   kcA/kcB), and Q3C plateaued at ~1.6/4. If the deep-MLP trainability problem
+#   also caps Q3C's Q surface, switching Q to resnet should lift Q3C.
+#
+# Change under test: q_network_kind='resnet'. To match the IBC-faithful depth
+#   (8 dense layers), our ResNetPreActivationBlock is a 2-layer unit, so
+#   q_depth=4 -> 4 blocks = 8 dense layers (the residualized form of the
+#   q_depth=8 MLP used in kcA/kcB). CP generator stays MLP (only the EBM/Q
+#   architecture is under test). inference_langevin_iterations=0 ALWAYS.
+#
+# Baseline to beat: Q3C best = 1.61 (cp100/tk30 @150k, MLP-Q). lvneg16 helps.
+# Headline metric: avg_tasks_completed (0..4).
+#
+# Trials:
+#   kcD1-3 : resnet-Q (q_depth=4) cp100/tk30 lvneg16 @150k, seeds 0,1,2.
+#   kcD4   : resnet-Q @ 200k (s0).
+#   kcD5   : resnet-Q DEEPER (q_depth=8 = 16 dense layers) @150k (s0).
+#   kcD6   : resnet-Q WIDER (q_width=1024, q_depth=4) @150k (s0).
+#   kcD7   : MLP-Q control (q_depth=8) cp100/tk30 lvneg16 @150k (s0) - in-batch A/B.
+#   kcD8   : resnet-Q cp150/tk40 lvneg16 @150k (s0).
+#   kcD9   : resnet-Q + noisy_expert(8) @150k (s0).
+#   kcD10  : resnet-Q @ 300k (s0).
+#
+# Compute: 300k / q1024 are heaviest; 48h wall.
+
+# -- kcD1: resnet-Q (q_depth=4) cp100/tk30 lvneg16 @150k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD2: resnet-Q (q_depth=4) cp100/tk30 lvneg16 @150k, seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD3: resnet-Q (q_depth=4) cp100/tk30 lvneg16 @150k, seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":2,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD4: resnet-Q @ 200k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":200000,"cosine_t_max":200000}'
+
+# -- kcD5: resnet-Q DEEPER (q_depth=8) @150k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD6: resnet-Q WIDER (q_width=1024, q_depth=4) @150k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":1024,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD7: MLP-Q CONTROL (q_depth=8) cp100/tk30 lvneg16 @150k, seed=0 (in-batch A/B vs resnet)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD8: resnet-Q cp150/tk40 lvneg16 @150k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":150,"top_k_control_points":40,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD9: resnet-Q + noisy_expert(8) @150k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"noisy_expert_count":8,"noisy_expert_sigma_start":0.1,"noisy_expert_sigma_final":0.02,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcD10: resnet-Q (q_depth=4) @ 300k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":300000,"cosine_t_max":300000}'

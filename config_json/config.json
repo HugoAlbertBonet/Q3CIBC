@@ -273,11 +273,18 @@
         "libero_goal_pixels": {
             "goal_embeddings_path": "datasets/libero/libero_goal_goal_embs.npz",
             "env_id": "LiberoGoalPixels-v0",
-            "state_dim": [6, 128, 128],
+            "state_dim": [
+                6,
+                128,
+                128
+            ],
             "action_dim": 7,
             "frame_stack": 1,
             "max_demos_per_task": null,
-            "action_bounds": [-1.0, 1.0],
+            "action_bounds": [
+                -1.0,
+                1.0
+            ],
             "max_episode_steps": 300,
             "num_eval_seeds": 50,
             "encoder_target_height": 128,
