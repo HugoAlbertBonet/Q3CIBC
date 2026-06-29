@@ -98,7 +98,7 @@ cd "${PWD}"
 # the top of this script). Force every uv run in this job to be READ-ONLY
 # against it: never sync, never touch the lockfile. This both prevents
 # concurrent jobs from racing on .venv (the remove-.venv-bin /
-# numpy.random-missing bug) AND stops any job from pruning the `libero` extra
+# numpy.random-missing bug) AND stops any job from pruning the 'libero' extra
 # that liberoGoal runs depend on.
 export UV_NO_SYNC=1
 export UV_FROZEN=1
