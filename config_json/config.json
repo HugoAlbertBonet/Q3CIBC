@@ -436,6 +436,19 @@
                     "polynomial_decay_power": 2.0,
                     "delta_action_clip": 0.005,
                     "noise_scale": 0.1
+                },
+                "diffusion": {
+                    "num_train_timesteps": 100,
+                    "beta_schedule": "cosine",
+                    "time_emb_dim": 128,
+                    "denoiser_network_kind": "mlp",
+                    "denoiser_width": 256,
+                    "denoiser_depth": 2,
+                    "denoiser_use_spectral_norm": false,
+                    "ema_decay": 0.999,
+                    "ddim_eval_steps": [10, 25],
+                    "ddim_eta": 0.0,
+                    "eval_ddpm": true
                 }
             }
         },

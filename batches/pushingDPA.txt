@@ -1,0 +1,46 @@
+# Batch pushingDPA - Diffusion Policy baseline on IBC BlockPush (Pushing-v0).
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pushing
+#
+# WHAT THIS IS
+#   Capacity-matched Diffusion Policy (epsilon-prediction) baseline for the
+#   Q3CIBC ablation. The denoiser reuses the SAME trunk as the Q3C QEstimator
+#   (utils.diffusion.DiffusionDenoiser -> utils.models._build_backbone), matched
+#   to pushing's Q3C recipe: mlp, width=256, depth=2. Only I/O changes:
+#   (state, noisy_action, t_emb) -> epsilon.
+#
+# DDPM vs DDIM = ONE training, TWO+ samplers.
+#   Each trial trains a single denoiser, then evaluates it under:
+#     - DDPM  (full 100-step stochastic chain)
+#     - DDIM  @ {5, 10, 25} steps (deterministic, eta=0)
+#   Per-sampler success_rate / avg_reward / ms_per_step land in the trial record
+#   (ddpm_*, ddim5_*, ddim10_*, ddim25_*). Top-level success_rate mirrors DDPM.
+#
+# Env facts (config environments.pushing): state_dim=10, action_dim=2,
+#   frame_stack=2, action in [-1,1], max_episode_steps=100, num_eval_seeds=100.
+#   Actions normalized to [-1,1] at dataset level; obs standardized (norm_stats).
+#
+# Compute: single denoiser train (~few h) + 4 sampler eval passes per trial.
+#
+# Trials:
+#   pushingDPA1-3 : base recipe, seeds 0/1/2 -> cross-seed mean + std.
+#   pushingDPA4   : num_train_timesteps=50 @ seed0 (shorter chain ablation).
+#   pushingDPA5   : beta_schedule=linear @ seed0 (vs cosine default).
+#   pushingDPA6   : denoiser_depth=4 @ seed0 (capacity-up sanity).
+
+# -- pushingDPA1: base @ seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingDPA2: base @ seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingDPA3: base @ seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingDPA4: num_train_timesteps=50 @ seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":50,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingDPA5: beta_schedule=linear @ seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"linear","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingDPA6: denoiser_depth=4 @ seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
