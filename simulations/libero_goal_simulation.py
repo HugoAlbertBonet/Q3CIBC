@@ -76,16 +76,24 @@ class LiberoGoalSimulation(BaseSimulation):
         self.goal_embeddings = np.asarray(norm_stats["goal_embeddings"], dtype=np.float32)
         self.goal_task_names = list(norm_stats["goal_task_names"])
         self.n_tasks = int(self.goal_embeddings.shape[0])
-        self.state_shape = int(norm_stats["state_shape"])
+        # state_shape is an int for the flat state variant, a [C,H,W] list for the
+        # pixel subclass — keep whichever type it is.
+        _ss = norm_stats["state_shape"]
+        self.state_shape = tuple(_ss) if isinstance(_ss, (list, tuple)) else int(_ss)
 
         # Standardize normalizer over the FULL state vector (no frame tiling).
-        self.obs_normalizer = ObservationNormalizer(
-            env_id="libero_goal",
-            device=device,
-            frame_stack=1,
-            obs_mean=np.asarray(norm_stats["obs_mean"], dtype=np.float32),
-            obs_std=np.asarray(norm_stats["obs_std"], dtype=np.float32),
-        )
+        # Only for the flat variant (obs_mean present); the pixel subclass has no
+        # obs_mean (conv encoder preprocesses) and sets obs_normalizer=None itself.
+        if "obs_mean" in norm_stats:
+            self.obs_normalizer = ObservationNormalizer(
+                env_id="libero_goal",
+                device=device,
+                frame_stack=1,
+                obs_mean=np.asarray(norm_stats["obs_mean"], dtype=np.float32),
+                obs_std=np.asarray(norm_stats["obs_std"], dtype=np.float32),
+            )
+        else:
+            self.obs_normalizer = None
 
         # Action denorm (model space -> raw env action), same scheme as pen.
         self._raw_act_min = np.asarray(norm_stats["act_min"], dtype=np.float32)
