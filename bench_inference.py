@@ -54,6 +54,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import platform
@@ -319,6 +320,19 @@ class BenchConfig:
     dfo_std_decay: float = 0.5
     dfo_num_uniform: int = 0  # safety-valve uniform samples mixed in; 0 = pure CP-DFO
 
+    # ── Diffusion Policy baseline (utils.diffusion) ──────────────────────────
+    # Denoiser reuses the QEstimator trunk; sized to match the DP pushing
+    # recipe (mlp width=256 depth=2, t_emb=128, T=100). DDPM samples the full
+    # T-step chain; DDIM sub-samples to dp_ddim_steps. Inference cost = number
+    # of denoiser forward passes = T (DDPM) or k (DDIM-k).
+    dp_timesteps: int = 100
+    dp_network_kind: str = "mlp"
+    dp_width: int = 256
+    dp_depth: int = 2
+    dp_time_emb: int = 128
+    dp_beta_schedule: str = "cosine"
+    dp_ddim_steps: tuple = (5, 10, 25)
+
 
 # ─── Method 1: Q3CIBC pushingA-style — CP argmax + single Langevin chain ─────
 
@@ -396,6 +410,52 @@ def make_method_q3cibc_cp_dfo(device: torch.device, cfg: BenchConfig):
                 std *= cfg.dfo_std_decay
         sel = log_probs.argmax(dim=1)
         return candidates[0, sel[0], :]
+
+    return name, select_action
+
+
+# ─── Method: Diffusion Policy — DDPM (full T-step chain) ─────────────────────
+
+def make_method_dp_ddpm(device: torch.device, cfg: BenchConfig):
+    from utils.diffusion import DiffusionDenoiser, GaussianDiffusion
+    denoiser = DiffusionDenoiser(
+        OBS_DIM, ACTION_DIM, time_emb_dim=cfg.dp_time_emb,
+        network_kind=cfg.dp_network_kind, width=cfg.dp_width, depth=cfg.dp_depth,
+    ).to(device).eval()
+    diffusion = GaussianDiffusion(
+        num_timesteps=cfg.dp_timesteps, beta_schedule=cfg.dp_beta_schedule,
+        device=device, action_low=ACTION_MIN, action_high=ACTION_MAX,
+    )
+    name = f"Diffusion Policy + DDPM ({cfg.dp_timesteps} steps)"
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            a = diffusion.ddpm_sample(denoiser, obs, ACTION_DIM)
+        return a[0]
+
+    return name, select_action
+
+
+# ─── Method: Diffusion Policy — DDIM (k sub-sampled steps, eta=0) ─────────────
+
+def make_method_dp_ddim(device: torch.device, cfg: BenchConfig, steps: int):
+    from utils.diffusion import DiffusionDenoiser, GaussianDiffusion
+    denoiser = DiffusionDenoiser(
+        OBS_DIM, ACTION_DIM, time_emb_dim=cfg.dp_time_emb,
+        network_kind=cfg.dp_network_kind, width=cfg.dp_width, depth=cfg.dp_depth,
+    ).to(device).eval()
+    diffusion = GaussianDiffusion(
+        num_timesteps=cfg.dp_timesteps, beta_schedule=cfg.dp_beta_schedule,
+        device=device, action_low=ACTION_MIN, action_high=ACTION_MAX,
+    )
+    name = f"Diffusion Policy + DDIM ({steps} steps)"
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            a = diffusion.ddim_sample(denoiser, obs, ACTION_DIM, num_steps=steps, eta=0.0)
+        return a[0]
 
     return name, select_action
 
@@ -525,6 +585,20 @@ def main():
                         help="Q3CIBC CP-DFO noise decay per iter (default 0.5 — 100%-recipe value; IBC also uses 0.5)")
     parser.add_argument("--dfo-num-uniform", type=int, default=0,
                         help="Extra uniform samples mixed into CP-DFO's first iter for safety (default 0)")
+    # Diffusion Policy baseline (utils.diffusion). Off by default so existing
+    # runs are unchanged; --include-dp adds DDPM + one row per --dp-ddim-steps.
+    parser.add_argument("--include-dp", action="store_true",
+                        help="Also benchmark the Diffusion Policy baseline (DDPM + DDIM).")
+    parser.add_argument("--dp-timesteps", type=int, default=100,
+                        help="DP training timesteps = DDPM chain length (default 100).")
+    parser.add_argument("--dp-network-kind", type=str, default="mlp", choices=["mlp", "resnet"],
+                        help="DP denoiser trunk kind (default mlp). Use resnet to match the paper-faithful Q-net.")
+    parser.add_argument("--dp-width", type=int, default=256, help="DP denoiser width (default 256).")
+    parser.add_argument("--dp-depth", type=int, default=2, help="DP denoiser depth (default 2).")
+    parser.add_argument("--dp-time-emb", type=int, default=128, help="DP timestep embedding dim (default 128).")
+    parser.add_argument("--dp-beta-schedule", type=str, default="cosine", choices=["cosine", "linear"])
+    parser.add_argument("--dp-ddim-steps", type=int, nargs="+", default=[5, 10, 25],
+                        help="DDIM step counts to benchmark (default 5 10 25).")
     args = parser.parse_args()
 
     if args.device == "auto":
@@ -545,6 +619,13 @@ def main():
         dfo_iter_std=args.dfo_iter_std,
         dfo_std_decay=args.dfo_std_decay,
         dfo_num_uniform=args.dfo_num_uniform,
+        dp_timesteps=args.dp_timesteps,
+        dp_network_kind=args.dp_network_kind,
+        dp_width=args.dp_width,
+        dp_depth=args.dp_depth,
+        dp_time_emb=args.dp_time_emb,
+        dp_beta_schedule=args.dp_beta_schedule,
+        dp_ddim_steps=tuple(args.dp_ddim_steps),
     )
 
     print("=" * 78)
@@ -566,6 +647,10 @@ def main():
         make_method_ibc_dfo,
         make_method_ibc_dfo_autoregressive,
     ]
+    if args.include_dp:
+        methods.append(make_method_dp_ddpm)
+        for _s in cfg.dp_ddim_steps:
+            methods.append(functools.partial(make_method_dp_ddim, steps=_s))
 
     results: list[BenchResult] = []
     for make in methods:

@@ -239,7 +239,16 @@ def load_dataset():
         from utils.datasets import D4RLDataset
         dataset_name = env_config["dataset_name"]
         # kitchen carries a Dict obs; D4RLDataset extracts the 'observation' field.
-        return D4RLDataset(dataset_name, download=True, frame_stack=frame_stack)
+        # kitchen_qpos_only drops the port-added velocity dims -> the IBC
+        # paper's input content (robot qpos [0:9] + object qpos [18:39]).
+        obs_indices = None
+        if active_env == "kitchen" and bool(env_training.get("kitchen_qpos_only", False)):
+            obs_indices = list(range(0, 9)) + list(range(18, 39))
+            print(f"kitchen_qpos_only: obs -> {len(obs_indices)}-D (qpos only)")
+        return D4RLDataset(
+            dataset_name, download=True, frame_stack=frame_stack,
+            obs_indices=obs_indices,
+        )
     elif active_env == "particle":
         from utils.datasets import ParticleDataset
         data_dir = env_config["data_dir"]
@@ -408,7 +417,9 @@ def main():
             use_spectral_norm=cp_use_spectral_norm,
         ).to(device)
 
-        print(f"Q estimator:  kind={q_network_kind} width={q_width} depth={q_depth} sn={q_use_spectral_norm}")
+        q_resnet_final_act = bool(env_model.get("q_resnet_final_activation", True))
+        print(f"Q estimator:  kind={q_network_kind} width={q_width} depth={q_depth} "
+              f"sn={q_use_spectral_norm} final_act={q_resnet_final_act}")
         estimator = QEstimator(
             state_dim=dataset.state_shape,
             action_dim=dataset.action_shape,
@@ -417,6 +428,7 @@ def main():
             network_kind=q_network_kind,
             width=q_width,
             depth=q_depth,
+            resnet_final_activation=q_resnet_final_act,
         ).to(device)
 
     # Helper: call estimator with (state, candidate_actions). For pixels we
@@ -876,6 +888,12 @@ def main():
         if hasattr(dataset, "obs_mean"):
             norm_stats["obs_mean"] = dataset.obs_mean
             norm_stats["obs_std"] = dataset.obs_std
+        # Kitchen: persist the column selection (kitchen_qpos_only) + exact
+        # input length so eval rebuilds the same policy input (mirrors the
+        # libero state_shape mechanism).
+        if active_env == "kitchen":
+            norm_stats["obs_indices"] = getattr(dataset, "obs_indices", None)
+            norm_stats["state_shape"] = dataset.state_shape
         # LIBERO-Goal: persist the exact obs schema + per-task goal embeddings
         # so the eval simulation rebuilds a byte-identical state vector and
         # looks up the right goal per task. `state_shape` lets eval skip fragile

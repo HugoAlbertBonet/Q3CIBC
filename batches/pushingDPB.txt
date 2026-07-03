@@ -1,0 +1,24 @@
+# Batch pushingDPB - Diffusion Policy at the PAPER-FAITHFUL arch on Pushing-v0.
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pushing
+#
+# WHY: pushingDPA trained the denoiser as mlp 256x2 (the pushing config default).
+# The Q3CIBC/IBC "paper_faithful_both" comparison in single_target_states.csv uses
+# a resnet width=128, 4-block Q-net (= IBC mlp_ebm_best.gin MLPEBM depth=8). To put
+# DP in THAT table capacity-matched, the denoiser must reuse the SAME trunk:
+# resnet, width=128, depth=4 blocks (151,682 params ~ Q3CIBC's 159,529).
+#
+# Training budget 200k to match the paper-faithful Q3C trials (pushingG/H).
+# Each trial trains ONE denoiser, evaluated under DDPM + DDIM {5,10,25}.
+# Fill the success column of the "Diffusion Policy" rows in single_target_states.csv
+# from the cross-seed mean (scripts/summarize_dp.py --min-trial-id <first B trial>).
+#
+# Trials: pushingDPB1-3 = seeds 0/1/2, resnet 128x4, T=100 cosine.
+
+# -- pushingDPB1: paper-faithful resnet 128x4 @ seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"learning_rate":1e-3,"batch_size":512,"training_steps":200000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":128,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingDPB2: paper-faithful resnet 128x4 @ seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"learning_rate":1e-3,"batch_size":512,"training_steps":200000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":128,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingDPB3: paper-faithful resnet 128x4 @ seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"learning_rate":1e-3,"batch_size":512,"training_steps":200000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":128,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'

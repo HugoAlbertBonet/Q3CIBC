@@ -301,12 +301,20 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         )
     elif active_env in _D4RL_REWARD_ENVS:
         from utils.datasets import D4RLDataset
+        # KITCHEN_QPOS_ONLY reproduces the IBC paper's kitchen input content:
+        # legacy d4rl obs = qpos only (+ constant goal); the gymnasium port
+        # adds 29 velocity dims. [0:9]=robot qpos, [18:39]=object qpos.
+        obs_indices = None
+        if active_env == "kitchen" and bool(hparams.get("KITCHEN_QPOS_ONLY", False)):
+            obs_indices = list(range(0, 9)) + list(range(18, 39))
+            print(f"  KITCHEN_QPOS_ONLY: obs -> {len(obs_indices)}-D (qpos only)")
         dataset = D4RLDataset(
             env_cfg["dataset_name"],
             download=True,
             frame_stack=frame_stack,
             normalize_actions=True,
             action_norm_range=(-1.0, 1.0),
+            obs_indices=obs_indices,
         )
         # D4RLDataset returns actions already per-dim min-max normalized to
         # [-1, 1] (IBC paper App. B.3). Skip per-batch action normalize.
@@ -334,6 +342,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             "frame_stack": frame_stack,
             "env_id": env_cfg["env_id"],
             "use_sqrt_std": use_sqrt_std,
+            "obs_indices": obs_indices,
         }
         obs_normalizer = ObservationNormalizer(
             env_id=env_cfg["env_id"], device=device,
@@ -400,7 +409,11 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         q_depth = max(1, len(hd) // 2)
     else:
         q_depth = len(hd)
-    print(f"  EBM backbone: {network_kind} (width={q_width}, depth={q_depth})")
+    # Official MLPEBM projects to the energy straight after the last resnet
+    # block (no trailing activation). Default False = IBC-faithful.
+    resnet_final_act = bool(hparams.get("RESNET_FINAL_ACTIVATION", False))
+    print(f"  EBM backbone: {network_kind} (width={q_width}, depth={q_depth}, "
+          f"final_act={resnet_final_act})")
     energy_model = QEstimator(
         state_dim=obs_dim,
         action_dim=act_dim,
@@ -409,6 +422,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         network_kind=network_kind,
         width=q_width,
         depth=q_depth,
+        resnet_final_activation=resnet_final_act,
     ).to(device)
 
     optimizer = torch.optim.Adam(energy_model.parameters(), lr=hparams["LEARNING_RATE"])
@@ -525,6 +539,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         "network_kind": network_kind,
         "q_width": q_width,
         "q_depth": q_depth,
+        "resnet_final_activation": resnet_final_act,
     }, ckpt_path)
     # Persist the exact hparams next to the checkpoint for traceability.
     with open(save_dir / "hparams.json", "w") as f:
@@ -582,6 +597,9 @@ def evaluate_checkpoint(
     network_kind = str(ckpt.get("network_kind", "mlp")) if isinstance(ckpt, dict) else "mlp"
     ckpt_q_width = ckpt.get("q_width") if isinstance(ckpt, dict) else None
     ckpt_q_depth = ckpt.get("q_depth") if isinstance(ckpt, dict) else None
+    # Pre-flag resnet checkpoints were trained WITH the trailing activation;
+    # default True keeps them loadable/correct. New ones save the flag.
+    ckpt_final_act = bool(ckpt.get("resnet_final_activation", True)) if isinstance(ckpt, dict) else True
 
     # Detect spectral norm under either API:
     #   - old (torch.nn.utils.spectral_norm): keys `weight_orig`, `weight_u`, `weight_v`
@@ -606,6 +624,7 @@ def evaluate_checkpoint(
                 state_dim=state_dim_in, action_dim=action_dim,
                 hidden_dims=[w] * d, use_spectral_norm=use_sn,
                 network_kind="resnet", width=w, depth=d,
+                resnet_final_activation=ckpt_final_act,
             )
         bias_indices = sorted(
             {int(k.split(".")[1]) for k in sd
@@ -633,13 +652,15 @@ def evaluate_checkpoint(
             frame_stack=frame_stack, particle_n_dim=n_dim,
         )
     elif active_env in _D4RL_REWARD_ENVS:
-        state_dim = int(env_cfg["state_dim"])
         max_steps = int(env_cfg.get("max_episode_steps", 100))
         if norm_stats is None or "obs_mean" not in norm_stats:
             raise RuntimeError(
                 f"{active_env} DFO eval requires norm_stats with obs_mean/obs_std. "
                 "Train with a fresh checkpoint."
             )
+        # Input dim from the TRAINED stats, not config state_dim — obs_indices
+        # (e.g. KITCHEN_QPOS_ONLY) shrinks the policy input below config's 59.
+        state_dim = int(len(np.asarray(norm_stats["obs_mean"]).reshape(-1)))
         model = _build_eval_model(state_dim * frame_stack)
         model.load_state_dict(sd)
         model.to(device).eval()
@@ -725,10 +746,17 @@ def evaluate_checkpoint(
 
     # FrankaKitchen-v1 returns a Dict observation; the policy consumes only the
     # proprio/world 'observation' vector (desired_goal is fixed for -complete).
+    # obs_indices (saved at train time, e.g. KITCHEN_QPOS_ONLY) selects the
+    # same columns the model was trained on.
+    _eval_obs_indices = norm_stats.get("obs_indices") if isinstance(norm_stats, dict) else None
+
     def _obs_vec(o):
         if isinstance(o, dict):
-            return np.asarray(o["observation"], dtype=np.float32)
-        return np.asarray(o, dtype=np.float32)
+            o = o["observation"]
+        v = np.asarray(o, dtype=np.float32)
+        if _eval_obs_indices is not None:
+            v = v[_eval_obs_indices]
+        return v
 
     seeds = list(range(num_seeds))
     successes: list[bool] = []
@@ -792,7 +820,27 @@ def evaluate_checkpoint(
                 delta_action_clip=float(langevin_cfg.get("delta_action_clip", 0.1)),
                 noise_scale=float(langevin_cfg["noise_scale"]),
                 device=device,
+                noise_via_stepsize=bool(langevin_cfg.get("noise_via_stepsize", False)),
             )
+            # Official IbcPolicy.optimize_again: a SECOND chain at a tiny
+            # constant stepsize (1e-5) polishes the first chain's samples —
+            # "a trick for more precise inference" (ibc_policy.py). The D4RL
+            # best.gin enables it.
+            if bool(langevin_cfg.get("optimize_again", False)) and int(langevin_cfg["num_iterations"]) > 0:
+                samples = sample_langevin(
+                    energy_function=model, observations=st_n,
+                    num_samples=int(langevin_cfg["num_samples"]),
+                    action_min=norm_min, action_max=norm_max,
+                    num_iterations=int(langevin_cfg["num_iterations"]),
+                    lr_init=float(langevin_cfg.get("again_stepsize_init", 1e-5)),
+                    lr_final=float(langevin_cfg.get("again_stepsize_final", 1e-5)),
+                    polynomial_decay_power=float(langevin_cfg.get("polynomial_decay_power", 2.0)),
+                    delta_action_clip=float(langevin_cfg.get("delta_action_clip", 0.1)),
+                    noise_scale=float(langevin_cfg.get("again_noise_scale", 0.5)),
+                    initial_actions=samples,
+                    device=device,
+                    noise_via_stepsize=bool(langevin_cfg.get("noise_via_stepsize", False)),
+                )
             with torch.no_grad():
                 se = st_n.unsqueeze(1).expand(-1, samples.shape[1], -1)
                 e = model(se, samples).squeeze(-1)
@@ -1002,6 +1050,16 @@ def run_trial(
         "polynomial_decay_power": float(hparams["INFERENCE_DECAY_POWER"]),
         "delta_action_clip": float(hparams["INFERENCE_DELTA_CLIP"]),
         "noise_scale": float(hparams["INFERENCE_NOISE_SCALE"]),
+        # Official-IBC inference extras (ibc_policy.py / mcmc.py):
+        #   noise_via_stepsize: noise scales LINEARLY with stepsize (their
+        #     langevin_step) instead of sqrt(lr) — chain end = pure polish.
+        #   optimize_again: second chain at constant tiny stepsize (D4RL
+        #     best.gin sets it True with again_stepsize_init=1e-5).
+        "noise_via_stepsize": bool(hparams.get("INFERENCE_NOISE_VIA_STEPSIZE", False)),
+        "optimize_again": bool(hparams.get("INFERENCE_OPTIMIZE_AGAIN", False)),
+        "again_stepsize_init": float(hparams.get("INFERENCE_AGAIN_STEPSIZE_INIT", 1e-5)),
+        "again_stepsize_final": float(hparams.get("INFERENCE_AGAIN_STEPSIZE_FINAL", 1e-5)),
+        "again_noise_scale": float(hparams.get("INFERENCE_AGAIN_NOISE_SCALE", 0.5)),
     }
 
     eval_results: dict = {}

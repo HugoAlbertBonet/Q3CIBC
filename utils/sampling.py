@@ -88,7 +88,8 @@ def sample_langevin(
     noise_scale: float = 1.0,
     initial_actions: torch.Tensor = None,
     return_trajectories: bool = False,
-    device: torch.device = None
+    device: torch.device = None,
+    noise_via_stepsize: bool = False,
 ) -> Union[torch.Tensor, tuple[torch.Tensor, List[torch.Tensor]]]:
     """Generate counter-example actions using Langevin MCMC with polynomial LR decay.
 
@@ -170,8 +171,16 @@ def sample_langevin(
         # Current learning rate (polynomial decay)
         lr_k = _polynomial_decay(lr_init, lr_final, polynomial_decay_power, k, num_iterations)
         
-        # Langevin update: delta = -(lr/2) * grad + N(0, noise_scale * sqrt(lr))
-        noise = torch.randn_like(actions) * noise_scale * (lr_k ** 0.5)
+        # Langevin update. Two noise conventions:
+        #   noise_via_stepsize=False (legacy/textbook): noise std = noise_scale*sqrt(lr)
+        #   noise_via_stepsize=True  (official IBC mcmc.py langevin_step):
+        #     delta = stepsize * (0.5*grad + noise_scale*N(0,1)) — noise scales
+        #     LINEARLY with stepsize, so the chain end (lr→1e-5) is a pure
+        #     gradient polish instead of a residual jitter.
+        if noise_via_stepsize:
+            noise = torch.randn_like(actions) * noise_scale * lr_k
+        else:
+            noise = torch.randn_like(actions) * noise_scale * (lr_k ** 0.5)
         delta = -(lr_k / 2.0) * grad + noise
         
         # Clip the delta (per-step action change)

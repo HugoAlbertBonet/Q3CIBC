@@ -201,6 +201,23 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "bool",
         "location": "env_model",
     },
+    # IBC-faithful resnet head: official MLPEBM has NO trailing activation
+    # before the energy projection. False = faithful; True = legacy (what
+    # kcD-era resnet checkpoints trained with). Changes state_dict indices —
+    # train and eval must agree (both read this same config key).
+    "q_resnet_final_activation": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env_model",
+    },
+    # Kitchen only: train/eval on qpos dims [0:9]+[18:39] (30-D), dropping the
+    # 29 velocity dims the gymnasium port added. Matches the IBC paper's
+    # legacy-d4rl kitchen input content (qpos + constant goal).
+    "kitchen_qpos_only": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env_training",
+    },
     "cp_network_kind": {
         "values": ["mlp", "resnet"],
         "type": "str",
@@ -852,9 +869,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         q_est.to(device).eval()
     else:
         # libero_goal bakes the goal embedding into the state AFTER frame-stacking,
-        # so its input dim is NOT state_dim*frame_stack. Read the exact length
-        # the dataset used straight from norm_stats.
-        if active_env == "libero_goal" and norm_stats is not None and "state_shape" in norm_stats:
+        # so its input dim is NOT state_dim*frame_stack. Same for kitchen when
+        # kitchen_qpos_only shrank the obs below config's state_dim. Read the
+        # exact length the dataset used straight from norm_stats.
+        if active_env in ("libero_goal", "kitchen") and norm_stats is not None and "state_shape" in norm_stats:
             flat_input_dim = int(norm_stats["state_shape"])
         else:
             flat_input_dim = state_dim * frame_stack
@@ -882,6 +900,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             network_kind=q_network_kind,
             width=q_width,
             depth=q_depth,
+            resnet_final_activation=bool(em.get("q_resnet_final_activation", True)),
         )
         q_est.load_state_dict(
             torch.load(q_path, map_location=device, weights_only=True)

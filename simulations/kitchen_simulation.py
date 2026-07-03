@@ -52,6 +52,11 @@ class KitchenSimulation(BaseSimulation):
         self.render_mode = render_mode
         self.norm_stats = norm_stats
         self.dataset_name = dataset_name
+        # Column selection saved at train time (kitchen_qpos_only) — the
+        # policy must see exactly the dims it was trained on.
+        self._obs_indices = (
+            norm_stats.get("obs_indices") if isinstance(norm_stats, dict) else None
+        )
 
         if norm_stats is not None and "obs_mean" in norm_stats and "obs_std" in norm_stats:
             self.obs_normalizer = ObservationNormalizer(
@@ -83,12 +88,14 @@ class KitchenSimulation(BaseSimulation):
         ds = minari.load_dataset(self.dataset_name, download=True)
         return ds.recover_environment(eval_env=True)
 
-    @staticmethod
-    def _obs_vec(obs) -> np.ndarray:
+    def _obs_vec(self, obs) -> np.ndarray:
         """FrankaKitchen returns a Dict obs; the policy uses 'observation'."""
         if isinstance(obs, dict):
-            return np.asarray(obs["observation"], dtype=np.float32)
-        return np.asarray(obs, dtype=np.float32)
+            obs = obs["observation"]
+        v = np.asarray(obs, dtype=np.float32)
+        if self._obs_indices is not None:
+            v = v[self._obs_indices]
+        return v
 
     def _denormalize_action(self, action_normalized: np.ndarray) -> np.ndarray:
         """Linear map from [act_lo, act_hi] back to [act_min, act_max]."""

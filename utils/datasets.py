@@ -100,12 +100,20 @@ class D4RLDataset(Dataset):
         frame_stack: int = 1,
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
+        obs_indices: list[int] | None = None,
     ):
         self.dataset_name = root
         self.dataset = self._load_dataset(root, download=download)
         self.frame_stack = frame_stack
         self.normalize_actions = normalize_actions
         self.action_norm_range = action_norm_range
+        # Optional column selection on the raw observation vector, applied
+        # BEFORE stats/stacking. Used to reproduce the IBC paper's kitchen
+        # input: legacy d4rl kitchen obs = robot qpos(9)+obj qpos(21)+goal(30,
+        # constant for -complete). The gymnasium-robotics port instead emits
+        # qpos+QVEL (59-D); selecting [0:9]+[18:39] recovers the paper's
+        # informative content (velocities add 29 noisy dims on 4.2k samples).
+        self.obs_indices = list(obs_indices) if obs_indices is not None else None
 
         all_observations = []
         all_actions = []
@@ -118,6 +126,8 @@ class D4RLDataset(Dataset):
             ep_obs = ep.observations
             if isinstance(ep_obs, dict):
                 ep_obs = np.asarray(ep_obs["observation"])
+            if self.obs_indices is not None:
+                ep_obs = ep_obs[:, self.obs_indices]
             obs = ep_obs[:-1]  # exclude terminal observation
             acts = ep.actions
             starts = np.zeros(len(obs), dtype=bool)

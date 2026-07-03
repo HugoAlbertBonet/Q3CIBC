@@ -46,12 +46,19 @@ def _build_backbone(
 	depth: int | None,
 	activation: type[nn.Module],
 	use_spectral_norm: bool,
+	resnet_final_activation: bool = True,
 ) -> nn.Sequential:
 	"""Construct either a plain MLP or a ResNetPreActivation backbone.
 
 	- network_kind == "mlp": stacks Linear/activation pairs with `hidden_dims`.
 	- network_kind == "resnet": Linear(input -> width); `depth` ResNetPreActivation
-	  blocks of width `width`; activation; Linear(width -> output).
+	  blocks of width `width`; [optional activation]; Linear(width -> output).
+	  Official IBC (networks/mlp_ebm.py) projects to the energy straight after
+	  the last block — NO trailing activation (a ReLU there zeroes half the
+	  features feeding the energy head). Pass resnet_final_activation=False for
+	  the IBC-faithful head; default True preserves checkpoints trained before
+	  this option existed (the flag is stateless, so state_dicts stay loadable
+	  either way — but the forward pass differs).
 	"""
 	if network_kind == "mlp":
 		layers = []
@@ -69,7 +76,8 @@ def _build_backbone(
 		layers: list[nn.Module] = [_make_linear(input_dim, width, use_spectral_norm)]
 		for _ in range(depth):
 			layers.append(ResNetPreActivationBlock(width, activation, use_spectral_norm))
-		layers.append(activation())
+		if resnet_final_activation:
+			layers.append(activation())
 		layers.append(_make_linear(width, output_dim, use_spectral_norm))
 		return nn.Sequential(*layers)
 
@@ -134,6 +142,7 @@ class QEstimator(nn.Module):
 		network_kind: str = "mlp",
 		width: int | None = None,
 		depth: int | None = None,
+		resnet_final_activation: bool = True,
 	) -> None:
 		super().__init__()
 		self.state_dim = state_dim
@@ -142,6 +151,7 @@ class QEstimator(nn.Module):
 		self.use_spectral_norm = use_spectral_norm
 		self.init_mode = init_mode
 		self.init_std = init_std
+		self.resnet_final_activation = resnet_final_activation
 
 		# ResNet pre-activation backbone has no native dropout slot; the IBC paper's
 		# configs do not enable dropout on EBM. We honour dropout_rate only for MLP.
@@ -165,6 +175,7 @@ class QEstimator(nn.Module):
 				depth=depth,
 				activation=activation,
 				use_spectral_norm=use_spectral_norm,
+				resnet_final_activation=resnet_final_activation,
 			)
 		self._init_parameters()
 

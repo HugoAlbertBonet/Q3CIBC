@@ -1,0 +1,61 @@
+# Batch kcE - Q3CIBC kitchen-complete with the faithfulness fixes (Q3C ONLY;
+# the corrected IBC baseline lives in kcCibc.txt).
+# 10 trials via hyperparam_search.py + combinedv2_cpascounter_training.py
+# --active-env kitchen. Results: d4rl/kitchen trials.jsonl, ids 30+.
+#
+# New switches under test (from the official-IBC audit, applied to Q3C):
+#   kitchen_qpos_only=true        30-D input [0:9]+[18:39] (paper's info content;
+#                                 port's 29 velocity dims dropped). Verified vs
+#                                 legacy d4rl source; goal dims normalize to 0.
+#   q_network_kind=resnet, q_depth=4  8 dense layers residualized.
+#   q_resnet_final_activation=false   IBC-faithful energy head (no trailing ReLU).
+#   inference_langevin_iterations=0 ALWAYS (Q3C uses CP-argmax; handoff rule).
+#
+# Context (avg_tasks_completed /4): Q3C best 1.61 (kcB15: MLP-Q cp100/tk30
+#   lvneg8 @150k, 59-D obs). kcD resnet-Q (with the then-unfixed trailing ReLU
+#   + 59-D obs) ~1.1. Paper IBC = 3.37.
+#
+# Trials:
+#   kcE1-3 : full stack (qpos_only + resnet-Q(no ReLU head) + cp100/tk30 +
+#            lvneg16 @150k), seeds 0-2 -> the new base, multiseed.
+#   kcE4   : full stack seed=3 -> 4-seed mean.
+#   kcE5   : full stack @200k (seed 0).
+#   kcE6   : 59-D control (no qpos_only) -> isolates obs featurization for Q3C.
+#   kcE7   : lvneg8 variant -> direct upgrade of kcB15 (1.61), same negatives.
+#   kcE8   : cp150/tk40 full stack.
+#   kcE9   : deeper resnet-Q (q_depth=8 = 16 dense layers).
+#   kcE10  : + noisy_expert(8, sigma 0.1->0.02) on full stack.
+#
+# Compute: ~12h/trial (200k slightly more), 48h wall.
+# Analyze: uv run python hyperparam_search.py combinedv2_cpascounter_training.py \
+#            --analyze --active-env kitchen --min-trial-id 30
+
+# -- kcE1: full stack @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE2: full stack @ seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":1,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE3: full stack @ seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":2,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE4: full stack @ seed=3 (4-seed mean)
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":3,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE5: full stack @ 200k, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":200000,"cosine_t_max":200000}'
+
+# -- kcE6: 59-D control (no qpos_only) @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":false,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE7: lvneg8 variant (direct upgrade of kcB15=1.61) @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE8: cp150/tk40 full stack @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"control_points":150,"top_k_control_points":40,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE9: deeper resnet-Q (q_depth=8 = 16 dense layers) @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":8,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- kcE10: full stack + noisy_expert(8, sigma 0.1->0.02) @ seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"control_points":100,"top_k_control_points":30,"q_network_kind":"resnet","q_width":512,"q_depth":4,"q_resnet_final_activation":false,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":16,"noisy_expert_count":8,"noisy_expert_sigma_start":0.1,"noisy_expert_sigma_final":0.02,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":150000,"cosine_t_max":150000}'
