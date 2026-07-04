@@ -1,0 +1,52 @@
+# Batch Bstandardlibero — LIBERO-Goal standard (pixel) protocol, ResNet-18 encoder.
+#
+# A-batch verdict (Astandardlibero, trials 7-12): pipeline correct, 28-36% SR.
+# Image-convention audit: demos AND live env both opengl → no flip bug. Gap vs
+# DP-scratch 68.3% attributed to the encoder: IBC ConvMaxpool + GlobalAvgPool
+# destroys spatial layout and has no pretraining. B swaps in the LIBERO-standard
+# BC encoder: ImageNet-pretrained ResNet-18 trunk + SpatialSoftmax keypoints
+# (encoder_kind=resnet18, new in utils/models.py), CP/Q heads unchanged.
+#
+# A results recap (all seed=0): cp=20/50/100 ≈ 28/32/32; 512x4 head 28;
+# lr 1e-3 32; 150k steps 36 (best). So B fixes cp=100/top_k=30 mostly, leans on
+# encoder + LR (pretrained trunks prefer lower LR) + budget.
+#
+# PREREQUISITES (server):
+#   1. git pull && uv sync --extra libero   (adds torchvision — REQUIRED)
+#   2. Pre-cache ImageNet weights ON THE LOGIN NODE (compute nodes may lack
+#      network; torchvision caches to ~/.cache/torch/hub/checkpoints):
+#        uv run --extra libero python -c "import torchvision; torchvision.models.resnet18(weights=torchvision.models.ResNet18_Weights.IMAGENET1K_V1)"
+#   3. Demos + embeddings already in place (same as A). MUJOCO_GL=egl via the
+#      submit template. Do NOT use --managed-python.
+#
+# Trials (8):
+#   B1-B2 resnet18 head-to-head vs A at 100k/150k
+#   B3    resnet18 cp=50 (density check under new encoder)
+#   B4-B5 lower LRs (1e-4, 2e-4) — protect pretrained features
+#   B6    num_kp=128 (denser keypoints)
+#   B7    resnet18 FROM SCRATCH (encoder_pretrained=false) — isolates pretraining
+#   B8    resnet18 + bigger CP head (512x4)
+
+# -- B1: resnet18 pretrained, cp=100/30, 100k (head-to-head vs A3=32%)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_num_kp":64,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- B2: resnet18 pretrained, cp=100/30, 150k (vs A12=36%)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_num_kp":64,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- B3: resnet18, cp=50/20, 150k
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_num_kp":64,"control_points":50,"top_k_control_points":20,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- B4: resnet18, cp=100/30, 150k, LR 1e-4 (protect pretrained trunk)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_num_kp":64,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":1e-4,"estimator_learning_rate":1e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- B5: resnet18, cp=100/30, 150k, LR 2e-4
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_num_kp":64,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- B6: resnet18, num_kp=128 (denser keypoints; feat 512)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_num_kp":128,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- B7: resnet18 FROM SCRATCH (pretraining ablation)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_num_kp":64,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- B8: resnet18 + bigger CP head (512x4)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_num_kp":64,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'

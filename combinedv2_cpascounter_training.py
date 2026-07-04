@@ -372,9 +372,15 @@ def main():
         # libero_goal_pixels conditions the pixel nets on proprio + goal embed
         # (dataset.cond_dim); pushing_pixels has no conditioning (cond_dim=0).
         cond_dim = int(getattr(dataset, "cond_dim", 0))
+        # Image encoder: IBC ConvMaxpool (default) or ImageNet-pretrained
+        # ResNet-18 + SpatialSoftmax (LIBERO-standard BC encoder).
+        encoder_kind = env_model.get("encoder_kind", "conv_maxpool")
+        encoder_pretrained = bool(env_model.get("encoder_pretrained", True))
+        encoder_num_kp = int(env_model.get("encoder_num_kp", 64))
         print(
             f"CP generator: PIXEL kind={cp_network_kind} width={cp_width} "
-            f"depth={cp_depth} in_ch={in_channels} enc={enc_h}x{enc_w} cond={cond_dim}"
+            f"depth={cp_depth} in_ch={in_channels} enc={encoder_kind} "
+            f"{enc_h}x{enc_w} cond={cond_dim}"
         )
         control_point_generator = PixelControlPointGenerator(
             output_dim=dataset.action_shape,
@@ -389,10 +395,14 @@ def main():
             encoder_target_height=enc_h,
             encoder_target_width=enc_w,
             cond_dim=cond_dim,
+            encoder_kind=encoder_kind,
+            encoder_pretrained=encoder_pretrained,
+            encoder_num_kp=encoder_num_kp,
         ).to(device)
         print(
             f"Q estimator:  PIXEL value=DenseResnetValue(w={value_width}, "
-            f"blocks={value_num_blocks}) in_ch={in_channels} enc={enc_h}x{enc_w} cond={cond_dim}"
+            f"blocks={value_num_blocks}) in_ch={in_channels} enc={encoder_kind} "
+            f"{enc_h}x{enc_w} cond={cond_dim}"
         )
         estimator = PixelQEstimator(
             action_dim=dataset.action_shape,
@@ -402,6 +412,9 @@ def main():
             value_width=value_width,
             value_num_blocks=value_num_blocks,
             cond_dim=cond_dim,
+            encoder_kind=encoder_kind,
+            encoder_pretrained=encoder_pretrained,
+            encoder_num_kp=encoder_num_kp,
         ).to(device)
     else:
         print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
@@ -882,6 +895,10 @@ def main():
             norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 128)
             norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 128)
             norm_stats["state_shape"] = list(dataset.state_shape)
+            # Encoder architecture — eval must rebuild the exact same encoder.
+            norm_stats["encoder_kind"] = env_model.get("encoder_kind", "conv_maxpool")
+            norm_stats["encoder_pretrained"] = bool(env_model.get("encoder_pretrained", True))
+            norm_stats["encoder_num_kp"] = int(env_model.get("encoder_num_kp", 64))
         # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
         # its own [0,1] scaling + bilinear resize on every forward, matching
         # IBC's image_prepro.preprocess). Only persist these when present.

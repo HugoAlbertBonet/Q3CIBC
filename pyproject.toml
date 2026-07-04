@@ -45,6 +45,7 @@ libero = [
     "h5py>=3.10",
     "sentence-transformers>=2.2",
     "transformers>=4.30",
+    "torchvision>=0.24",
 ]
 
 [dependency-groups]

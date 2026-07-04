@@ -186,6 +186,22 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "str",
         "location": "env_model",
     },
+    # Pixel-env image encoder (pushing_pixels / libero_goal_pixels).
+    "encoder_kind": {
+        "values": ["conv_maxpool", "resnet18"],
+        "type": "str",
+        "location": "env_model",
+    },
+    "encoder_pretrained": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env_model",
+    },
+    "encoder_num_kp": {
+        "values": [32, 64, 128],
+        "type": "int",
+        "location": "env_model",
+    },
     "q_width": {
         "values": [128, 256, 512, 1024, 2048],
         "type": "int",
@@ -839,6 +855,15 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         value_num_blocks = int(em.get("value_num_blocks", 1))
         # libero_goal_pixels conditions on proprio+goal (cond_dim from norm_stats).
         cond_dim = int(norm_stats["cond_dim"]) if (norm_stats and "cond_dim" in norm_stats) else 0
+        # Encoder architecture: read from norm_stats (what training used), falling
+        # back to the config model block for older checkpoints.
+        _ns = norm_stats or {}
+        encoder_kind = _ns.get("encoder_kind", em.get("encoder_kind", "conv_maxpool"))
+        # Always rebuild with pretrained=False: the trained weights come from the
+        # checkpoint's state_dict anyway, and compute nodes may have no network
+        # to download ImageNet weights (they'd be overwritten regardless).
+        encoder_pretrained = False
+        encoder_num_kp = int(_ns.get("encoder_num_kp", em.get("encoder_num_kp", 64)))
         cp_gen = PixelControlPointGenerator(
             output_dim=action_dim,
             control_points=control_points,
@@ -852,6 +877,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             encoder_target_height=enc_h,
             encoder_target_width=enc_w,
             cond_dim=cond_dim,
+            encoder_kind=encoder_kind,
+            encoder_pretrained=encoder_pretrained,
+            encoder_num_kp=encoder_num_kp,
         )
         cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
         cp_gen.to(device).eval()
@@ -864,6 +892,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             value_width=value_width,
             value_num_blocks=value_num_blocks,
             cond_dim=cond_dim,
+            encoder_kind=encoder_kind,
+            encoder_pretrained=encoder_pretrained,
+            encoder_num_kp=encoder_num_kp,
         )
         q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
         q_est.to(device).eval()

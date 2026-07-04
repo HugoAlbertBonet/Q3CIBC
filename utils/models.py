@@ -345,6 +345,135 @@ class DenseResnetValue(nn.Module):
 		return self.dense1(x)  # (..., 1)
 
 
+class SpatialSoftmax(nn.Module):
+	"""Spatial softmax over conv feature maps → per-channel expected (x, y).
+
+	Standard manipulation-policy head (Levine et al. 2016; used by robomimic /
+	the LIBERO paper's ResNet encoders). Unlike GlobalAvgPool it PRESERVES
+	spatial layout — each output channel reports where its feature is in the
+	image, which is exactly what grasp/manipulation policies need.
+
+	Input (B, C, H, W) → output (B, 2C): [E[x], E[y]] per channel, in [-1, 1].
+	"""
+
+	def __init__(self) -> None:
+		super().__init__()
+		self._grid_hw: tuple[int, int] | None = None
+		self.register_buffer("_pos_x", torch.empty(0), persistent=False)
+		self.register_buffer("_pos_y", torch.empty(0), persistent=False)
+
+	def _build_grid(self, h: int, w: int, device, dtype) -> None:
+		ys = torch.linspace(-1.0, 1.0, h, device=device, dtype=dtype)
+		xs = torch.linspace(-1.0, 1.0, w, device=device, dtype=dtype)
+		gy, gx = torch.meshgrid(ys, xs, indexing="ij")
+		self._pos_x = gx.reshape(1, 1, h * w)
+		self._pos_y = gy.reshape(1, 1, h * w)
+		self._grid_hw = (h, w)
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		b, c, h, w = x.shape
+		if self._grid_hw != (h, w) or self._pos_x.device != x.device:
+			self._build_grid(h, w, x.device, x.dtype)
+		attn = torch.softmax(x.reshape(b, c, h * w), dim=-1)
+		ex = (attn * self._pos_x).sum(-1)  # (B, C)
+		ey = (attn * self._pos_y).sum(-1)
+		return torch.cat([ex, ey], dim=-1)  # (B, 2C)
+
+
+class ResNet18SpatialSoftmaxEncoder(nn.Module):
+	"""torchvision ResNet-18 (optionally ImageNet-pretrained) + SpatialSoftmax.
+
+	The LIBERO-standard BC image encoder (per the benchmark's ResNet policies):
+	ResNet-18 trunk to layer4, 1×1 conv down to `num_kp` keypoint channels,
+	spatial softmax → 2*num_kp coords per image.
+
+	Input is the channel-stacked uint8 tensor (B, 3*n_imgs, H, W) the pixel
+	datasets emit (n_imgs = n_cameras * frame_stack). A PRETRAINED trunk expects
+	3-channel RGB, so we split into n_imgs frames, run the SHARED trunk on each
+	(batched as B*n_imgs), and concatenate features → feature_dim =
+	n_imgs * 2 * num_kp. Preprocessing: uint8 → /255 → ImageNet mean/std.
+	"""
+
+	_IMAGENET_MEAN = (0.485, 0.456, 0.406)
+	_IMAGENET_STD = (0.229, 0.224, 0.225)
+
+	def __init__(
+		self,
+		in_channels: int = 6,
+		pretrained: bool = True,
+		num_kp: int = 64,
+	) -> None:
+		super().__init__()
+		if in_channels % 3 != 0:
+			raise ValueError(f"in_channels must be a multiple of 3 (RGB frames); got {in_channels}")
+		self.n_imgs = in_channels // 3
+		self.num_kp = num_kp
+		self.feature_dim = self.n_imgs * 2 * num_kp
+
+		try:
+			import torchvision
+		except ImportError as e:
+			raise ImportError(
+				"torchvision is required for encoder_kind='resnet18' "
+				"(uv sync --extra libero after adding it to pyproject)."
+			) from e
+		weights = torchvision.models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+		trunk = torchvision.models.resnet18(weights=weights)
+		# Keep conv trunk through layer4 (drops avgpool + fc): (B*, 512, H/32, W/32).
+		self.trunk = nn.Sequential(
+			trunk.conv1, trunk.bn1, trunk.relu, trunk.maxpool,
+			trunk.layer1, trunk.layer2, trunk.layer3, trunk.layer4,
+		)
+		self.kp_conv = nn.Conv2d(512, num_kp, kernel_size=1)
+		self.spatial_softmax = SpatialSoftmax()
+		mean = torch.tensor(self._IMAGENET_MEAN).view(1, 3, 1, 1)
+		std = torch.tensor(self._IMAGENET_STD).view(1, 3, 1, 1)
+		self.register_buffer("_px_mean", mean, persistent=False)
+		self.register_buffer("_px_std", std, persistent=False)
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		"""(B, 3*n_imgs, H, W) uint8/float → (B, n_imgs*2*num_kp)."""
+		if x.dtype == torch.uint8:
+			x = x.float() / 255.0
+		elif x.max() > 1.5:
+			x = x / 255.0
+		b = x.shape[0]
+		x = x.reshape(b * self.n_imgs, 3, x.shape[-2], x.shape[-1])
+		x = (x - self._px_mean) / self._px_std
+		x = self.trunk(x)                       # (B*n, 512, h', w')
+		x = self.kp_conv(x)                     # (B*n, num_kp, h', w')
+		x = self.spatial_softmax(x)             # (B*n, 2*num_kp)
+		return x.reshape(b, self.feature_dim)
+
+
+def _build_pixel_encoder(
+	encoder_kind: str,
+	in_channels: int,
+	encoder_target_height: int,
+	encoder_target_width: int,
+	encoder_feature_dim: int,
+	encoder_pretrained: bool,
+	encoder_num_kp: int,
+) -> tuple[nn.Module, int]:
+	"""Encoder factory shared by both pixel nets. Returns (encoder, feature_dim)."""
+	if encoder_kind == "conv_maxpool":
+		enc = ConvMaxpoolEncoder(
+			in_channels=in_channels,
+			target_height=encoder_target_height,
+			target_width=encoder_target_width,
+			feature_dim=encoder_feature_dim,
+		)
+		return enc, encoder_feature_dim
+	if encoder_kind == "resnet18":
+		enc = ResNet18SpatialSoftmaxEncoder(
+			in_channels=in_channels,
+			pretrained=encoder_pretrained,
+			num_kp=encoder_num_kp,
+		)
+		return enc, enc.feature_dim
+	raise ValueError(f"Unknown encoder_kind: {encoder_kind!r} (conv_maxpool|resnet18)")
+
+
 class PixelControlPointGenerator(nn.Module):
 	"""Image-conditioned CP generator.
 
@@ -370,6 +499,9 @@ class PixelControlPointGenerator(nn.Module):
 		encoder_target_width: int = 240,
 		encoder_feature_dim: int = 256,
 		cond_dim: int = 0,
+		encoder_kind: str = "conv_maxpool",
+		encoder_pretrained: bool = True,
+		encoder_num_kp: int = 64,
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 conditions the CP head on an extra per-state vector
@@ -378,14 +510,13 @@ class PixelControlPointGenerator(nn.Module):
 		# unconditioned, so pushing_pixels is unaffected with cond_dim=0).
 		self.cond_dim = int(cond_dim)
 		self._cond: torch.Tensor | None = None
-		self.encoder = ConvMaxpoolEncoder(
-			in_channels=in_channels,
-			target_height=encoder_target_height,
-			target_width=encoder_target_width,
-			feature_dim=encoder_feature_dim,
+		self.encoder, feat_dim = _build_pixel_encoder(
+			encoder_kind, in_channels, encoder_target_height,
+			encoder_target_width, encoder_feature_dim,
+			encoder_pretrained, encoder_num_kp,
 		)
 		self.head = ControlPointGenerator(
-			input_dim=encoder_feature_dim + self.cond_dim,
+			input_dim=feat_dim + self.cond_dim,
 			output_dim=output_dim,
 			hidden_dims=hidden_dims,
 			activation=activation,
@@ -429,6 +560,9 @@ class PixelQEstimator(nn.Module):
 		value_width: int = 1024,
 		value_num_blocks: int = 1,
 		cond_dim: int = 0,
+		encoder_kind: str = "conv_maxpool",
+		encoder_pretrained: bool = True,
+		encoder_num_kp: int = 64,
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 late-fuses an extra per-state vector (LIBERO proprio +
@@ -436,19 +570,18 @@ class PixelQEstimator(nn.Module):
 		# `_cond` attribute per batch (default None → unconditioned).
 		self.cond_dim = int(cond_dim)
 		self._cond: torch.Tensor | None = None
-		self.encoder = ConvMaxpoolEncoder(
-			in_channels=in_channels,
-			target_height=encoder_target_height,
-			target_width=encoder_target_width,
-			feature_dim=encoder_feature_dim,
+		self.encoder, feat_dim = _build_pixel_encoder(
+			encoder_kind, in_channels, encoder_target_height,
+			encoder_target_width, encoder_feature_dim,
+			encoder_pretrained, encoder_num_kp,
 		)
 		self.value = DenseResnetValue(
-			in_dim=encoder_feature_dim + self.cond_dim + action_dim,
+			in_dim=feat_dim + self.cond_dim + action_dim,
 			width=value_width,
 			num_blocks=value_num_blocks,
 		)
 		self.action_dim = action_dim
-		self.encoder_feature_dim = encoder_feature_dim
+		self.encoder_feature_dim = feat_dim
 
 	def encode(self, images: torch.Tensor) -> torch.Tensor:
 		"""Run the conv encoder once per state. Returns (B, feature_dim)."""
