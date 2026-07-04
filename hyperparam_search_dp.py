@@ -80,6 +80,32 @@ def _make_dp_simulation_cls(SimulationCls, denoiser, diffusion, action_dim,
     return _DPSimulation
 
 
+def _make_pixel_dp_simulation_cls(SimulationCls, model, diffusion, action_dim,
+                                  action_bounds, sampler, ddim_steps, ddim_eta, device):
+    """Image-conditioned DP eval. Encode the frame ONCE per env step, then run
+    the DDPM/DDIM sampler against the cached feature (IBC late-fusion) so the
+    conv tower stays off the K-step inner loop.
+    """
+
+    class _PixelDPSimulation(SimulationCls):
+        def select_action(self, observation, return_q_range: bool = False):
+            obs_tensor = self._obs_to_tensor(observation)  # (1, C, H, W) uint8
+            with torch.no_grad():
+                feat = model.encode(obs_tensor)  # (1, F) — once per env step
+                if sampler == "ddpm":
+                    a = diffusion.ddpm_sample(model.denoiser, feat, action_dim)
+                else:
+                    a = diffusion.ddim_sample(model.denoiser, feat, action_dim,
+                                              num_steps=ddim_steps, eta=ddim_eta)
+            action_normalized = np.clip(a[0].cpu().numpy(), action_bounds[0], action_bounds[1])
+            action = self._denormalize_action(action_normalized)
+            if return_q_range:
+                return action, (0.0, 0.0)
+            return action
+
+    return _PixelDPSimulation
+
+
 def _resolve_simulation_cls(active_env: str):
     if active_env == "pushing":
         from simulations.pushing_simulation import PushingSimulation
@@ -87,6 +113,9 @@ def _resolve_simulation_cls(active_env: str):
     if active_env == "pushing_multi":
         from simulations.pushing_multi_simulation import PushingMultiSimulation
         return PushingMultiSimulation
+    if active_env == "pushing_pixels":
+        from simulations.pushing_pixels_simulation import PushingPixelsSimulation
+        return PushingPixelsSimulation
     if active_env == "pen":
         from simulations.pen_human_v2_simulation import PenHumanV2Simulation
         return PenHumanV2Simulation
@@ -143,13 +172,11 @@ def evaluate_dp(checkpoint_dir: str, config: dict) -> dict:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dp = resolve_dp_params(env_config, training_shared)
 
+    is_pixels = active_env == "pushing_pixels"
+
     # norm_stats — written by diffusion_policy_training (same schema as Q3C).
     norm_stats_path = os.path.join(checkpoint_dir, "norm_stats.pt")
     norm_stats = torch.load(norm_stats_path, weights_only=False) if os.path.exists(norm_stats_path) else None
-    if norm_stats is not None and "state_shape" in norm_stats:
-        state_dim = int(norm_stats["state_shape"])
-    else:
-        state_dim = int(env_config["state_dim"]) * frame_stack
 
     # Prefer EMA weights when present.
     ema_path = os.path.join(checkpoint_dir, "denoiser_ema.pt")
@@ -159,7 +186,20 @@ def evaluate_dp(checkpoint_dir: str, config: dict) -> dict:
         return {"success_rate": 0.0, "avg_reward": 0.0,
                 "error": f"denoiser checkpoint not found in {checkpoint_dir}"}
 
-    denoiser = build_denoiser(state_dim, action_dim, dp, device)
+    if is_pixels:
+        from utils.diffusion import build_pixel_denoiser
+        state_shape = (norm_stats["state_shape"] if (norm_stats and "state_shape" in norm_stats)
+                       else env_config["state_dim"])
+        in_channels = int(state_shape[0])
+        enc_h = int(env_config.get("encoder_target_height", 180))
+        enc_w = int(env_config.get("encoder_target_width", 240))
+        denoiser = build_pixel_denoiser(action_dim, in_channels, dp, enc_h, enc_w, device)
+    else:
+        if norm_stats is not None and "state_shape" in norm_stats:
+            state_dim = int(norm_stats["state_shape"])
+        else:
+            state_dim = int(env_config["state_dim"]) * frame_stack
+        denoiser = build_denoiser(state_dim, action_dim, dp, device)
     denoiser.load_state_dict(torch.load(load_path, map_location=device, weights_only=True))
     denoiser.eval()
     diffusion = build_diffusion(dp, device, action_bounds)
@@ -190,10 +230,16 @@ def evaluate_dp(checkpoint_dir: str, config: dict) -> dict:
     per_seed_primary: list = []
 
     for name, sampler, n_steps in specs:
-        DPSim = _make_dp_simulation_cls(
-            SimulationCls, denoiser, diffusion, action_dim, action_bounds,
-            sampler, n_steps, dp["ddim_eta"], device,
-        )
+        if is_pixels:
+            DPSim = _make_pixel_dp_simulation_cls(
+                SimulationCls, denoiser, diffusion, action_dim, action_bounds,
+                sampler, n_steps, dp["ddim_eta"], device,
+            )
+        else:
+            DPSim = _make_dp_simulation_cls(
+                SimulationCls, denoiser, diffusion, action_dim, action_bounds,
+                sampler, n_steps, dp["ddim_eta"], device,
+            )
         sim = DPSim(**sim_kwargs)
         results = []
         t0 = time.perf_counter()

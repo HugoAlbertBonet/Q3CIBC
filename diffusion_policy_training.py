@@ -73,6 +73,9 @@ def load_dataset():
     elif active_env == "pushing_multi":
         from utils.datasets import PushingMultiDataset
         return PushingMultiDataset(data_dir=env_config["data_dir"], frame_stack=frame_stack)
+    elif active_env == "pushing_pixels":
+        from utils.datasets import PushingPixelsDataset
+        return PushingPixelsDataset(data_dir=env_config["data_dir"], frame_stack=frame_stack)
     elif active_env == "libero_goal":
         from utils.datasets import LiberoGoalDataset
         return LiberoGoalDataset(
@@ -94,6 +97,8 @@ def load_dataset():
 
 def build_obs_normalizer(dataset, device):
     """Standardize for the IBC-faithful envs (matches combinedv2)."""
+    if active_env == "pushing_pixels":
+        return None  # ConvMaxpoolEncoder does uint8->/255->resize internally.
     if active_env == "libero_goal":
         return ObservationNormalizer(env_id=env_id, device=device, frame_stack=1,
                                      obs_mean=dataset.obs_mean, obs_std=dataset.obs_std)
@@ -129,11 +134,23 @@ def main():
     )
     obs_normalizer = build_obs_normalizer(dataset, device)
 
-    denoiser = build_denoiser(dataset.state_shape, dataset.action_shape, dp, device)
+    is_pixels = active_env == "pushing_pixels"
+    if is_pixels:
+        from utils.diffusion import build_pixel_denoiser
+        in_channels = int(dataset.state_shape[0])  # 3 * frame_stack
+        enc_h = int(env_config.get("encoder_target_height", 180))
+        enc_w = int(env_config.get("encoder_target_width", 240))
+        denoiser = build_pixel_denoiser(
+            dataset.action_shape, in_channels, dp,
+            encoder_target_height=enc_h, encoder_target_width=enc_w, device=device,
+        )
+    else:
+        denoiser = build_denoiser(dataset.state_shape, dataset.action_shape, dp, device)
     diffusion = build_diffusion(dp, device, action_bounds)
     n_params = sum(p.numel() for p in denoiser.parameters())
     print(f"Denoiser params: {n_params} (kind={dp['denoiser_network_kind']} "
-          f"w={dp['denoiser_width']} d={dp['denoiser_depth']} t_emb={dp['time_emb_dim']})")
+          f"w={dp['denoiser_width']} d={dp['denoiser_depth']} t_emb={dp['time_emb_dim']}"
+          f"{' +ConvMaxpoolEncoder' if is_pixels else ''})")
 
     optimizer = torch.optim.AdamW(denoiser.parameters(), lr=learning_rate)
     effective_t_max = env_training.get("cosine_t_max", training_steps)
@@ -157,9 +174,11 @@ def main():
             if step >= training_steps:
                 break
             states = batch["state"].float().to(device)
-            states = obs_normalizer.normalize(states)
+            if obs_normalizer is not None:
+                states = obs_normalizer.normalize(states)
             actions = batch["action"].float().to(device)  # already in [-1, 1]
 
+            # For pixels, denoiser.forward(images, xt, t) encodes internally.
             loss = diffusion.training_loss(denoiser, states, actions)
 
             optimizer.zero_grad(set_to_none=True)

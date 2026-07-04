@@ -110,6 +110,62 @@ class DiffusionDenoiser(nn.Module):
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Pixel denoiser — IBC ConvMaxpoolEncoder + the same epsilon head
+# ────────────────────────────────────────────────────────────────────────────
+
+class PixelDiffusionDenoiser(nn.Module):
+    """Image-conditioned epsilon-predictor.
+
+    ConvMaxpoolEncoder (reused from utils.models, the IBC encoder) maps the
+    stacked image to a 256-D feature; the flat `DiffusionDenoiser` head then
+    conditions on that feature exactly like the state-based case. The encoder
+    is trained jointly (gradients flow through it during training_loss).
+
+    At eval time call `encode(images)` ONCE per env step and hand the feature
+    to `diffusion.ddpm_sample(self.denoiser, feature, ...)` — this keeps the
+    conv tower off the K-step sampling inner loop (IBC's late-fusion trick).
+    """
+
+    def __init__(
+        self,
+        action_dim: int,
+        *,
+        in_channels: int,
+        encoder_target_height: int = 180,
+        encoder_target_width: int = 240,
+        encoder_feature_dim: int = 256,
+        time_emb_dim: int = 128,
+        network_kind: str = "mlp",
+        width: int | None = None,
+        depth: int | None = None,
+        use_spectral_norm: bool = False,
+    ) -> None:
+        super().__init__()
+        from utils.models import ConvMaxpoolEncoder
+        self.encoder = ConvMaxpoolEncoder(
+            in_channels=in_channels,
+            target_height=encoder_target_height,
+            target_width=encoder_target_width,
+            feature_dim=encoder_feature_dim,
+        )
+        self.denoiser = DiffusionDenoiser(
+            state_dim=encoder_feature_dim,
+            action_dim=action_dim,
+            time_emb_dim=time_emb_dim,
+            network_kind=network_kind,
+            width=width,
+            depth=depth,
+            use_spectral_norm=use_spectral_norm,
+        )
+
+    def encode(self, images: torch.Tensor) -> torch.Tensor:
+        return self.encoder(images)
+
+    def forward(self, images: torch.Tensor, noisy_action: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        return self.denoiser(self.encoder(images), noisy_action, t)
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Beta schedules
 # ────────────────────────────────────────────────────────────────────────────
 
@@ -300,6 +356,24 @@ def build_denoiser(
     return DiffusionDenoiser(
         state_dim=state_dim,
         action_dim=action_dim,
+        time_emb_dim=dp["time_emb_dim"],
+        network_kind=dp["denoiser_network_kind"],
+        width=dp["denoiser_width"],
+        depth=dp["denoiser_depth"],
+        use_spectral_norm=dp["denoiser_use_spectral_norm"],
+    ).to(device)
+
+
+def build_pixel_denoiser(
+    action_dim: int, in_channels: int, dp: dict,
+    encoder_target_height: int = 180, encoder_target_width: int = 240,
+    device: str | torch.device = "cpu",
+) -> PixelDiffusionDenoiser:
+    return PixelDiffusionDenoiser(
+        action_dim=action_dim,
+        in_channels=in_channels,
+        encoder_target_height=encoder_target_height,
+        encoder_target_width=encoder_target_width,
         time_emb_dim=dp["time_emb_dim"],
         network_kind=dp["denoiser_network_kind"],
         width=dp["denoiser_width"],

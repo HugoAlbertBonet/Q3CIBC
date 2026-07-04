@@ -1,0 +1,26 @@
+# Batch pushingPixelsDPA - Diffusion Policy on IBC BlockPush PIXELS (PushingPixels-v0).
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pushing_pixels
+#
+# Image-conditioned DP: ConvMaxpoolEncoder (IBC's, reused from utils.models) maps
+# the stacked frame -> 256-D feature; the SAME epsilon-denoiser head (mlp 256x2 +
+# t-emb 128) conditions on that feature. Encoder trained jointly. At eval the frame
+# is encoded ONCE per env step, then the DDPM/DDIM sampler runs on the cached
+# feature (IBC late-fusion) so the conv tower stays off the K-step inner loop.
+#
+# Env (config environments.pushing_pixels): state=(6,240,320) uint8 (3ch x frame_stack2),
+# action_dim=2 in [-1,1], max_episode_steps=100, num_eval_seeds=100. Actions
+# normalized [-1,1] at dataset level; NO obs standardizer (encoder does uint8->/255->resize).
+#
+# Each trial trains one denoiser, evaluated under DDPM + DDIM {5,10,25}.
+# batch_size=64 (images are heavy; drop from the 128 state-based default to fit GPU mem).
+#
+# Trials: pushingPixelsDPA1-3 = seeds 0/1/2.
+
+# -- pushingPixelsDPA1: seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"learning_rate":1e-3,"batch_size":64,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPA2: seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"learning_rate":1e-3,"batch_size":64,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPA3: seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"learning_rate":1e-3,"batch_size":64,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
