@@ -51,7 +51,13 @@ training_steps = int(env_training.get("training_steps", training_shared.get("tra
 batch_size = int(env_training.get("batch_size", training_shared.get("batch_size", 512)))
 learning_rate = float(env_training.get("learning_rate", training_shared.get("learning_rate", 1e-3)))
 trial_seed = int(env_training.get("trial_seed", 0))
-num_workers = int(training_shared.get("num_workers", 0))
+# Mirror combinedv2: pixel datasets decode/stack uint8 images per item, so they
+# NEED worker processes or the GPU starves (0 workers => ~unbounded pixel epochs).
+# State-based datasets are in-RAM ndarrays and keep 0 workers.
+num_workers = int(env_config.get(
+    "dataloader_num_workers",
+    training_shared.get("num_workers", 4 if active_env == "pushing_pixels" else 0),
+))
 log_interval = int(training_shared.get("log_interval", 1000))
 save_interval = int(training_shared.get("save_interval", 10000))
 MODEL_SAVE_DIR = training_shared.get("model_save_dir", "checkpoints")
