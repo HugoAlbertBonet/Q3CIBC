@@ -67,6 +67,12 @@ class KitchenSimulation(BaseSimulation):
                 obs_std=np.asarray(norm_stats["obs_std"], dtype=np.float32),
             )
 
+        # CP outputs already live in model space ([-1,1]) for kitchen; the
+        # eval-time DFO/Langevin refinement wrappers in hyperparam_search.py
+        # read _act_min_t (None => candidates need no extra normalization
+        # before the Q net). Mirrors DoorHumanV2Simulation.
+        self._act_min_t = None
+        self._act_rng_t = None
         if norm_stats is not None and "act_min" in norm_stats and "act_max" in norm_stats:
             self._raw_act_min = np.asarray(norm_stats["act_min"], dtype=np.float32)
             self._raw_act_max = np.asarray(norm_stats["act_max"], dtype=np.float32)

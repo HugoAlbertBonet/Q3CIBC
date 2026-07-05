@@ -520,7 +520,10 @@
                     "denoiser_depth": 1,
                     "denoiser_use_spectral_norm": false,
                     "ema_decay": 0.999,
-                    "ddim_eval_steps": [10, 25],
+                    "ddim_eval_steps": [
+                        10,
+                        25
+                    ],
                     "ddim_eta": 0.0,
                     "eval_ddpm": true
                 }

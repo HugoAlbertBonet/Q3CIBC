@@ -308,6 +308,32 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # Official-IBC-faithful inference chain options (see memory ibc-repro-fixes;
+    # these tripled our in-env IBC's kitchen score). noise_via_stepsize: noise
+    # shrinks linearly with stepsize (chain end = pure polish). again_iterations
+    # > 0 runs a second polish chain at constant 1e-5 stepsize.
+    "inference_langevin_noise_via_stepsize": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env_training",
+    },
+    "inference_langevin_again_iterations": {
+        "values": [0, 10, 20, 50, 100],
+        "type": "int",
+        "location": "env_training",
+    },
+    "inference_langevin_again_noise_scale": {
+        "values": [0.0, 0.5, 1.0],
+        "type": "float",
+        "location": "env_training",
+    },
+    # 0 = refine the whole CP cloud; k>0 = refine only the top-k CPs by
+    # initial Q (k=1 -> single chain from the argmax CP, cheapest Langevin).
+    "inference_langevin_top_k": {
+        "values": [0, 1, 8, 32],
+        "type": "int",
+        "location": "env_training",
+    },
     # ── CP-DFO refinement at inference (Q3CIBC-specific) ────────────────────
     # When > 0, replaces inference-time Langevin with a DFO-style iterative
     # refinement starting from the CP cloud (optionally with a few extra
@@ -825,6 +851,19 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     # then applies any inference_langevin_* overrides on top. Lets eval use
     # gentler step sizes than training while keeping training paper-faithful.
     langevin_cfg = effective_inference_langevin_config(env_config)
+    # Official-IBC-faithful chain extras (audit fixes; see ibc-repro-fixes).
+    inference_langevin_noise_via_stepsize = bool(
+        env_config.get("training", {}).get("inference_langevin_noise_via_stepsize", False)
+    )
+    inference_langevin_again_iterations = int(
+        env_config.get("training", {}).get("inference_langevin_again_iterations", 0)
+    )
+    inference_langevin_again_noise_scale = float(
+        env_config.get("training", {}).get("inference_langevin_again_noise_scale", 0.5)
+    )
+    inference_langevin_top_k = int(
+        env_config.get("training", {}).get("inference_langevin_top_k", 0)
+    )
 
     cp_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
     q_path = os.path.join(checkpoint_dir, "q_estimator.pt")
@@ -1167,7 +1206,21 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         sim_cls = DFORefinedSimulation
     elif inference_langevin_iterations > 0:
         class LangevinRefinedParticleSimulation(SimulationCls):
-            """Refines the highest-Q control point with Langevin MCMC before acting."""
+            """Refines the CP CLOUD with official-IBC-faithful Langevin MCMC.
+
+            Upgraded after the IBC audit (memory: ibc-repro-fixes; these chain
+            details tripled our in-env IBC's kitchen score):
+              - Chains start from ALL control points (model-trained proposals),
+                not just the argmax CP — Q3C's analog of IBC's 512 uniform
+                inits, but ~5x fewer and already near-modal, so short chains
+                suffice (efficiency is the point of Q3C).
+              - Optional noise_via_stepsize (official langevin_step): noise
+                shrinks linearly with stepsize -> chain end is a pure polish.
+              - Optional second chain at constant 1e-5 stepsize (official
+                IbcPolicy.optimize_again).
+              - Final action = argmax Q over the REFINED cloud (greedy, same
+                as official GreedyPolicy mode).
+            """
 
             def select_action(self, observation, return_q_range: bool = False):
                 obs_tensor = (
@@ -1179,15 +1232,20 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
                 with torch.no_grad():
                     cps = self.control_point_generator(obs_tensor)  # (1, N, D)
-                    obs_expanded = obs_tensor.unsqueeze(1).expand(-1, cps.shape[1], -1)
-                    if self._act_min_t is not None:
-                        cp_for_q = (cps - self._act_min_t) / self._act_rng_t
-                    else:
-                        cp_for_q = cps
-                    q_values = self.q_estimator(obs_expanded, cp_for_q).squeeze(-1)
-                    best_idx = q_values.argmax(dim=1)
-                    q_range = (q_values.min().item(), q_values.max().item())
-                    best_cp = cps[0, best_idx[0], :].view(1, 1, -1).clone()
+                    # top_k > 0: refine only the k best CPs by initial Q
+                    # (k=1 = single chain from the argmax CP). 0 = whole cloud.
+                    if inference_langevin_top_k > 0:
+                        if self._act_min_t is not None:
+                            cp_q_in = (cps - self._act_min_t) / self._act_rng_t
+                        else:
+                            cp_q_in = cps
+                        obs_exp0 = obs_tensor.unsqueeze(1).expand(-1, cps.shape[1], -1)
+                        q0 = self.q_estimator(obs_exp0, cp_q_in).squeeze(-1)  # (1, N)
+                        k = min(inference_langevin_top_k, cps.shape[1])
+                        top_idx = q0.topk(k, dim=1).indices  # (1, k)
+                        cps = torch.gather(
+                            cps, 1, top_idx.unsqueeze(-1).expand(-1, -1, cps.shape[-1])
+                        )
 
                 act_min_t = torch.full(
                     (cps.shape[-1],), float(action_bounds[0]), device=self.device
@@ -1212,7 +1270,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                 refined = sample_langevin(
                     energy_function=_neg_energy_fn,
                     observations=obs_tensor,
-                    num_samples=1,
+                    num_samples=cps.shape[1],
                     action_min=act_min_t,
                     action_max=act_max_t,
                     num_iterations=inference_langevin_iterations,
@@ -1225,14 +1283,48 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                         langevin_cfg.get("delta_action_clip", 0.1)
                     ),
                     noise_scale=float(langevin_cfg.get("noise_scale", 1.0)),
-                    initial_actions=best_cp,
+                    initial_actions=cps.clone(),
                     device=self.device,
+                    noise_via_stepsize=inference_langevin_noise_via_stepsize,
                 )
+                if inference_langevin_again_iterations > 0:
+                    refined = sample_langevin(
+                        energy_function=_neg_energy_fn,
+                        observations=obs_tensor,
+                        num_samples=cps.shape[1],
+                        action_min=act_min_t,
+                        action_max=act_max_t,
+                        num_iterations=inference_langevin_again_iterations,
+                        lr_init=1e-5,
+                        lr_final=1e-5,
+                        polynomial_decay_power=float(
+                            langevin_cfg.get("polynomial_decay_power", 2.0)
+                        ),
+                        delta_action_clip=float(
+                            langevin_cfg.get("delta_action_clip", 0.1)
+                        ),
+                        noise_scale=inference_langevin_again_noise_scale,
+                        initial_actions=refined,
+                        device=self.device,
+                        noise_via_stepsize=inference_langevin_noise_via_stepsize,
+                    )
 
                 for p in self.q_estimator.parameters():
                     p.requires_grad_(True)
 
-                action = refined[0, 0, :].cpu().numpy()
+                # Greedy over the refined cloud (re-scored post-refinement so
+                # the argmax indexes the actions actually being returned).
+                with torch.no_grad():
+                    obs_expanded = obs_tensor.unsqueeze(1).expand(-1, refined.shape[1], -1)
+                    if _norm_min is not None:
+                        ref_for_q = (refined - _norm_min) / _norm_rng
+                    else:
+                        ref_for_q = refined
+                    q_values = self.q_estimator(obs_expanded, ref_for_q).squeeze(-1)
+                    best_idx = q_values.argmax(dim=1)
+                    q_range = (q_values.min().item(), q_values.max().item())
+                    action = refined[0, best_idx[0], :].cpu().numpy()
+
                 action = np.clip(action, action_bounds[0], action_bounds[1])
                 # Denormalize to the env's native action box when the
                 # simulation declares a non-identity inverse (Pushing). For
