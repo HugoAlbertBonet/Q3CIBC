@@ -86,20 +86,39 @@ class DiffusionDenoiser(nn.Module):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.time_emb = SinusoidalTimeEmbedding(time_emb_dim)
-        if hidden_dims is None:
-            w = width if width is not None else 256
-            d = depth if depth is not None else 2
-            hidden_dims = [w] * d
-        self.network = _build_backbone(
-            input_dim=state_dim + action_dim + time_emb_dim,
-            output_dim=action_dim,
-            network_kind=network_kind,
-            hidden_dims=hidden_dims,
-            width=width,
-            depth=depth,
-            activation=activation,
-            use_spectral_norm=use_spectral_norm,
-        )
+        in_dim = state_dim + action_dim + time_emb_dim
+        if network_kind == "dense_resnet":
+            # Faithful port of IBC's DenseResnetValue head (pixel EBM value net,
+            # pixel_ebm_langevin.gin: width=1024, num_blocks=1, Normal(0,0.05)
+            # init) — but emitting action_dim (epsilon) instead of a scalar Q.
+            # This makes the pixel DP denoiser head == the PixelQEstimator head.
+            from utils.models import _DenseResnetBlock
+            w = width if width is not None else 1024
+            nb = depth if depth is not None else 1
+            mods: list[nn.Module] = [nn.Linear(in_dim, w)]
+            mods += [_DenseResnetBlock(w) for _ in range(nb)]
+            mods += [nn.Linear(w, action_dim)]
+            self.network = nn.Sequential(*mods)
+            for m in self.network.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.normal_(m.weight, mean=0.0, std=0.05)
+                    if m.bias is not None:
+                        nn.init.normal_(m.bias, mean=0.0, std=0.05)
+        else:
+            if hidden_dims is None:
+                w = width if width is not None else 256
+                d = depth if depth is not None else 2
+                hidden_dims = [w] * d
+            self.network = _build_backbone(
+                input_dim=in_dim,
+                output_dim=action_dim,
+                network_kind=network_kind,
+                hidden_dims=hidden_dims,
+                width=width,
+                depth=depth,
+                activation=activation,
+                use_spectral_norm=use_spectral_norm,
+            )
 
     def forward(
         self, state: torch.Tensor, noisy_action: torch.Tensor, t: torch.Tensor

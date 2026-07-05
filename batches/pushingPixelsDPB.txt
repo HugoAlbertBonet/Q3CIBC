@@ -1,0 +1,34 @@
+# Batch pushingPixelsDPB - Diffusion Policy on PushingPixels-v0, PAPER-FAITHFUL arch.
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pushing_pixels
+#
+# WHY (vs failed pushingPixelsDPA): DPA used a weak mlp 256x2 head, lr 1e-3,
+# batch 64, 100k steps -> 9% mean, 2/3 seeds collapsed. This batch makes the DP
+# denoiser architecture + the ablation-critical training params IDENTICAL to the
+# Q3C/IBC pixel EBM that reached ~98-99%.
+#
+# ARCHITECTURE (identical to PixelQEstimator / IBC pixel_ebm_langevin.gin):
+#   - Encoder: ConvMaxpoolEncoder (filters 32/64/128/256, GAP -> 256-D). SHARED,
+#     reused from utils.models. Same as Q3C pixel.
+#   - Head: DenseResnetValue (width=1024, num_blocks=1, Normal(0,0.05) init),
+#     emitting action_dim (epsilon) instead of scalar Q. denoiser_network_kind=
+#     "dense_resnet" selects this faithful port.
+#
+# ABLATION-CRITICAL PARAMS matched to Q3C pixel best runs (trials with sr 0.98-0.99):
+#   training_steps=150000, batch_size=128, learning_rate=3e-4, frame_stack=2 (env),
+#   action normalized [-1,1] (dataset), num_eval_seeds=100 (env), encoder 180x240.
+#
+# DP-INTRINSIC (not an IBC param; part of the diffusion method, kept standard):
+#   num_train_timesteps=100, cosine beta, time_emb_dim=128, ema_decay=0.999,
+#   DDIM eval steps {5,10,25}. These have no IBC analog -- the comparison is
+#   "diffusion sampler vs IBC energy inference" at IDENTICAL encoder+value arch.
+#
+# Trials: pushingPixelsDPB1-3 = seeds 0/1/2.
+
+# -- pushingPixelsDPB1: seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"learning_rate":3e-4,"batch_size":128,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPB2: seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"learning_rate":3e-4,"batch_size":128,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPB3: seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"learning_rate":3e-4,"batch_size":128,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
