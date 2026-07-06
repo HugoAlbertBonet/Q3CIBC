@@ -142,6 +142,15 @@ MSE_SR_MEAN = 0.870
 MSE_SR_STD = 0.041
 MSE_SEEDS = 3
 
+# Diffusion Policy (THIS repo) — Pixels, PAPER-FAITHFUL arch: ConvMaxpoolEncoder
+# + DenseResnetValue(1024, 1 block) epsilon head (== PixelQEstimator). From
+# pushing_pixels DP trials 4-9 (dense_resnet, 150k, batch 128, lr 3e-4;
+# 6 runs = 2 reps x seeds 0/1/2). SR = (mean, std, n_runs).
+DP_DDPM   = (0.657, 0.069, 6)
+DP_DDIM5  = (0.693, 0.098, 6)
+DP_DDIM10 = (0.665, 0.094, 6)
+DP_DDIM25 = (0.683, 0.121, 6)
+
 
 # ─── Timing harness ───────────────────────────────────────────────────────
 
@@ -548,6 +557,41 @@ def make_ibc_mse(device: torch.device):
     return "ibc_mse", select_action, (net,)
 
 
+# ─── Method 8: Diffusion Policy (this repo), paper-faithful pixel arch ─────
+
+def make_dp(device: torch.device, sampler: str, ddim_steps, timesteps: int, method_name: str):
+    """DP inference: encode image ONCE, then run DDPM/DDIM on the cached feature.
+
+    Denoiser = PixelDiffusionDenoiser (ConvMaxpoolEncoder + DenseResnetValue
+    1024x1 epsilon head) — identical encoder+value arch to the Q3C/IBC pixel
+    EBM. Late fusion: the conv tower stays off the K-step sampling loop.
+    """
+    from utils.diffusion import build_pixel_denoiser, build_diffusion, resolve_dp_params
+    dp = resolve_dp_params({"model": {"diffusion": {
+        "denoiser_network_kind": "dense_resnet", "denoiser_width": 1024,
+        "denoiser_depth": 1, "time_emb_dim": 128,
+        "num_train_timesteps": timesteps, "beta_schedule": "cosine",
+    }}})
+    model = build_pixel_denoiser(
+        ACTION_DIM, IMAGE_CHANNELS, dp,
+        ENCODER_TARGET_HEIGHT, ENCODER_TARGET_WIDTH, device,
+    ).eval()
+    diffusion = build_diffusion(dp, device, (ACTION_MIN, ACTION_MAX))
+
+    def select_action():
+        obs = torch.randint(0, 256, (1, IMAGE_CHANNELS, IMAGE_HEIGHT, IMAGE_WIDTH),
+                            dtype=torch.uint8, device=device)
+        with torch.no_grad():
+            feat = model.encode(obs)  # (1, 256) — once per env step
+            if sampler == "ddpm":
+                a = diffusion.ddpm_sample(model.denoiser, feat, ACTION_DIM)
+            else:
+                a = diffusion.ddim_sample(model.denoiser, feat, ACTION_DIM, num_steps=ddim_steps)
+        return a[0]
+
+    return method_name, select_action, (model,)
+
+
 # ─── Driver ───────────────────────────────────────────────────────────────
 
 def param_count(*modules: torch.nn.Module) -> int:
@@ -662,6 +706,29 @@ def main():
     MSE_SCORING_EVALS = 1
     rows.append(("ibc_mse", MSE_SR_MEAN * 100, MSE_SR_STD * 100, MSE_SEEDS, MSE_SCORING_EVALS, t))
     print()
+
+    # ── Diffusion Policy (paper-faithful pixel arch): DDPM + DDIM {5,10,25} ──
+    # scoring_evals = denoiser forward passes per action = T (DDPM) or k (DDIM).
+    dp_variants = [
+        ("dp_ddpm100", "ddpm", None, 100, DP_DDPM),
+        ("dp_ddim5",   "ddim", 5,    100, DP_DDIM5),
+        ("dp_ddim10",  "ddim", 10,   100, DP_DDIM10),
+        ("dp_ddim25",  "ddim", 25,   100, DP_DDIM25),
+    ]
+    for idx, (name, sampler, steps, T, sr_const) in enumerate(dp_variants, start=8):
+        print("=" * 78)
+        label = f"DDPM ({T} steps)" if sampler == "ddpm" else f"DDIM ({steps} steps)"
+        print(f"Method {idx}: Diffusion Policy + {label}  [paper-faithful: ConvMaxpool + DenseResnetValue 1024x1]")
+        method, fn, modules = make_dp(device, sampler, steps, T, name)
+        print(f"  Param count: {param_count(*modules):,}")
+        t = time_block(fn, args.num_steps, args.warmup, device)
+        print(f"  Mean:    {t['mean_ms']:7.3f} ms  (median {t['median_ms']:7.3f} ms, std {t['stdev_ms']:6.3f} ms)")
+        print(f"  Range:   [{t['min_ms']:7.3f}, {t['max_ms']:7.3f}] ms over {t['n']} runs")
+        sr_mean, sr_std, n_seeds = sr_const
+        print(f"  SR:      {sr_mean*100:.1f}% ± {sr_std*100:.1f}% over {n_seeds} runs (DP pushing_pixels trials 4-9)")
+        scoring_evals = T if sampler == "ddpm" else steps
+        rows.append((name, sr_mean * 100, sr_std * 100, n_seeds, scoring_evals, t))
+        print()
 
     # ─── CSV write ───────────────────────────────────────────────────────
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

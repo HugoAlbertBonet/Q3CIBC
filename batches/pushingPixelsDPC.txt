@@ -1,0 +1,41 @@
+# Batch pushingPixelsDPC - DP pixels CONVERGENCE CHECK (3 seeds @ 300k).
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pushing_pixels
+#
+# PURPOSE: verification, NOT the headline comparison. pushingPixelsDPB (150k)
+# already showed DP's epsilon-MSE loss plateaued (~0.014, flat across all 6 runs)
+# while success stayed ~66% -> the Q3C gap is the METHOD, not undertraining.
+# This batch doubles the budget to 300k to PROVE success doesn't materially move,
+# preempting any "DP was undertrained" objection with evidence.
+#
+# The fair headline comparison stays DPB 150k == Q3C 150k (both converged).
+# DO NOT put these 300k rows head-to-head vs Q3C 150k in the main table.
+#
+# IDENTICAL to DPB except training_steps 150000 -> 300000 (LR cosine anneal
+# auto-extends: effective_t_max = training_steps). Arch/params otherwise matched
+# to the Q3C/IBC pixel EBM (ConvMaxpoolEncoder + DenseResnetValue 1024x1).
+#
+# ALSO: v-prediction variant (DPC4-6). prediction_type="v" (Salimans & Ho 2022)
+# is a FAIR DP-intrinsic change — same net/capacity, only the training target +
+# sampler parameterization differ. Kept at 150k (matched to the DPB epsilon
+# headline) so the comparison isolates prediction_type, not budget. If v-pred
+# lifts DP off ~66%, that's the fair "DP tuned properly" number.
+#
+# Trials: DPC1-3 = epsilon @ 300k (convergence check); DPC4-6 = v-pred @ 150k.
+
+# -- pushingPixelsDPC1: seed=0 @ 300k
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"learning_rate":3e-4,"batch_size":128,"training_steps":300000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPC2: seed=1 @ 300k
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"learning_rate":3e-4,"batch_size":128,"training_steps":300000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPC3: seed=2 @ 300k
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"learning_rate":3e-4,"batch_size":128,"training_steps":300000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPC4: v-prediction @ 150k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"learning_rate":3e-4,"batch_size":128,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPC5: v-prediction @ 150k, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"learning_rate":3e-4,"batch_size":128,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPC6: v-prediction @ 150k, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"learning_rate":3e-4,"batch_size":128,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'

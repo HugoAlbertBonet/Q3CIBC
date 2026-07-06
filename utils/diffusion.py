@@ -226,12 +226,16 @@ class GaussianDiffusion:
         clip_sample: bool = True,
         action_low: float = -1.0,
         action_high: float = 1.0,
+        prediction_type: str = "epsilon",
     ) -> None:
         self.num_timesteps = int(num_timesteps)
         self.device = torch.device(device)
         self.clip_sample = clip_sample
         self.action_low = action_low
         self.action_high = action_high
+        if prediction_type not in ("epsilon", "v"):
+            raise ValueError(f"prediction_type must be 'epsilon' or 'v', got {prediction_type!r}")
+        self.prediction_type = prediction_type
 
         betas = _make_betas(self.num_timesteps, beta_schedule).to(self.device)
         alphas = 1.0 - betas
@@ -262,15 +266,30 @@ class GaussianDiffusion:
         t = torch.randint(0, self.num_timesteps, (B,), device=x0.device)
         noise = torch.randn_like(x0)
         xt = self.q_sample(x0, t, noise)
-        eps_pred = model(state, xt, t.float())
-        return torch.mean((eps_pred - noise) ** 2)
+        out = model(state, xt, t.float())
+        if self.prediction_type == "v":
+            # v-prediction target (Salimans & Ho 2022): v = sqrt(acp)*noise - sqrt(1-acp)*x0.
+            sqrt_acp = self.sqrt_acp[t].unsqueeze(-1)
+            sqrt_omacp = self.sqrt_one_minus_acp[t].unsqueeze(-1)
+            target = sqrt_acp * noise - sqrt_omacp * x0
+        else:
+            target = noise
+        return torch.mean((out - target) ** 2)
 
     # ── helpers ───────────────────────────────────────────────────────────────
-    def _predict_x0(self, xt: torch.Tensor, t: int, eps: torch.Tensor) -> torch.Tensor:
-        x0 = (xt - self.sqrt_one_minus_acp[t] * eps) / self.sqrt_acp[t]
+    def _model_out_to_x0(self, xt: torch.Tensor, t: int, out: torch.Tensor) -> torch.Tensor:
+        """Recover the clean sample x0 from the model output for either param."""
+        if self.prediction_type == "v":
+            x0 = self.sqrt_acp[t] * xt - self.sqrt_one_minus_acp[t] * out
+        else:  # epsilon
+            x0 = (xt - self.sqrt_one_minus_acp[t] * out) / self.sqrt_acp[t]
         if self.clip_sample:
             x0 = x0.clamp(self.action_low, self.action_high)
         return x0
+
+    def _x0_to_eps(self, xt: torch.Tensor, t: int, x0: torch.Tensor) -> torch.Tensor:
+        """Noise consistent with a (possibly clipped) x0 — for the DDIM direction term."""
+        return (xt - self.sqrt_acp[t] * x0) / self.sqrt_one_minus_acp[t]
 
     # ── DDPM (stochastic, full chain) ─────────────────────────────────────────
     @torch.no_grad()
@@ -281,8 +300,8 @@ class GaussianDiffusion:
         x = torch.randn(B, action_dim, device=self.device)
         for t in reversed(range(self.num_timesteps)):
             t_batch = torch.full((B,), t, device=self.device, dtype=torch.float32)
-            eps = model(state, x, t_batch)
-            x0 = self._predict_x0(x, t, eps)
+            out = model(state, x, t_batch)
+            x0 = self._model_out_to_x0(x, t, out)
             mean = self.posterior_mean_coef1[t] * x0 + self.posterior_mean_coef2[t] * x
             if t > 0:
                 noise = torch.randn_like(x)
@@ -310,8 +329,9 @@ class GaussianDiffusion:
         seq = list(reversed(step_idx.tolist()))
         for i, t in enumerate(seq):
             t_batch = torch.full((B,), t, device=self.device, dtype=torch.float32)
-            eps = model(state, x, t_batch)
-            x0 = self._predict_x0(x, t, eps)
+            out = model(state, x, t_batch)
+            x0 = self._model_out_to_x0(x, t, out)
+            eps = self._x0_to_eps(x, t, x0)
             acp_t = self.alphas_cumprod[t]
             t_prev = seq[i + 1] if i + 1 < len(seq) else -1
             acp_prev = self.alphas_cumprod[t_prev] if t_prev >= 0 else torch.ones((), device=self.device)
@@ -356,6 +376,7 @@ def resolve_dp_params(env_config: dict, training_shared: dict | None = None) -> 
     return {
         "num_train_timesteps": int(g("num_train_timesteps", 100)),
         "beta_schedule": str(g("beta_schedule", "cosine")),
+        "prediction_type": str(g("prediction_type", "epsilon")),
         "time_emb_dim": int(g("time_emb_dim", 128)),
         "denoiser_network_kind": str(g("denoiser_network_kind", "mlp")),
         "denoiser_width": int(g("denoiser_width", 256)),
@@ -411,4 +432,5 @@ def build_diffusion(
         clip_sample=True,
         action_low=float(action_bounds[0]),
         action_high=float(action_bounds[1]),
+        prediction_type=dp.get("prediction_type", "epsilon"),
     )
