@@ -550,6 +550,76 @@ def main():
     action_max_tensor = torch.full((dataset.action_shape,), action_bounds[1], device=device)
     action_range_tensor = action_max_tensor - action_min_tensor
 
+    def persist_norm_stats() -> None:
+        """Save norm_stats.pt for the eval-time simulation.
+
+        Everything here is dataset/config-derived, so we save BEFORE training
+        starts (and again at the end, harmless overwrite). Rationale: periodic
+        checkpoints are written every save_interval steps, but a wall-time-killed
+        job used to leave them un-evaluable because norm_stats.pt only appeared
+        after training completed. Saving up front makes partial runs salvageable.
+        """
+        if active_env not in (
+            "pushing", "pushing_multi", "pushing_pixels", "pen", "door",
+            "kitchen", "libero_goal", "libero_goal_pixels",
+        ):
+            return
+        norm_stats = {
+            "act_min": dataset.act_min,
+            "act_max": dataset.act_max,
+            "action_norm_range": getattr(dataset, "action_norm_range", (-1.0, 1.0)),
+            "frame_stack": frame_stack,
+            "env_id": env_id,
+        }
+        # libero_goal_pixels: persist the pixel + conditioning schema so the
+        # render-eval sim rebuilds an identical (image, cond) input.
+        if active_env == "libero_goal_pixels":
+            norm_stats["libero_obs_keys"] = dataset.libero_obs_keys      # proprio keys
+            norm_stats["goal_embeddings"] = dataset.goal_embeddings
+            norm_stats["goal_task_names"] = dataset.goal_task_names
+            norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
+            norm_stats["proprio_dim"] = dataset.proprio_dim
+            norm_stats["cond_dim"] = dataset.cond_dim
+            norm_stats["in_channels"] = dataset.in_channels
+            norm_stats["image_hw"] = [dataset._H, dataset._W]
+            norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 128)
+            norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 128)
+            norm_stats["state_shape"] = list(dataset.state_shape)
+            # Encoder architecture — eval must rebuild the exact same encoder.
+            norm_stats["encoder_kind"] = env_model.get("encoder_kind", "conv_maxpool")
+            norm_stats["encoder_pretrained"] = bool(env_model.get("encoder_pretrained", True))
+            norm_stats["encoder_num_kp"] = int(env_model.get("encoder_num_kp", 64))
+        # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
+        # its own [0,1] scaling + bilinear resize on every forward, matching
+        # IBC's image_prepro.preprocess). Only persist these when present.
+        if hasattr(dataset, "obs_mean"):
+            norm_stats["obs_mean"] = dataset.obs_mean
+            norm_stats["obs_std"] = dataset.obs_std
+        # Kitchen: persist the column selection (kitchen_qpos_only) + exact
+        # input length so eval rebuilds the same policy input (mirrors the
+        # libero state_shape mechanism).
+        if active_env == "kitchen":
+            norm_stats["obs_indices"] = getattr(dataset, "obs_indices", None)
+            norm_stats["state_shape"] = dataset.state_shape
+        # LIBERO-Goal: persist the exact obs schema + per-task goal embeddings
+        # so the eval simulation rebuilds a byte-identical state vector and
+        # looks up the right goal per task. `state_shape` lets eval skip fragile
+        # state_dim*frame_stack arithmetic (goal dims aren't frame-stacked).
+        if active_env == "libero_goal":
+            norm_stats["libero_obs_keys"] = dataset.libero_obs_keys
+            norm_stats["libero_obs_dims"] = dataset.libero_obs_dims
+            norm_stats["goal_embeddings"] = dataset.goal_embeddings
+            norm_stats["goal_task_names"] = dataset.goal_task_names
+            norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
+            norm_stats["state_shape"] = dataset.state_shape
+        os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+        torch.save(norm_stats, os.path.join(MODEL_SAVE_DIR, "norm_stats.pt"))
+        print(f"norm_stats.pt saved (act range {dataset.act_min} → {dataset.act_max})")
+
+    # Save norm stats up front — makes wall-killed runs (periodic checkpoints)
+    # evaluable without retraining.
+    persist_norm_stats()
+
     # Training timing
     start_time = time.time()
     step = 0
@@ -623,9 +693,24 @@ def main():
                 for p in estimator.parameters():
                     p.requires_grad_(False)
 
-                def _neg_energy_fn(obs_expanded_lv, actions_batch):
-                    # Q ascent ≡ descent on -Q (sample_langevin descends).
-                    return -estimator(obs_expanded_lv, actions_batch).squeeze(-1)
+                if states.ndim == 4:
+                    # PIXELS — LATE FUSION IS MANDATORY HERE. The chain calls the
+                    # energy at every iteration; going through estimator.forward
+                    # would re-run the conv encoder num_iterations× per training
+                    # step (with ResNet-18 that alone made steps ~3.6 s — jobs
+                    # blew the 48 h wall at 44k/150k steps). Encode ONCE, run the
+                    # chain against the value head only. Features are constants
+                    # w.r.t. the chain (params frozen, grads flow to actions).
+                    with torch.no_grad():
+                        _lv_feats = estimator.encode(states)  # (B, F)
+
+                    def _neg_energy_fn(obs_expanded_lv, actions_batch):
+                        # obs arg ignored — features precomputed above.
+                        return -estimator.score(_lv_feats, actions_batch).squeeze(-1)
+                else:
+                    def _neg_energy_fn(obs_expanded_lv, actions_batch):
+                        # Q ascent ≡ descent on -Q (sample_langevin descends).
+                        return -estimator(obs_expanded_lv, actions_batch).squeeze(-1)
 
                 # Build the chain's starting distribution: uniform (paper) or CP-anchored.
                 if langevin_init_kind == "cps":
@@ -873,57 +958,7 @@ def main():
     # uses these to recreate the exact same obs-standardize + action-denorm
     # transforms that training used. Mirrors `get_normalizers.py` in
     # google-research/ibc (stats computed from data, frozen, applied at eval).
-    if active_env in ("pushing", "pushing_multi", "pushing_pixels", "pen", "door", "kitchen", "libero_goal", "libero_goal_pixels"):
-        norm_stats = {
-            "act_min": dataset.act_min,
-            "act_max": dataset.act_max,
-            "action_norm_range": getattr(dataset, "action_norm_range", (-1.0, 1.0)),
-            "frame_stack": frame_stack,
-            "env_id": env_id,
-        }
-        # libero_goal_pixels: persist the pixel + conditioning schema so the
-        # render-eval sim rebuilds an identical (image, cond) input.
-        if active_env == "libero_goal_pixels":
-            norm_stats["libero_obs_keys"] = dataset.libero_obs_keys      # proprio keys
-            norm_stats["goal_embeddings"] = dataset.goal_embeddings
-            norm_stats["goal_task_names"] = dataset.goal_task_names
-            norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
-            norm_stats["proprio_dim"] = dataset.proprio_dim
-            norm_stats["cond_dim"] = dataset.cond_dim
-            norm_stats["in_channels"] = dataset.in_channels
-            norm_stats["image_hw"] = [dataset._H, dataset._W]
-            norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 128)
-            norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 128)
-            norm_stats["state_shape"] = list(dataset.state_shape)
-            # Encoder architecture — eval must rebuild the exact same encoder.
-            norm_stats["encoder_kind"] = env_model.get("encoder_kind", "conv_maxpool")
-            norm_stats["encoder_pretrained"] = bool(env_model.get("encoder_pretrained", True))
-            norm_stats["encoder_num_kp"] = int(env_model.get("encoder_num_kp", 64))
-        # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
-        # its own [0,1] scaling + bilinear resize on every forward, matching
-        # IBC's image_prepro.preprocess). Only persist these when present.
-        if hasattr(dataset, "obs_mean"):
-            norm_stats["obs_mean"] = dataset.obs_mean
-            norm_stats["obs_std"] = dataset.obs_std
-        # Kitchen: persist the column selection (kitchen_qpos_only) + exact
-        # input length so eval rebuilds the same policy input (mirrors the
-        # libero state_shape mechanism).
-        if active_env == "kitchen":
-            norm_stats["obs_indices"] = getattr(dataset, "obs_indices", None)
-            norm_stats["state_shape"] = dataset.state_shape
-        # LIBERO-Goal: persist the exact obs schema + per-task goal embeddings
-        # so the eval simulation rebuilds a byte-identical state vector and
-        # looks up the right goal per task. `state_shape` lets eval skip fragile
-        # state_dim*frame_stack arithmetic (goal dims aren't frame-stacked).
-        if active_env == "libero_goal":
-            norm_stats["libero_obs_keys"] = dataset.libero_obs_keys
-            norm_stats["libero_obs_dims"] = dataset.libero_obs_dims
-            norm_stats["goal_embeddings"] = dataset.goal_embeddings
-            norm_stats["goal_task_names"] = dataset.goal_task_names
-            norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
-            norm_stats["state_shape"] = dataset.state_shape
-        torch.save(norm_stats, os.path.join(MODEL_SAVE_DIR, "norm_stats.pt"))
-        print(f"norm_stats.pt saved (act range {dataset.act_min} → {dataset.act_max})")
+    persist_norm_stats()
 
     # Remove stale smoothing param if exists
     smoothing_param_path = os.path.join(MODEL_SAVE_DIR, "smoothing_param.pt")
