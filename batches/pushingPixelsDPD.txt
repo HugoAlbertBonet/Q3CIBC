@@ -1,0 +1,31 @@
+# Batch pushingPixelsDPD - DP pixels v-prediction CONVERGENCE LADDER.
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pushing_pixels
+#
+# PURPOSE: locate the DP training plateau. DPB/DPC showed DP is NOT converged at
+# 150k (66%) or even 300k (88%, loss still dropping) -- comparing a converged Q3C
+# (plateaus 150-200k) to a still-rising DP is unfair to DP. This ladder finds
+# where v-pred success flattens, so the fair "each-at-convergence" comparison uses
+# DP's real ceiling. The convergence BUDGET (how many steps DP needs vs Q3C's
+# 150k) is itself a reported result.
+#
+# RECIPE: v-prediction (best/fastest DP recipe), else identical to the matched
+# pixel arch (ConvMaxpoolEncoder + DenseResnetValue 1024x1, lr 3e-4, batch 128,
+# cosine, T=100). LR cosine anneal auto-extends to each training_steps.
+#
+# LADDER: 1 seed per budget to find the knee cheaply. After we see where success
+# flattens, run 3 seeds at the chosen budget for the final number + variance.
+# Watch success (env metric), NOT just loss -- stop climbing = plateau; turning
+# down = overfit.
+#
+# Budget: 150k~28k s, so 300k~15.6h, 500k~26h, 750k~39h -- all under the 48h cap.
+#
+# Trials: DPD1=300k, DPD2=500k, DPD3=750k, all seed=0, v-prediction.
+
+# -- pushingPixelsDPD1: v-pred @ 300k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"learning_rate":3e-4,"batch_size":128,"training_steps":300000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPD2: v-pred @ 500k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"learning_rate":3e-4,"batch_size":128,"training_steps":500000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPD3: v-pred @ 750k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"learning_rate":3e-4,"batch_size":128,"training_steps":750000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
