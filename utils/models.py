@@ -402,12 +402,14 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 		in_channels: int = 6,
 		pretrained: bool = True,
 		num_kp: int = 64,
+		norm_kind: str = "bn",
 	) -> None:
 		super().__init__()
 		if in_channels % 3 != 0:
 			raise ValueError(f"in_channels must be a multiple of 3 (RGB frames); got {in_channels}")
 		self.n_imgs = in_channels // 3
 		self.num_kp = num_kp
+		self.norm_kind = norm_kind
 		self.feature_dim = self.n_imgs * 2 * num_kp
 
 		try:
@@ -424,12 +426,65 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 			trunk.conv1, trunk.bn1, trunk.relu, trunk.maxpool,
 			trunk.layer1, trunk.layer2, trunk.layer3, trunk.layer4,
 		)
+		# ── Normalization strategy ─────────────────────────────────────────
+		# Raw BatchNorm is hostile to EBM/InfoNCE training: energies are
+		# computed with batch stats at train time but running stats at eval,
+		# shifting the whole Q landscape (Bstandardlibero: ResNet-BN lost to a
+		# norm-free ConvMaxpool across the board).
+		#   - "gn":        replace every BatchNorm2d with GroupNorm(C//16, C)
+		#                  (Diffusion Policy's recipe). Conv weights keep the
+		#                  pretrained values; BN affine γ/β are copied into GN.
+		#                  Per-sample stats → zero train/eval mismatch.
+		#   - "bn_frozen": keep BN but lock it to eval mode forever (ImageNet
+		#                  running stats, frozen). Preserves pretrained behavior
+		#                  exactly and also removes the mismatch.
+		#   - "bn":        stock torchvision behavior (kept for comparability).
+		if norm_kind == "gn":
+			self._swap_bn_to_gn(self.trunk)
+		elif norm_kind == "bn_frozen":
+			self._freeze_bn(self.trunk)
+		elif norm_kind != "bn":
+			raise ValueError(f"Unknown norm_kind: {norm_kind!r} (bn|gn|bn_frozen)")
 		self.kp_conv = nn.Conv2d(512, num_kp, kernel_size=1)
 		self.spatial_softmax = SpatialSoftmax()
 		mean = torch.tensor(self._IMAGENET_MEAN).view(1, 3, 1, 1)
 		std = torch.tensor(self._IMAGENET_STD).view(1, 3, 1, 1)
 		self.register_buffer("_px_mean", mean, persistent=False)
 		self.register_buffer("_px_std", std, persistent=False)
+
+	@staticmethod
+	def _swap_bn_to_gn(root: nn.Module) -> None:
+		"""Replace every BatchNorm2d under *root* with GroupNorm(C//16, C).
+
+		Copies the BN affine (γ, β) into GN so pretrained scale/shift carries
+		over; BN running stats have no GN equivalent and are dropped.
+		"""
+		for parent in root.modules():
+			for name, child in list(parent.named_children()):
+				if isinstance(child, nn.BatchNorm2d):
+					c = child.num_features
+					gn = nn.GroupNorm(max(1, c // 16), c)
+					with torch.no_grad():
+						gn.weight.copy_(child.weight)
+						gn.bias.copy_(child.bias)
+					setattr(parent, name, gn)
+
+	@staticmethod
+	def _freeze_bn(root: nn.Module) -> None:
+		for m in root.modules():
+			if isinstance(m, nn.BatchNorm2d):
+				m.eval()
+				m.weight.requires_grad_(False)
+				m.bias.requires_grad_(False)
+
+	def train(self, mode: bool = True):
+		"""Keep BN layers in eval mode under norm_kind='bn_frozen'."""
+		super().train(mode)
+		if self.norm_kind == "bn_frozen":
+			for m in self.trunk.modules():
+				if isinstance(m, nn.BatchNorm2d):
+					m.eval()
+		return self
 
 	def forward(self, x: torch.Tensor) -> torch.Tensor:
 		"""(B, 3*n_imgs, H, W) uint8/float → (B, n_imgs*2*num_kp)."""
@@ -454,6 +509,7 @@ def _build_pixel_encoder(
 	encoder_feature_dim: int,
 	encoder_pretrained: bool,
 	encoder_num_kp: int,
+	encoder_norm_kind: str = "bn",
 ) -> tuple[nn.Module, int]:
 	"""Encoder factory shared by both pixel nets. Returns (encoder, feature_dim)."""
 	if encoder_kind == "conv_maxpool":
@@ -469,6 +525,7 @@ def _build_pixel_encoder(
 			in_channels=in_channels,
 			pretrained=encoder_pretrained,
 			num_kp=encoder_num_kp,
+			norm_kind=encoder_norm_kind,
 		)
 		return enc, enc.feature_dim
 	raise ValueError(f"Unknown encoder_kind: {encoder_kind!r} (conv_maxpool|resnet18)")
@@ -502,6 +559,7 @@ class PixelControlPointGenerator(nn.Module):
 		encoder_kind: str = "conv_maxpool",
 		encoder_pretrained: bool = True,
 		encoder_num_kp: int = 64,
+		encoder_norm_kind: str = "bn",
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 conditions the CP head on an extra per-state vector
@@ -513,7 +571,7 @@ class PixelControlPointGenerator(nn.Module):
 		self.encoder, feat_dim = _build_pixel_encoder(
 			encoder_kind, in_channels, encoder_target_height,
 			encoder_target_width, encoder_feature_dim,
-			encoder_pretrained, encoder_num_kp,
+			encoder_pretrained, encoder_num_kp, encoder_norm_kind,
 		)
 		self.head = ControlPointGenerator(
 			input_dim=feat_dim + self.cond_dim,
@@ -563,6 +621,7 @@ class PixelQEstimator(nn.Module):
 		encoder_kind: str = "conv_maxpool",
 		encoder_pretrained: bool = True,
 		encoder_num_kp: int = 64,
+		encoder_norm_kind: str = "bn",
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 late-fuses an extra per-state vector (LIBERO proprio +
@@ -573,7 +632,7 @@ class PixelQEstimator(nn.Module):
 		self.encoder, feat_dim = _build_pixel_encoder(
 			encoder_kind, in_channels, encoder_target_height,
 			encoder_target_width, encoder_feature_dim,
-			encoder_pretrained, encoder_num_kp,
+			encoder_pretrained, encoder_num_kp, encoder_norm_kind,
 		)
 		self.value = DenseResnetValue(
 			in_dim=feat_dim + self.cond_dim + action_dim,

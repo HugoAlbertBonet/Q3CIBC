@@ -63,6 +63,9 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
         self.obs_normalizer = None
         self.cond_dim = int(norm_stats["cond_dim"])
         self.proprio_keys = list(norm_stats["libero_obs_keys"])
+        # Train-time random-crop aug ⇒ eval-time CENTER crop to the same size,
+        # so the encoder sees the same input scale/coverage it trained on.
+        self.crop_size = int(norm_stats.get("image_crop_size", 0) or 0)
         self.num_eval_seeds = int(num_eval_seeds)
         self._eps_per_task = max(1, (self.num_eval_seeds + self.n_tasks - 1) // self.n_tasks)
         self._img_buf: deque[np.ndarray] = deque(maxlen=frame_stack)
@@ -115,7 +118,12 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
             pr = np.concatenate(list(self._proprio_buf))
         else:
             img, pr = frame, proprio
-        img = np.transpose(img, (2, 0, 1)).copy()  # (C,H,W)
+        if self.crop_size:
+            s = self.crop_size
+            oy = (img.shape[0] - s) // 2
+            ox = (img.shape[1] - s) // 2
+            img = img[oy:oy + s, ox:ox + s]
+        img = np.transpose(img, (2, 0, 1)).copy()  # (C,S,S)
         cond = np.concatenate([pr, self._current_goal_emb]).astype(np.float32)
         img_t = torch.from_numpy(img).unsqueeze(0).to(self.device)            # uint8 (1,C,H,W)
         cond_t = torch.from_numpy(cond).unsqueeze(0).float().to(self.device)  # (1,cond_dim)

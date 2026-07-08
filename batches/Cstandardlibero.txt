@@ -1,0 +1,56 @@
+# Batch Cstandardlibero — LIBERO-Goal standard (pixel) protocol: encoder triage.
+#
+# B verdict: ResNet-18-BN LOST to norm-free ConvMaxpool (best 28 vs 36) despite
+# pretraining helping within the ResNet family (pretrained 18-28 vs scratch 10).
+# Prime suspect: raw BatchNorm × EBM training — energies use batch stats at
+# train, running stats at eval → the Q landscape shifts exactly where an
+# implicit policy is most sensitive. Diffusion Policy's recipe swaps BN→GN and
+# trains the ResNet FROM SCRATCH (their 68.3 on LIBERO-Goal needed no ImageNet).
+#
+# C isolates the norm/pretraining question + adds two standard pixel-BC levers:
+#   - encoder_norm_kind: gn (DP recipe, BN→GroupNorm(C//16), affine copied) |
+#     bn_frozen (BN locked to ImageNet running stats — max pretraining
+#     preservation, zero mismatch) | bn (B-batch control)
+#   - image_crop_size=116: train-time random crop, eval center crop (robomimic/
+#     DP-standard translational augmentation)
+#   - encoder_lr_scale=0.1: trunk LR = 0.1x head LR (protect pretrained convs)
+# All at B8's best head (cp=100/30, 512x4) unless noted; 150k steps; pure
+# CP-argmax inference.
+#
+# PREREQUISITES (server): git pull; NO uv sync needed (no dep change since B);
+# ImageNet weights already cached (~/.cache/torch/hub/checkpoints). MUJOCO_GL
+# via submit template. Do NOT use --managed-python.
+#
+# Trials (8):
+#   C1 GN + scratch            (DP-faithful recipe)
+#   C2 GN + ImageNet convs     (retained-pretraining value)
+#   C3 BN-frozen + ImageNet    (max pretraining preservation)
+#   C4 GN + scratch, NO crop   (isolates the aug effect vs C1)
+#   C5 GN + ImageNet + lr_scale 0.1
+#   C6 BN-frozen + ImageNet + lr_scale 0.1
+#   C7 conv_maxpool + crop     (does aug help the current winner too?)
+#   C8 GN + ImageNet + crop + lr_scale 0.1 + kp=128 (best-guess combo)
+
+# -- C1: GN, scratch, crop 116
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":64,"image_crop_size":116,"encoder_lr_scale":1.0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- C2: GN, ImageNet convs, crop 116
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_norm_kind":"gn","encoder_num_kp":64,"image_crop_size":116,"encoder_lr_scale":1.0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- C3: BN-frozen, ImageNet, crop 116
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_norm_kind":"bn_frozen","encoder_num_kp":64,"image_crop_size":116,"encoder_lr_scale":1.0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- C4: GN, scratch, NO crop (aug ablation vs C1)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":64,"image_crop_size":0,"encoder_lr_scale":1.0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- C5: GN, ImageNet, crop 116, encoder_lr_scale 0.1
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_norm_kind":"gn","encoder_num_kp":64,"image_crop_size":116,"encoder_lr_scale":0.1,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- C6: BN-frozen, ImageNet, crop 116, encoder_lr_scale 0.1
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_norm_kind":"bn_frozen","encoder_num_kp":64,"image_crop_size":116,"encoder_lr_scale":0.1,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- C7: conv_maxpool control + crop 116 (does aug lift the A/B winner?)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"conv_maxpool","image_crop_size":116,"encoder_lr_scale":1.0,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'
+
+# -- C8: best-guess combo: GN + ImageNet + crop + lr_scale 0.1 + kp=128
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"encoder_kind":"resnet18","encoder_pretrained":true,"encoder_norm_kind":"gn","encoder_num_kp":128,"image_crop_size":116,"encoder_lr_scale":0.1,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000}'

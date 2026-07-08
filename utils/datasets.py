@@ -1216,6 +1216,7 @@ class LiberoGoalPixelsDataset(Dataset):
         max_samples: Optional[int] = None,
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
+        crop_size: int = 0,
     ):
         try:
             import h5py  # noqa: F401
@@ -1224,6 +1225,16 @@ class LiberoGoalPixelsDataset(Dataset):
         import h5py
         from utils.libero import get_task_infos, load_goal_embeddings
 
+        # Random-crop augmentation (train-time only; eval center-crops to the
+        # same size — see LiberoGoalPixelsSimulation). 0 = off. Standard pixel-BC
+        # trick (robomimic / Diffusion Policy use ~90% crops; 116 of 128 here).
+        # Note: both cameras + all stacked frames share ONE crop offset per
+        # sample (they're channel-stacked); per-camera independent crops would
+        # be marginally stronger aug but need a layout change.
+        self.crop_size = int(crop_size)
+        if self.crop_size and not (0 < self.crop_size <= self._H):
+            raise ValueError(f"crop_size must be in (0, {self._H}]; got {crop_size}")
+        self._rng = np.random.default_rng(0)
         self.frame_stack = frame_stack
         self.normalize_actions = normalize_actions
         self.action_norm_range = action_norm_range
@@ -1299,7 +1310,8 @@ class LiberoGoalPixelsDataset(Dataset):
         self._stack_idx = self._build_stack_index_map()
         self.in_channels = 3 * len(self._IMAGE_KEYS) * frame_stack
         self.cond_dim = self.proprio_dim * frame_stack + self.goal_emb_dim
-        self.state_shape = (self.in_channels, self._H, self._W)
+        out_hw = self.crop_size if self.crop_size else self._H
+        self.state_shape = (self.in_channels, out_hw, out_hw)
         self.action_shape = self.actions.shape[1]
 
     def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
@@ -1329,7 +1341,12 @@ class LiberoGoalPixelsDataset(Dataset):
             frames.append(self._agv[int(i)])
             frames.append(self._wrist[int(i)])
         stacked = np.concatenate(frames, axis=-1)        # (H,W,3*2*fs)
-        stacked = np.transpose(stacked, (2, 0, 1)).copy()  # (C,H,W) uint8
+        if self.crop_size:
+            s = self.crop_size
+            oy = int(self._rng.integers(0, stacked.shape[0] - s + 1))
+            ox = int(self._rng.integers(0, stacked.shape[1] - s + 1))
+            stacked = stacked[oy:oy + s, ox:ox + s]
+        stacked = np.transpose(stacked, (2, 0, 1)).copy()  # (C,S,S) uint8
         proprio_stack = np.concatenate([self._proprio[int(i)] for i in idxs]).astype(np.float32)
         goal = self.goal_embeddings[self._task_ids[index]]
         cond = np.concatenate([proprio_stack, goal]).astype(np.float32)

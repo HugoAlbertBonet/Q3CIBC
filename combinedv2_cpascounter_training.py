@@ -279,6 +279,7 @@ def load_dataset():
             goal_embeddings_path=env_config["goal_embeddings_path"],
             frame_stack=frame_stack,
             max_demos_per_task=env_config.get("max_demos_per_task"),
+            crop_size=int(env_config.get("training", {}).get("image_crop_size", 0)),
         )
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
@@ -377,6 +378,9 @@ def main():
         encoder_kind = env_model.get("encoder_kind", "conv_maxpool")
         encoder_pretrained = bool(env_model.get("encoder_pretrained", True))
         encoder_num_kp = int(env_model.get("encoder_num_kp", 64))
+        # ResNet norm strategy: bn | gn | bn_frozen (see models.py rationale —
+        # raw BN's train/eval stat mismatch is hostile to EBM training).
+        encoder_norm_kind = env_model.get("encoder_norm_kind", "bn")
         print(
             f"CP generator: PIXEL kind={cp_network_kind} width={cp_width} "
             f"depth={cp_depth} in_ch={in_channels} enc={encoder_kind} "
@@ -398,6 +402,7 @@ def main():
             encoder_kind=encoder_kind,
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
+            encoder_norm_kind=encoder_norm_kind,
         ).to(device)
         print(
             f"Q estimator:  PIXEL value=DenseResnetValue(w={value_width}, "
@@ -415,6 +420,7 @@ def main():
             encoder_kind=encoder_kind,
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
+            encoder_norm_kind=encoder_norm_kind,
         ).to(device)
     else:
         print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
@@ -455,8 +461,24 @@ def main():
         states_expanded = state.unsqueeze(1).expand(-1, actions_bna.shape[1], -1)
         return estimator(states_expanded, actions_bna)
     
-    optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
-    optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=estimator_learning_rate)
+    # Split LR for pixel envs: pretrained conv trunks want a much smaller LR
+    # than freshly-initialized heads (encoder_lr_scale, default 1.0 = off).
+    encoder_lr_scale = float(env_config.get("training", {}).get("encoder_lr_scale", 1.0))
+    if encoder_lr_scale != 1.0 and hasattr(control_point_generator, "encoder"):
+        def _split_groups(model, base_lr):
+            enc_ids = {id(p) for p in model.encoder.parameters()}
+            enc = [p for p in model.parameters() if id(p) in enc_ids]
+            rest = [p for p in model.parameters() if id(p) not in enc_ids]
+            return [
+                {"params": rest, "lr": base_lr},
+                {"params": enc, "lr": base_lr * encoder_lr_scale},
+            ]
+        print(f"Split LR: encoder x{encoder_lr_scale}")
+        optimizer_generator = torch.optim.AdamW(_split_groups(control_point_generator, learning_rate))
+        optimizer_estimator = torch.optim.AdamW(_split_groups(estimator, estimator_learning_rate))
+    else:
+        optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
+        optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=estimator_learning_rate)
 
     # Learning Rate Schedules
     effective_t_max = cosine_t_max if cosine_t_max is not None else training_steps
@@ -589,6 +611,9 @@ def main():
             norm_stats["encoder_kind"] = env_model.get("encoder_kind", "conv_maxpool")
             norm_stats["encoder_pretrained"] = bool(env_model.get("encoder_pretrained", True))
             norm_stats["encoder_num_kp"] = int(env_model.get("encoder_num_kp", 64))
+            norm_stats["encoder_norm_kind"] = env_model.get("encoder_norm_kind", "bn")
+            # Eval must center-crop to the train-time random-crop size.
+            norm_stats["image_crop_size"] = int(env_config.get("training", {}).get("image_crop_size", 0))
         # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
         # its own [0,1] scaling + bilinear resize on every forward, matching
         # IBC's image_prepro.preprocess). Only persist these when present.

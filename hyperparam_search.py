@@ -202,6 +202,26 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_model",
     },
+    # ResNet norm strategy: raw BN's train/eval stat mismatch is hostile to
+    # EBM training (Bstandardlibero); gn = DP recipe, bn_frozen keeps ImageNet
+    # running stats locked.
+    "encoder_norm_kind": {
+        "values": ["bn", "gn", "bn_frozen"],
+        "type": "str",
+        "location": "env_model",
+    },
+    # Train-time random-crop size (0 = off); eval center-crops to match.
+    "image_crop_size": {
+        "values": [0, 108, 116],
+        "type": "int",
+        "location": "env_training",
+    },
+    # Encoder LR = learning_rate * scale (pretrained trunks want ~0.1x).
+    "encoder_lr_scale": {
+        "values": [0.05, 0.1, 0.5, 1.0],
+        "type": "float",
+        "location": "env_training",
+    },
     "q_width": {
         "values": [128, 256, 512, 1024, 2048],
         "type": "int",
@@ -903,6 +923,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         # to download ImageNet weights (they'd be overwritten regardless).
         encoder_pretrained = False
         encoder_num_kp = int(_ns.get("encoder_num_kp", em.get("encoder_num_kp", 64)))
+        encoder_norm_kind = _ns.get("encoder_norm_kind", em.get("encoder_norm_kind", "bn"))
         cp_gen = PixelControlPointGenerator(
             output_dim=action_dim,
             control_points=control_points,
@@ -919,6 +940,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             encoder_kind=encoder_kind,
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
+            encoder_norm_kind=encoder_norm_kind,
         )
         cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
         cp_gen.to(device).eval()
@@ -934,6 +956,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             encoder_kind=encoder_kind,
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
+            encoder_norm_kind=encoder_norm_kind,
         )
         q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
         q_est.to(device).eval()
