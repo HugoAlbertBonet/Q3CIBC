@@ -1,13 +1,18 @@
 # Batch penG - pen-human: RETRY Q3C + Langevin refinement with the FIXED chain.
 # 8 trials via hyperparam_search.py --active-env pen. Results: d4rl/pen.
 #
-# Why retry: ALL 23 past pen inference-Langevin trials (R = 0 to -578) ran the
-# doubly-broken path - (a) sqrt-lr noise that never anneals, (b) top-1-only
-# refinement (single chain from argmax CP, no cloud, no re-scoring, no polish).
-# Kitchen reproduced BOTH failure modes exactly (old-noise control 0.17/4,
-# top_k=1 0.82/4) while the corrected full-cloud chain BEAT argmax (+0.5
-# tasks, 2.92 vs 2.43). The old "Langevin catastrophic on pen" rule is an
-# artifact of those bugs, not evidence about refinement.
+# Why retry: past pen inference-Langevin ran the OLD chain. Record
+# (pen_inference_results.csv): aggressive lr = catastrophic (R 0 to -578);
+# gentle lr = NEUTRAL (2515 ~ argmax 2575) at 35x argmax cost (74.5ms vs
+# 2.1ms) - i.e. a near-no-op refinement, strictly dominated. The FIXED chain
+# is a different object (noise annealing to zero via stepsize, full-cloud
+# chains, post-refinement argmax re-scoring, optimize_again polish): on
+# kitchen it BEAT argmax by +0.5 tasks (2.92 vs 2.43) where the old chain
+# scored 0.17. penG tests whether that transfers to pen.
+# Bar to beat: argmax 2575 (5-seed CSV) / 2522 (10-seed headline). If penG
+# only matches it, conclusion = refinement pays where argmax has headroom
+# (kitchen, SR 0%) and is unnecessary where argmax saturates (pen) - a clean
+# per-env story either way.
 #
 # Base = B4 headline config (cp100/tk30, MLP Q 512x8 SN, lvneg8, 100k;
 # 10-seed argmax = 2522 ~ paper IBC 2586, SR 67%). Upside: refinement rescuing
