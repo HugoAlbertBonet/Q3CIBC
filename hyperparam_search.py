@@ -193,9 +193,35 @@ SEARCH_SPACE: dict[str, dict] = {
         "location": "env_model",
     },
     "encoder_pretrained": {
+        # true/"imagenet" = torchvision ImageNet weights; "r3m" = local R3M
+        # ResNet-18 weights (Ego4D); false = scratch.
+        "values": [True, False, "imagenet", "r3m"],
+        "type": "str",
+        "location": "env_model",
+    },
+    "encoder_per_camera": {
         "values": [True, False],
         "type": "bool",
         "location": "env_model",
+    },
+    # Language-goal fusion: concat at head (default) or FiLM into the ResNet
+    # stages (DP-LIBERO style; proprio stays concat at head).
+    "cond_fusion": {
+        "values": ["concat", "film"],
+        "type": "str",
+        "location": "env_model",
+    },
+    "frame_stack": {
+        "values": [1, 2],
+        "type": "int",
+        "location": "env",
+    },
+    # Predict a chunk of K consecutive actions per CP (executed open-loop at
+    # eval). 1 = single-step (legacy). DP predicts 16, executes 8.
+    "action_chunk": {
+        "values": [1, 4, 8, 16],
+        "type": "int",
+        "location": "env_training",
     },
     "encoder_num_kp": {
         "values": [32, 64, 128],
@@ -674,6 +700,8 @@ def get_baseline_params(config: dict, detected_params: list[str]) -> dict:
             val = env_model.get(param)
         elif space["location"] == "env_training":
             val = env_training.get(param, training_shared.get(param))
+        elif space["location"] == "env":
+            val = config["environments"][active_env].get(param)
         else:
             val = training_shared.get(param)
         if val is not None:
@@ -693,6 +721,10 @@ def apply_params_to_config(config: dict, params: dict) -> dict:
             config["environments"][active_env].setdefault("model", {})[param] = value
         elif space["location"] == "env_training":
             config["environments"][active_env].setdefault("training", {})[param] = value
+        elif space["location"] == "env":
+            # Top-level env key (e.g. frame_stack) — read by dataset, model
+            # build, and eval alike via env_config.
+            config["environments"][active_env][param] = value
         else:
             config.setdefault("training_shared", {})[param] = value
     return config
@@ -924,8 +956,14 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         encoder_pretrained = False
         encoder_num_kp = int(_ns.get("encoder_num_kp", em.get("encoder_num_kp", 64)))
         encoder_norm_kind = _ns.get("encoder_norm_kind", em.get("encoder_norm_kind", "bn"))
+        encoder_per_camera = bool(_ns.get("encoder_per_camera", em.get("encoder_per_camera", False)))
+        cond_fusion = _ns.get("cond_fusion", em.get("cond_fusion", "concat"))
+        goal_dim = int(_ns.get("goal_emb_dim", 0))
+        # Action chunking: model output = action_dim * K per CP.
+        action_chunk = int(_ns.get("action_chunk", 1) or 1)
+        action_dim_eff = action_dim * action_chunk
         cp_gen = PixelControlPointGenerator(
-            output_dim=action_dim,
+            output_dim=action_dim_eff,
             control_points=control_points,
             hidden_dims=[cp_width] * cp_depth,
             action_bounds=action_bounds,
@@ -941,12 +979,15 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
             encoder_norm_kind=encoder_norm_kind,
+            encoder_per_camera=encoder_per_camera,
+            cond_fusion=cond_fusion,
+            goal_dim=goal_dim,
         )
         cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
         cp_gen.to(device).eval()
 
         q_est = PixelQEstimator(
-            action_dim=action_dim,
+            action_dim=action_dim_eff,
             in_channels=in_channels,
             encoder_target_height=enc_h,
             encoder_target_width=enc_w,
@@ -957,6 +998,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
             encoder_norm_kind=encoder_norm_kind,
+            encoder_per_camera=encoder_per_camera,
+            cond_fusion=cond_fusion,
+            goal_dim=goal_dim,
         )
         q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
         q_est.to(device).eval()

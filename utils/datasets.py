@@ -1217,6 +1217,7 @@ class LiberoGoalPixelsDataset(Dataset):
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
         crop_size: int = 0,
+        action_chunk: int = 1,
     ):
         try:
             import h5py  # noqa: F401
@@ -1235,6 +1236,11 @@ class LiberoGoalPixelsDataset(Dataset):
         if self.crop_size and not (0 < self.crop_size <= self._H):
             raise ValueError(f"crop_size must be in (0, {self._H}]; got {crop_size}")
         self._rng = np.random.default_rng(0)
+        # Action chunking (DP-style): each sample's target is the next K
+        # actions concatenated (K*A vector); episode tails pad by repeating the
+        # last action. Models treat the chunk as one big action; eval executes
+        # it open-loop. K=1 keeps legacy single-step behavior.
+        self.action_chunk = max(1, int(action_chunk))
         self.frame_stack = frame_stack
         self.normalize_actions = normalize_actions
         self.action_norm_range = action_norm_range
@@ -1298,6 +1304,31 @@ class LiberoGoalPixelsDataset(Dataset):
             self._task_ids = self._task_ids[:max_samples]
 
         self.proprio_dim = int(self._proprio.shape[1])
+
+        if self.action_chunk > 1:
+            K = self.action_chunk
+            n = len(raw_actions)
+            episode_id = np.cumsum(self._episode_starts) - 1
+            chunks = np.empty((n, K, raw_actions.shape[1]), dtype=np.float32)
+            for k in range(K):
+                idx = np.minimum(np.arange(n) + k, n - 1)
+                # Don't cross episode boundaries: clamp to the last step of the
+                # current episode (repeat-last-action padding).
+                same_ep = episode_id[idx] == episode_id
+                idx = np.where(same_ep, idx, -1)
+                # For crossed indices walk back to this episode's final step.
+                if (idx < 0).any():
+                    last_of_ep = np.zeros(n, dtype=np.int64)
+                    ep_last = {}
+                    for i in range(n - 1, -1, -1):
+                        e = episode_id[i]
+                        if e not in ep_last:
+                            ep_last[e] = i
+                        last_of_ep[i] = ep_last[e]
+                    idx = np.where(idx < 0, last_of_ep, idx)
+                chunks[:, k] = raw_actions[idx]
+            raw_actions = chunks.reshape(n, K * raw_actions.shape[1])
+
         self.act_min = raw_actions.min(axis=0).astype(np.float32)
         self.act_max = raw_actions.max(axis=0).astype(np.float32)
         if normalize_actions:

@@ -397,12 +397,17 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 	_IMAGENET_MEAN = (0.485, 0.456, 0.406)
 	_IMAGENET_STD = (0.229, 0.224, 0.225)
 
+	# Per-stage output channels of the ResNet-18 trunk (layer1..layer4).
+	_STAGE_CHANNELS = (64, 128, 256, 512)
+
 	def __init__(
 		self,
 		in_channels: int = 6,
-		pretrained: bool = True,
+		pretrained: bool | str = True,
 		num_kp: int = 64,
 		norm_kind: str = "bn",
+		per_camera: bool = False,
+		film_dim: int = 0,
 	) -> None:
 		super().__init__()
 		if in_channels % 3 != 0:
@@ -410,6 +415,8 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 		self.n_imgs = in_channels // 3
 		self.num_kp = num_kp
 		self.norm_kind = norm_kind
+		self.per_camera = per_camera
+		self.film_dim = int(film_dim)
 		self.feature_dim = self.n_imgs * 2 * num_kp
 
 		try:
@@ -419,13 +426,29 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 				"torchvision is required for encoder_kind='resnet18' "
 				"(uv sync --extra libero after adding it to pyproject)."
 			) from e
-		weights = torchvision.models.ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
-		trunk = torchvision.models.resnet18(weights=weights)
-		# Keep conv trunk through layer4 (drops avgpool + fc): (B*, 512, H/32, W/32).
-		self.trunk = nn.Sequential(
-			trunk.conv1, trunk.bn1, trunk.relu, trunk.maxpool,
-			trunk.layer1, trunk.layer2, trunk.layer3, trunk.layer4,
-		)
+
+		def _make_trunk() -> nn.Sequential:
+			# pretrained: True/"imagenet" → torchvision ImageNet weights;
+			# "r3m" → local R3M ResNet-18 weights (Ego4D manipulation
+			# pretraining, Nair et al. 2022); False → scratch.
+			use_imagenet = pretrained in (True, "imagenet")
+			weights = torchvision.models.ResNet18_Weights.IMAGENET1K_V1 if use_imagenet else None
+			t = torchvision.models.resnet18(weights=weights)
+			if pretrained == "r3m":
+				self._load_r3m_(t)
+			return nn.Sequential(
+				t.conv1, t.bn1, t.relu, t.maxpool,
+				t.layer1, t.layer2, t.layer3, t.layer4,
+			)
+
+		if per_camera:
+			# One trunk per image slot (robomimic/DP convention: separate
+			# encoder per camera view). n_imgs = n_cams * frame_stack.
+			self.trunks = nn.ModuleList(_make_trunk() for _ in range(self.n_imgs))
+			_norm_targets = list(self.trunks)
+		else:
+			self.trunk = _make_trunk()
+			_norm_targets = [self.trunk]
 		# ── Normalization strategy ─────────────────────────────────────────
 		# Raw BatchNorm is hostile to EBM/InfoNCE training: energies are
 		# computed with batch stats at train time but running stats at eval,
@@ -439,12 +462,23 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 		#                  running stats, frozen). Preserves pretrained behavior
 		#                  exactly and also removes the mismatch.
 		#   - "bn":        stock torchvision behavior (kept for comparability).
-		if norm_kind == "gn":
-			self._swap_bn_to_gn(self.trunk)
-		elif norm_kind == "bn_frozen":
-			self._freeze_bn(self.trunk)
-		elif norm_kind != "bn":
-			raise ValueError(f"Unknown norm_kind: {norm_kind!r} (bn|gn|bn_frozen)")
+		for _t in _norm_targets:
+			if norm_kind == "gn":
+				self._swap_bn_to_gn(_t)
+			elif norm_kind == "bn_frozen":
+				self._freeze_bn(_t)
+			elif norm_kind != "bn":
+				raise ValueError(f"Unknown norm_kind: {norm_kind!r} (bn|gn|bn_frozen)")
+		# FiLM conditioning (DP-LIBERO style): the language-goal vector
+		# modulates each ResNet stage output with per-channel scale/shift.
+		# Only built when film_dim > 0 so legacy checkpoints keep their keys.
+		if self.film_dim > 0:
+			self.film = nn.ModuleList(
+				nn.Linear(self.film_dim, 2 * c) for c in self._STAGE_CHANNELS
+			)
+			for f in self.film:
+				nn.init.zeros_(f.weight)
+				nn.init.zeros_(f.bias)  # identity modulation at init
 		self.kp_conv = nn.Conv2d(512, num_kp, kernel_size=1)
 		self.spatial_softmax = SpatialSoftmax()
 		mean = torch.tensor(self._IMAGENET_MEAN).view(1, 3, 1, 1)
@@ -477,6 +511,46 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 				m.weight.requires_grad_(False)
 				m.bias.requires_grad_(False)
 
+	@staticmethod
+	def _load_r3m_(resnet) -> None:
+		"""Load R3M ResNet-18 weights (Nair et al. 2022, Ego4D) into *resnet*.
+
+		Expects the checkpoint at $R3M_WEIGHTS or
+		checkpoints/pretrained/r3m_resnet18.pt (fetch per the r3m repo README —
+		the file torch.load's to {'r3m': state_dict} or a raw state_dict with
+		'module.convnet.'-prefixed keys). Loaded BEFORE any GN swap so BN affine
+		copies carry R3M's values.
+		"""
+		import os as _os
+		path = _os.environ.get("R3M_WEIGHTS", "checkpoints/pretrained/r3m_resnet18.pt")
+		if not _os.path.exists(path):
+			raise FileNotFoundError(
+				f"R3M weights not found at {path!r}. Download r3m_resnet18 per "
+				"https://github.com/facebookresearch/r3m and save it there "
+				"(or set $R3M_WEIGHTS)."
+			)
+		sd = torch.load(path, map_location="cpu", weights_only=False)
+		if isinstance(sd, dict) and "r3m" in sd:
+			sd = sd["r3m"]
+		if hasattr(sd, "state_dict"):
+			sd = sd.state_dict()
+		cleaned = {}
+		for k, v in sd.items():
+			k = k.removeprefix("module.")
+			if k.startswith("convnet."):
+				cleaned[k.removeprefix("convnet.")] = v
+		if not cleaned:
+			raise RuntimeError(
+				f"No 'convnet.' keys in R3M checkpoint {path!r}; "
+				f"got keys like {list(sd)[:3]}"
+			)
+		missing, unexpected = resnet.load_state_dict(cleaned, strict=False)
+		# fc.* is expected-missing (we drop the classifier); anything conv/bn
+		# missing means a layout mismatch.
+		real_missing = [m for m in missing if not m.startswith("fc.")]
+		if real_missing:
+			raise RuntimeError(f"R3M load missing keys: {real_missing[:5]}")
+
 	def train(self, mode: bool = True):
 		"""Keep BN layers in eval mode under norm_kind='bn_frozen'."""
 		super().train(mode)
@@ -486,19 +560,41 @@ class ResNet18SpatialSoftmaxEncoder(nn.Module):
 					m.eval()
 		return self
 
-	def forward(self, x: torch.Tensor) -> torch.Tensor:
-		"""(B, 3*n_imgs, H, W) uint8/float → (B, n_imgs*2*num_kp)."""
+	def _run_trunk(self, trunk: nn.Sequential, x: torch.Tensor, film_vec) -> torch.Tensor:
+		"""Run one ResNet trunk, optionally FiLM-modulating each stage output.
+
+		trunk layout: [conv1, bn1, relu, maxpool, layer1..layer4]; FiLM applies
+		γ·h + β per channel after each layerN (γ,β from the goal vector; zero-init
+		→ identity at start of training).
+		"""
+		h = trunk[:4](x)
+		for i in range(4):
+			h = trunk[4 + i](h)
+			if self.film_dim > 0 and film_vec is not None:
+				gb = self.film[i](film_vec)                     # (B*, 2C)
+				gamma, beta = gb.chunk(2, dim=-1)
+				h = h * (1.0 + gamma.unsqueeze(-1).unsqueeze(-1)) + beta.unsqueeze(-1).unsqueeze(-1)
+		return h
+
+	def forward(self, x: torch.Tensor, film_vec: torch.Tensor | None = None) -> torch.Tensor:
+		"""(B, 3*n_imgs, H, W) uint8/float → (B, n_imgs*2*num_kp).
+
+		film_vec: optional (B, film_dim) goal vector for FiLM (film_dim > 0).
+		"""
 		if x.dtype == torch.uint8:
 			x = x.float() / 255.0
 		elif x.max() > 1.5:
 			x = x / 255.0
 		b = x.shape[0]
-		x = x.reshape(b * self.n_imgs, 3, x.shape[-2], x.shape[-1])
-		x = (x - self._px_mean) / self._px_std
-		x = self.trunk(x)                       # (B*n, 512, h', w')
-		x = self.kp_conv(x)                     # (B*n, num_kp, h', w')
-		x = self.spatial_softmax(x)             # (B*n, 2*num_kp)
-		return x.reshape(b, self.feature_dim)
+		x = x.reshape(b, self.n_imgs, 3, x.shape[-2], x.shape[-1])
+		x = (x - self._px_mean.unsqueeze(0)) / self._px_std.unsqueeze(0)
+		feats = []
+		for i in range(self.n_imgs):
+			trunk = self.trunks[i] if self.per_camera else self.trunk
+			h = self._run_trunk(trunk, x[:, i], film_vec)   # (B, 512, h', w')
+			h = self.kp_conv(h)
+			feats.append(self.spatial_softmax(h))           # (B, 2*num_kp)
+		return torch.cat(feats, dim=-1)                     # (B, n_imgs*2*num_kp)
 
 
 def _build_pixel_encoder(
@@ -507,9 +603,11 @@ def _build_pixel_encoder(
 	encoder_target_height: int,
 	encoder_target_width: int,
 	encoder_feature_dim: int,
-	encoder_pretrained: bool,
+	encoder_pretrained: bool | str,
 	encoder_num_kp: int,
 	encoder_norm_kind: str = "bn",
+	encoder_per_camera: bool = False,
+	film_dim: int = 0,
 ) -> tuple[nn.Module, int]:
 	"""Encoder factory shared by both pixel nets. Returns (encoder, feature_dim)."""
 	if encoder_kind == "conv_maxpool":
@@ -526,6 +624,8 @@ def _build_pixel_encoder(
 			pretrained=encoder_pretrained,
 			num_kp=encoder_num_kp,
 			norm_kind=encoder_norm_kind,
+			per_camera=encoder_per_camera,
+			film_dim=film_dim,
 		)
 		return enc, enc.feature_dim
 	raise ValueError(f"Unknown encoder_kind: {encoder_kind!r} (conv_maxpool|resnet18)")
@@ -557,9 +657,12 @@ class PixelControlPointGenerator(nn.Module):
 		encoder_feature_dim: int = 256,
 		cond_dim: int = 0,
 		encoder_kind: str = "conv_maxpool",
-		encoder_pretrained: bool = True,
+		encoder_pretrained: bool | str = True,
 		encoder_num_kp: int = 64,
 		encoder_norm_kind: str = "bn",
+		encoder_per_camera: bool = False,
+		cond_fusion: str = "concat",
+		goal_dim: int = 0,
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 conditions the CP head on an extra per-state vector
@@ -568,10 +671,21 @@ class PixelControlPointGenerator(nn.Module):
 		# unconditioned, so pushing_pixels is unaffected with cond_dim=0).
 		self.cond_dim = int(cond_dim)
 		self._cond: torch.Tensor | None = None
+		# cond_fusion="film": the GOAL slice of _cond (last goal_dim dims)
+		# additionally FiLM-modulates the ResNet stages; the full _cond still
+		# concats at the head (film is additive conditioning).
+		if cond_fusion not in ("concat", "film"):
+			raise ValueError(f"cond_fusion must be concat|film, got {cond_fusion!r}")
+		if cond_fusion == "film" and (goal_dim <= 0 or encoder_kind != "resnet18"):
+			raise ValueError("cond_fusion='film' needs encoder_kind='resnet18' and goal_dim>0")
+		self.cond_fusion = cond_fusion
+		self.goal_dim = int(goal_dim)
 		self.encoder, feat_dim = _build_pixel_encoder(
 			encoder_kind, in_channels, encoder_target_height,
 			encoder_target_width, encoder_feature_dim,
 			encoder_pretrained, encoder_num_kp, encoder_norm_kind,
+			encoder_per_camera,
+			film_dim=(self.goal_dim if cond_fusion == "film" else 0),
 		)
 		self.head = ControlPointGenerator(
 			input_dim=feat_dim + self.cond_dim,
@@ -586,9 +700,17 @@ class PixelControlPointGenerator(nn.Module):
 			use_spectral_norm=use_spectral_norm,
 		)
 
+	def _film_vec(self) -> torch.Tensor | None:
+		if self.cond_fusion != "film":
+			return None
+		if self._cond is None:
+			raise RuntimeError("cond_fusion='film' but ._cond not set.")
+		return self._cond[:, -self.goal_dim:]
+
 	def forward(self, images: torch.Tensor) -> torch.Tensor:
 		"""Args: images (B, C, H, W). Returns: (B, control_points, output_dim)."""
-		features = self.encoder(images)
+		fv = self._film_vec()
+		features = self.encoder(images, fv) if fv is not None else self.encoder(images)
 		if self.cond_dim > 0:
 			if self._cond is None:
 				raise RuntimeError("PixelControlPointGenerator.cond_dim>0 but ._cond not set.")
@@ -619,9 +741,12 @@ class PixelQEstimator(nn.Module):
 		value_num_blocks: int = 1,
 		cond_dim: int = 0,
 		encoder_kind: str = "conv_maxpool",
-		encoder_pretrained: bool = True,
+		encoder_pretrained: bool | str = True,
 		encoder_num_kp: int = 64,
 		encoder_norm_kind: str = "bn",
+		encoder_per_camera: bool = False,
+		cond_fusion: str = "concat",
+		goal_dim: int = 0,
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 late-fuses an extra per-state vector (LIBERO proprio +
@@ -629,10 +754,21 @@ class PixelQEstimator(nn.Module):
 		# `_cond` attribute per batch (default None → unconditioned).
 		self.cond_dim = int(cond_dim)
 		self._cond: torch.Tensor | None = None
+		# cond_fusion="film": the GOAL slice of _cond (last goal_dim dims)
+		# additionally FiLM-modulates the ResNet stages; the full _cond still
+		# concats at the head (film is additive conditioning).
+		if cond_fusion not in ("concat", "film"):
+			raise ValueError(f"cond_fusion must be concat|film, got {cond_fusion!r}")
+		if cond_fusion == "film" and (goal_dim <= 0 or encoder_kind != "resnet18"):
+			raise ValueError("cond_fusion='film' needs encoder_kind='resnet18' and goal_dim>0")
+		self.cond_fusion = cond_fusion
+		self.goal_dim = int(goal_dim)
 		self.encoder, feat_dim = _build_pixel_encoder(
 			encoder_kind, in_channels, encoder_target_height,
 			encoder_target_width, encoder_feature_dim,
 			encoder_pretrained, encoder_num_kp, encoder_norm_kind,
+			encoder_per_camera,
+			film_dim=(self.goal_dim if cond_fusion == "film" else 0),
 		)
 		self.value = DenseResnetValue(
 			in_dim=feat_dim + self.cond_dim + action_dim,
@@ -642,9 +778,17 @@ class PixelQEstimator(nn.Module):
 		self.action_dim = action_dim
 		self.encoder_feature_dim = feat_dim
 
+	def _film_vec(self) -> torch.Tensor | None:
+		if self.cond_fusion != "film":
+			return None
+		if self._cond is None:
+			raise RuntimeError("cond_fusion='film' but ._cond not set.")
+		return self._cond[:, -self.goal_dim:]
+
 	def encode(self, images: torch.Tensor) -> torch.Tensor:
 		"""Run the conv encoder once per state. Returns (B, feature_dim)."""
-		return self.encoder(images)
+		fv = self._film_vec()
+		return self.encoder(images, fv) if fv is not None else self.encoder(images)
 
 	def score(self, features: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
 		"""Late-fuse pre-encoded features with action(s).

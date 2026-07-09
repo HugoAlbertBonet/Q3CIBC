@@ -66,6 +66,9 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
         # Train-time random-crop aug ⇒ eval-time CENTER crop to the same size,
         # so the encoder sees the same input scale/coverage it trained on.
         self.crop_size = int(norm_stats.get("image_crop_size", 0) or 0)
+        # Action chunking: the model emits K*7 per CP; we execute the K steps
+        # open-loop (re-planning after each chunk), success checked every step.
+        self.action_chunk = int(norm_stats.get("action_chunk", 1) or 1)
         self.num_eval_seeds = int(num_eval_seeds)
         self._eps_per_task = max(1, (self.num_eval_seeds + self.n_tasks - 1) // self.n_tasks)
         self._img_buf: deque[np.ndarray] = deque(maxlen=frame_stack)
@@ -156,23 +159,30 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
         env.seed(s)
         env.reset()
         live_obs = env.set_init_state(init_states[init_round % len(init_states)])
+        live_obs = self._settle(env, live_obs)  # standard ~10 no-op settle steps
 
         total_reward = 0.0
         episode_length = 0
         success = False
         terminated = False
-        for _ in range(self.max_episode_steps):
-            action = self.select_action(live_obs)
-            live_obs, reward, done, info = env.step(action)
-            total_reward += float(reward)
-            episode_length += 1
-            step_success = bool(reward > 0) or bool(getattr(env, "check_success", lambda: False)())
-            if isinstance(info, dict):
-                step_success = step_success or bool(info.get("success", False))
-            if step_success:
-                success = True
-            if done:
-                terminated = True
+        while episode_length < self.max_episode_steps:
+            chunk = self.select_action(live_obs)              # (K*7,) denormalized
+            steps = chunk.reshape(self.action_chunk, -1)
+            for k in range(self.action_chunk):
+                live_obs, reward, done, info = env.step(steps[k])
+                total_reward += float(reward)
+                episode_length += 1
+                step_success = bool(reward > 0) or bool(getattr(env, "check_success", lambda: False)())
+                if isinstance(info, dict):
+                    step_success = step_success or bool(info.get("success", False))
+                if step_success:
+                    success = True
+                if done:
+                    terminated = True
+                    break
+                if episode_length >= self.max_episode_steps:
+                    break
+            if terminated:
                 break
 
         return {
@@ -184,3 +194,71 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
             "task_idx": task_idx,
             "task_name": self.goal_task_names[task_idx],
         }
+
+
+class LiberoGoalPixelsIBCSimulation(LiberoGoalPixelsSimulation):
+    """Original-IBC (pure pixel EBM) eval on LIBERO-Goal, standard protocol.
+
+    Reuses LiberoGoalPixelsSimulation's render env, obs/cond building, crop,
+    settle-wait and grouped-by-task loop, but selects actions by Langevin MCMC
+    on the pixel energy net (no control points): encode the image ONCE per env
+    step, run the chain against the value head (late fusion), take argmin energy.
+    """
+
+    def __init__(
+        self,
+        energy_net,
+        device: str,
+        max_episode_steps: int,
+        frame_stack: int,
+        norm_stats: dict,
+        langevin_cfg: dict,
+        num_eval_seeds: int = 50,
+        action_in_model_range: tuple[float, float] = (-1.0, 1.0),
+        uniform_boundary_buffer: float = 0.05,
+    ) -> None:
+        super().__init__(
+            control_point_generator=None,
+            q_estimator=energy_net,
+            device=device,
+            max_episode_steps=max_episode_steps,
+            render_mode=None,
+            frame_stack=frame_stack,
+            norm_stats=norm_stats,
+            num_eval_seeds=num_eval_seeds,
+        )
+        self.energy_net = energy_net
+        self.langevin_cfg = langevin_cfg
+        lo, hi = float(action_in_model_range[0]), float(action_in_model_range[1])
+        buf = float(uniform_boundary_buffer)
+        adim = int(np.asarray(self._raw_act_min).shape[0])
+        self._amin = torch.full((adim,), lo - buf, device=device)
+        self._amax = torch.full((adim,), hi + buf, device=device)
+        self._act_lo, self._act_hi = lo, hi
+
+    def select_action(self, live_obs: dict) -> np.ndarray:
+        from utils.sampling import sample_langevin
+
+        img_t, cond_t = self._build_inputs(live_obs)
+        self.energy_net._cond = cond_t
+        c = self.langevin_cfg
+        with torch.no_grad():
+            feats = self.energy_net.encode(img_t)  # (1, F) — once per env step
+        samples = sample_langevin(
+            energy_function=lambda o, a: self.energy_net.score(feats, a).squeeze(-1),
+            observations=img_t,  # batch-size/device carrier only
+            num_samples=int(c["num_samples"]),
+            action_min=self._amin,
+            action_max=self._amax,
+            num_iterations=int(c["num_iterations"]),
+            lr_init=float(c["lr_init"]),
+            lr_final=float(c["lr_final"]),
+            polynomial_decay_power=float(c.get("polynomial_decay_power", 2.0)),
+            delta_action_clip=float(c.get("delta_action_clip", 0.1)),
+            noise_scale=float(c["noise_scale"]),
+            device=self.device,
+        )
+        with torch.no_grad():
+            e = self.energy_net.score(feats, samples).squeeze(-1)  # (1, N)
+            best = samples[0, e.argmin(dim=-1)[0]].cpu().numpy()
+        return self._denormalize_action(best)

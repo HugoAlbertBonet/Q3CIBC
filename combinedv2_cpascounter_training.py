@@ -280,6 +280,7 @@ def load_dataset():
             frame_stack=frame_stack,
             max_demos_per_task=env_config.get("max_demos_per_task"),
             crop_size=int(env_config.get("training", {}).get("image_crop_size", 0)),
+            action_chunk=int(env_config.get("training", {}).get("action_chunk", 1)),
         )
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
@@ -381,6 +382,9 @@ def main():
         # ResNet norm strategy: bn | gn | bn_frozen (see models.py rationale —
         # raw BN's train/eval stat mismatch is hostile to EBM training).
         encoder_norm_kind = env_model.get("encoder_norm_kind", "bn")
+        encoder_per_camera = bool(env_model.get("encoder_per_camera", False))
+        cond_fusion = env_model.get("cond_fusion", "concat")
+        goal_dim = int(getattr(dataset, "goal_emb_dim", 0))
         print(
             f"CP generator: PIXEL kind={cp_network_kind} width={cp_width} "
             f"depth={cp_depth} in_ch={in_channels} enc={encoder_kind} "
@@ -403,6 +407,9 @@ def main():
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
             encoder_norm_kind=encoder_norm_kind,
+            encoder_per_camera=encoder_per_camera,
+            cond_fusion=cond_fusion,
+            goal_dim=goal_dim,
         ).to(device)
         print(
             f"Q estimator:  PIXEL value=DenseResnetValue(w={value_width}, "
@@ -421,6 +428,9 @@ def main():
             encoder_pretrained=encoder_pretrained,
             encoder_num_kp=encoder_num_kp,
             encoder_norm_kind=encoder_norm_kind,
+            encoder_per_camera=encoder_per_camera,
+            cond_fusion=cond_fusion,
+            goal_dim=goal_dim,
         ).to(device)
     else:
         print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
@@ -612,6 +622,9 @@ def main():
             norm_stats["encoder_pretrained"] = bool(env_model.get("encoder_pretrained", True))
             norm_stats["encoder_num_kp"] = int(env_model.get("encoder_num_kp", 64))
             norm_stats["encoder_norm_kind"] = env_model.get("encoder_norm_kind", "bn")
+            norm_stats["encoder_per_camera"] = bool(env_model.get("encoder_per_camera", False))
+            norm_stats["cond_fusion"] = env_model.get("cond_fusion", "concat")
+            norm_stats["action_chunk"] = int(env_config.get("training", {}).get("action_chunk", 1))
             # Eval must center-crop to the train-time random-crop size.
             norm_stats["image_crop_size"] = int(env_config.get("training", {}).get("image_crop_size", 0))
         # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does

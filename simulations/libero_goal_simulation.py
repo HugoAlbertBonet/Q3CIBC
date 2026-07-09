@@ -181,6 +181,18 @@ class LiberoGoalSimulation(BaseSimulation):
         raw = self._raw_act_min + (np.asarray(action_norm, dtype=np.float32) - self._act_lo) * scale
         return np.clip(raw, -1.0, 1.0).astype(np.float32)
 
+    # Standard LIBERO eval protocol (e.g. OpenVLA's script): after restoring
+    # the init state, step ~10 no-op actions so physics settle (objects placed
+    # by set_init_state may still be moving) before the policy takes over.
+    # No-op = zero OSC delta + gripper open (-1). Not counted toward the horizon.
+    SETTLE_STEPS = 10
+    _NOOP_ACTION = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)
+
+    def _settle(self, env, live_obs):
+        for _ in range(self.SETTLE_STEPS):
+            live_obs, _, _, _ = env.step(self._NOOP_ACTION)
+        return live_obs
+
     # ── episode loop (multi-task) ────────────────────────────────────────
     def run_episode(self, seed: int | None = None) -> dict:
         s = int(seed) if seed is not None else 0
@@ -196,6 +208,7 @@ class LiberoGoalSimulation(BaseSimulation):
         env.reset()
         init_idx = round_idx % len(init_states)
         live_obs = env.set_init_state(init_states[init_idx])
+        live_obs = self._settle(env, live_obs)
 
         total_reward = 0.0
         episode_length = 0

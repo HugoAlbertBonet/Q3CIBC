@@ -72,6 +72,7 @@ _RESULTS_SLUG = {
     "door": "ibc_dfo_door",
     "kitchen": "ibc_dfo_kitchen",
     "libero_goal": "ibc_dfo_libero_goal",
+    "libero_goal_pixels": "ibc_dfo_libero_goal_pixels",
 }
 
 # Envs that share the D4RL standardize-obs / [-1,1]-action / reward-eval path.
@@ -113,7 +114,7 @@ BASELINE_HPARAMS: dict = {
 }
 
 # Particle uses 50 eval seeds (legacy); pen uses 100 (matches IBC Table 2).
-_DEFAULT_NUM_EVAL_SEEDS = {"particle": 50, "pen": 100, "door": 100, "kitchen": 100, "libero_goal": 50}
+_DEFAULT_NUM_EVAL_SEEDS = {"particle": 50, "pen": 100, "door": 100, "kitchen": 100, "libero_goal": 50, "libero_goal_pixels": 50}
 NUM_EVAL_SEEDS = 50  # kept for particle backcompat (used when active_env="particle")
 
 
@@ -210,6 +211,7 @@ def langevin_counter_examples(
     action_dim,
     act_range_lo: float = 0.0,
     act_range_hi: float = 1.0,
+    energy_fn=None,
 ):
     """Sample IBC paper-style Langevin counter-examples.
 
@@ -219,6 +221,12 @@ def langevin_counter_examples(
     already in [-1, 1] via per-dim min-max). The UNIFORM_BOUNDARY_BUFFER
     hparam pads both sides identically.
     """
+    # energy_fn(obs_expanded, actions) -> (B, N): override for pixel EBMs so
+    # the chain runs against precomputed features (late fusion) instead of
+    # re-running the conv encoder every iteration (mandatory for pixel envs —
+    # see combinedv2's wall-time postmortem).
+    if energy_fn is None:
+        energy_fn = lambda o, a: energy_model(o, a).squeeze(-1)  # noqa: E731
     B = obs_norm.shape[0]
     act_min = act_range_lo - hparams["UNIFORM_BOUNDARY_BUFFER"]
     act_max = act_range_hi + hparams["UNIFORM_BOUNDARY_BUFFER"]
@@ -238,7 +246,7 @@ def langevin_counter_examples(
             * (frac ** hparams["LANGEVIN_STEPSIZE_POWER"])
         )
         actions = actions.detach().requires_grad_(True)
-        energies = energy_model(obs_expanded, actions).squeeze(-1)
+        energies = energy_fn(obs_expanded, actions)
         grad = torch.autograd.grad(energies.sum(), actions)[0].detach()
         noise = torch.randn_like(actions) * hparams["LANGEVIN_NOISE_SCALE"]
         delta = stepsize * (0.5 * grad + noise)
@@ -385,6 +393,34 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             obs_mean=dataset.obs_mean,
             obs_std=dataset.obs_std,
         )
+    elif active_env == "libero_goal_pixels":
+        from utils.datasets import LiberoGoalPixelsDataset
+        dataset = LiberoGoalPixelsDataset(
+            goal_embeddings_path=env_cfg["goal_embeddings_path"],
+            frame_stack=frame_stack,
+            max_demos_per_task=env_cfg.get("max_demos_per_task"),
+            crop_size=int(hparams.get("IMAGE_CROP", 0)),
+        )
+        action_in_model_range = (-1.0, 1.0)
+        per_batch_action_norm = False
+        norm_stats = {
+            "act_min": dataset.act_min.astype(np.float32),
+            "act_max": dataset.act_max.astype(np.float32),
+            "action_norm_range": (-1.0, 1.0),
+            "frame_stack": frame_stack,
+            "env_id": env_cfg["env_id"],
+            "libero_obs_keys": dataset.libero_obs_keys,
+            "goal_embeddings": dataset.goal_embeddings,
+            "goal_task_names": dataset.goal_task_names,
+            "goal_emb_dim": dataset.goal_emb_dim,
+            "proprio_dim": dataset.proprio_dim,
+            "cond_dim": dataset.cond_dim,
+            "in_channels": dataset.in_channels,
+            "state_shape": list(dataset.state_shape),
+            "image_crop_size": int(hparams.get("IMAGE_CROP", 0)),
+        }
+        # Conv encoder preprocesses images itself; conditioning fed raw.
+        obs_normalizer = None
     else:
         raise ValueError(f"Unsupported active_env for DFO: {active_env}")
 
@@ -412,9 +448,32 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
     # Official MLPEBM projects to the energy straight after the last resnet
     # block (no trailing activation). Default False = IBC-faithful.
     resnet_final_act = bool(hparams.get("RESNET_FINAL_ACTIVATION", False))
-    print(f"  EBM backbone: {network_kind} (width={q_width}, depth={q_depth}, "
-          f"final_act={resnet_final_act})")
-    energy_model = QEstimator(
+    is_pixel = (active_env == "libero_goal_pixels")
+    if is_pixel:
+        # Official IBC pixel EBM (pixel_ebm_langevin.gin): ConvMaxpoolEncoder
+        # + DenseResnetValue(width=VALUE_WIDTH, blocks=VALUE_NUM_BLOCKS), plus
+        # our proprio+goal conditioning concat (cond_dim).
+        from utils.models import PixelQEstimator
+        value_width = int(hparams.get("VALUE_WIDTH", 1024))
+        value_blocks = int(hparams.get("VALUE_NUM_BLOCKS", 1))
+        print(f"  EBM backbone: PIXEL conv_maxpool + DenseResnetValue("
+              f"w={value_width}, blocks={value_blocks}) cond={dataset.cond_dim}")
+        energy_model = PixelQEstimator(
+            action_dim=dataset.action_shape,
+            in_channels=dataset.in_channels,
+            encoder_target_height=int(env_cfg.get("encoder_target_height", 128)),
+            encoder_target_width=int(env_cfg.get("encoder_target_width", 128)),
+            value_width=value_width,
+            value_num_blocks=value_blocks,
+            cond_dim=dataset.cond_dim,
+        ).to(device)
+        norm_stats["value_width"] = value_width
+        norm_stats["value_num_blocks"] = value_blocks
+        norm_stats["encoder_kind"] = "conv_maxpool"
+    if not is_pixel:
+        print(f"  EBM backbone: {network_kind} (width={q_width}, depth={q_depth}, "
+              f"final_act={resnet_final_act})")
+    energy_model = energy_model if is_pixel else QEstimator(
         state_dim=obs_dim,
         action_dim=act_dim,
         hidden_dims=hd,
@@ -449,7 +508,13 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             actions = batch["action"].float().to(device)
             B = states.shape[0]
 
-            states_norm = obs_normalizer.normalize(states)
+            if is_pixel:
+                # Conv encoder does its own preprocessing; conditioning
+                # (proprio + goal) rides the model's _cond attribute.
+                energy_model._cond = batch["cond"].float().to(device)
+                states_norm = states
+            else:
+                states_norm = obs_normalizer.normalize(states)
             if per_batch_action_norm:
                 actions_norm = normalize_tensor(
                     actions, norm_stats["act_min"], norm_stats["act_max"], device,
@@ -458,24 +523,45 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
                 # D4RLDataset pre-normalized actions to action_in_model_range.
                 actions_norm = actions
 
-            counter_actions = langevin_counter_examples(
-                energy_model, states_norm, device, hparams, act_dim,
-                act_range_lo=action_in_model_range[0],
-                act_range_hi=action_in_model_range[1],
-            )
+            if is_pixel:
+                # Late fusion: encode ONCE, chain runs on the value head only.
+                with torch.no_grad():
+                    lv_feats = energy_model.encode(states_norm)
+                counter_actions = langevin_counter_examples(
+                    energy_model,
+                    lv_feats,  # obs arg only supplies batch size to the sampler
+                    device, hparams, act_dim,
+                    act_range_lo=action_in_model_range[0],
+                    act_range_hi=action_in_model_range[1],
+                    energy_fn=lambda o, a: energy_model.score(lv_feats, a).squeeze(-1),
+                )
+            else:
+                counter_actions = langevin_counter_examples(
+                    energy_model, states_norm, device, hparams, act_dim,
+                    act_range_lo=action_in_model_range[0],
+                    act_range_hi=action_in_model_range[1],
+                )
 
             n_counter = hparams["NUM_COUNTER_EXAMPLES"]
             all_actions = torch.cat([counter_actions, actions_norm.unsqueeze(1)], dim=1)
-            states_expanded = states_norm.unsqueeze(1).expand(-1, n_counter + 1, -1)
-
-            energies = energy_model(states_expanded, all_actions).squeeze(-1)
+            if is_pixel:
+                # Encoder trains through InfoNCE: encode WITH grad, late-fuse.
+                nce_feats = energy_model.encode(states_norm)
+                energies = energy_model.score(nce_feats, all_actions).squeeze(-1)
+            else:
+                states_expanded = states_norm.unsqueeze(1).expand(-1, n_counter + 1, -1)
+                energies = energy_model(states_expanded, all_actions).squeeze(-1)
             logits = -energies / hparams["SOFTMAX_TEMPERATURE"]
             log_probs = logits - torch.logsumexp(logits, dim=1, keepdim=True)
             loss_infonce = -log_probs[:, -1].mean()
 
-            gp_actions = all_actions.detach().reshape(B * (n_counter + 1), -1).requires_grad_(True)
-            gp_states = states_expanded.detach().reshape(B * (n_counter + 1), -1)
-            gp_energies = energy_model(gp_states, gp_actions)
+            if is_pixel:
+                gp_actions = all_actions.detach().requires_grad_(True)
+                gp_energies = energy_model.score(nce_feats.detach(), gp_actions)
+            else:
+                gp_actions = all_actions.detach().reshape(B * (n_counter + 1), -1).requires_grad_(True)
+                gp_states = states_expanded.detach().reshape(B * (n_counter + 1), -1)
+                gp_energies = energy_model(gp_states, gp_actions)
             grad_gp = torch.autograd.grad(gp_energies.sum(), gp_actions, create_graph=True)[0]
             grad_norms = grad_gp.abs().max(dim=-1).values
             grad_penalty = torch.clamp(grad_norms - hparams["GRADIENT_MARGIN"], min=0).pow(2).mean()
@@ -540,6 +626,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         "q_width": q_width,
         "q_depth": q_depth,
         "resnet_final_activation": resnet_final_act,
+        "pixel": is_pixel,
     }, ckpt_path)
     # Persist the exact hparams next to the checkpoint for traceability.
     with open(save_dir / "hparams.json", "w") as f:
@@ -591,6 +678,56 @@ def evaluate_checkpoint(
     action_dim = int(env_cfg["action_dim"])
     frame_stack = int(env_cfg.get("frame_stack", 1))
     action_bounds = tuple(env_cfg.get("action_bounds", [0, 1]))
+
+    # ── Pixel EBM branch (libero_goal_pixels) ─────────────────────────────
+    # Rebuild the PixelQEstimator from the checkpoint's own arch fields and run
+    # the render-eval IBC sim (Langevin on encoded features, grouped by task).
+    # Returns early — everything below assumes a flat-state QEstimator.
+    if (isinstance(ckpt, dict) and ckpt.get("pixel")) or active_env == "libero_goal_pixels":
+        from utils.models import PixelQEstimator
+        from simulations.libero_goal_pixels_simulation import LiberoGoalPixelsIBCSimulation
+
+        if norm_stats is None or "cond_dim" not in norm_stats:
+            raise RuntimeError("pixel DFO eval needs norm_stats with the libero pixel schema.")
+        model = PixelQEstimator(
+            action_dim=action_dim,
+            in_channels=int(norm_stats["in_channels"]),
+            encoder_target_height=int(env_cfg.get("encoder_target_height", 128)),
+            encoder_target_width=int(env_cfg.get("encoder_target_width", 128)),
+            value_width=int(norm_stats.get("value_width", 1024)),
+            value_num_blocks=int(norm_stats.get("value_num_blocks", 1)),
+            cond_dim=int(norm_stats["cond_dim"]),
+        )
+        model.load_state_dict(sd)
+        model.to(device).eval()
+        if num_seeds is None:
+            num_seeds = int(env_cfg.get("num_eval_seeds", _DEFAULT_NUM_EVAL_SEEDS.get(active_env, 50)))
+        sim = LiberoGoalPixelsIBCSimulation(
+            energy_net=model, device=device,
+            max_episode_steps=int(env_cfg.get("max_episode_steps", 300)),
+            frame_stack=frame_stack, norm_stats=norm_stats,
+            langevin_cfg=langevin_cfg, num_eval_seeds=num_seeds,
+            action_in_model_range=action_in_model_range,
+        )
+        t0 = time.time()
+        succ, rews, eplens, terms = [], [], [], []
+        for seed in range(num_seeds):
+            r = sim.run_episode(seed=seed)
+            succ.append(bool(r["success"]))
+            rews.append(float(r["total_reward"]))
+            eplens.append(int(r["episode_length"]))
+            terms.append(bool(r["terminated"]))
+        sim.close()
+        return {
+            "success_rate": float(np.mean(succ)),
+            "success_rate_std": float(np.std(succ)),
+            "avg_reward": float(np.mean(rews)),
+            "std_reward": float(np.std(rews)),
+            "median_reward": float(np.median(rews)),
+            "avg_episode_length": float(np.mean(eplens)),
+            "num_seeds": int(num_seeds),
+            "eval_time_s": time.time() - t0,
+        }
 
     # Backbone spec: prefer the values saved at train time. Older checkpoints
     # (pre-resnet-fix) lack these → default to the plain-MLP reconstruction.
@@ -1087,7 +1224,7 @@ def run_trial(
                     f"all-tasks success_rate={eval_results['success_rate']*100:.2f}%, "
                     f"eval_time={eval_results['eval_time_s']:.1f}s"
                 )
-            elif active_env in ("pen", "door", "libero_goal"):
+            elif active_env in ("pen", "door", "libero_goal", "libero_goal_pixels"):
                 import math
                 ne = int(eval_results.get("num_seeds") or 1)
                 sem = float(eval_results["std_reward"]) / math.sqrt(ne) if ne > 0 else 0.0
