@@ -1,0 +1,24 @@
+# Batch pushingPixelsDPE - DP pixels v-prediction @ 750k, seeds 1 & 2.
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pushing_pixels
+#
+# PURPOSE: complete the 3-seed converged DP number at the top budget. DPD showed
+# the v-pred convergence ladder is dominated by seed noise (single-seed success
+# bounces 83-95%); loss keeps dropping to 750k (0.0018). seed0@750k already exists
+# (DPD3 = 95%). This adds seeds 1 & 2 @ 750k -> combined n=3 = the trustworthy
+# converged DP pixel number for the final Q3C-vs-DP comparison + CSV update.
+#
+# RECIPE: v-prediction, 750k, else matched pixel arch (ConvMaxpoolEncoder +
+# DenseResnetValue 1024x1, lr 3e-4, batch 128, cosine, T=100). Identical to DPD3
+# except trial_seed.
+#
+# After this: summarize (v-pred, 750k, seeds 0/1/2), then replace the undertrained
+# DP rows in single_target_pixels.csv with the converged v-pred number. Report the
+# convergence BUDGET (750k vs Q3C's 150k = ~5x) as a result.
+#
+# Trials: DPE1=seed1@750k, DPE2=seed2@750k.
+
+# -- pushingPixelsDPE1: v-pred @ 750k, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"learning_rate":3e-4,"batch_size":128,"training_steps":750000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- pushingPixelsDPE2: v-pred @ 750k, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":2,"learning_rate":3e-4,"batch_size":128,"training_steps":750000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
