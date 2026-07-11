@@ -67,8 +67,25 @@ def _ensure_libero_config() -> None:
     }
     import yaml
 
-    with open(os.path.join(cfg_dir, "config.yaml"), "w") as f:
-        yaml.dump(cfg, f)
+    cfg_path = os.path.join(cfg_dir, "config.yaml")
+    payload = yaml.dump(cfg)
+    # Skip the write when content is already correct, and write ATOMICALLY
+    # (temp file + os.replace) otherwise. This module rewrites the config on
+    # every import; with 20 SLURM jobs importing simultaneously, a plain
+    # open("w") truncates the file while a sibling job reads it → yaml.load
+    # returns None → "'NoneType' object is not iterable" in get_libero_path
+    # (killed Dstandardlibero_007 at startup). os.replace is atomic on POSIX:
+    # readers see the old or the new file, never a partial one.
+    try:
+        with open(cfg_path, "r") as f:
+            if f.read() == payload:
+                return
+    except FileNotFoundError:
+        pass
+    tmp_path = f"{cfg_path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w") as f:
+        f.write(payload)
+    os.replace(tmp_path, cfg_path)
 
 
 _ensure_libero_config()

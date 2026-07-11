@@ -938,8 +938,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
     if active_env in ("pushing_pixels", "libero_goal_pixels"):
         from utils.models import PixelControlPointGenerator, PixelQEstimator
-        # state_dim is [C, H, W]; frame_stack/cameras are already baked into C.
-        in_channels = int(state_dim[0])
+        # in_channels MUST come from the checkpoint's norm_stats when present:
+        # the config's static state_dim assumes frame_stack=1 (6 channels), but
+        # fs=2 trials trained with 12 — rebuilding from config broke every
+        # frame_stack=2 eval in Dstandardlibero (head 1432 vs 920 mismatch).
+        in_channels = int((norm_stats or {}).get("in_channels", state_dim[0]))
         enc_h = int(env_config.get("encoder_target_height", 180))
         enc_w = int(env_config.get("encoder_target_width", 240))
         value_width = int(em.get("value_width", 1024))
