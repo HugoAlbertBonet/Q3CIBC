@@ -54,6 +54,9 @@ class PenHumanV2Simulation(BaseSimulation):
         )
         self.render_mode = render_mode
         self.norm_stats = norm_stats
+        # Action chunking: model emits K*24 per CP; execute the K steps
+        # open-loop (re-plan after each chunk). 1 = legacy single-step.
+        self.action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
 
         # Replace the base ObservationNormalizer (built from JSON bounds in
         # minmax mode) with the dataset-derived standardize one when
@@ -163,16 +166,20 @@ class PenHumanV2Simulation(BaseSimulation):
         success = False
 
         while not done:
-            action = self.select_action(stacked_obs)
-            obs, reward, terminated, truncated, info = self.env.step(action)
-            stacked_obs = self._update_frame_buffer(obs)
-            total_reward += float(reward)
-            episode_length += 1
-            step_success = bool(info.get("success", info.get("is_success", False)))
-            if step_success:
-                success = True
-            self._render_callback(reward, total_reward)
-            done = terminated or truncated
+            chunk = self.select_action(stacked_obs)  # (K*24,) denormalized
+            steps = np.asarray(chunk).reshape(self.action_chunk, -1)
+            for k in range(self.action_chunk):
+                obs, reward, terminated, truncated, info = self.env.step(steps[k])
+                stacked_obs = self._update_frame_buffer(obs)
+                total_reward += float(reward)
+                episode_length += 1
+                step_success = bool(info.get("success", info.get("is_success", False)))
+                if step_success:
+                    success = True
+                self._render_callback(reward, total_reward)
+                done = terminated or truncated
+                if done:
+                    break
 
         return {
             "episode_length": episode_length,

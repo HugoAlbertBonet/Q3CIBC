@@ -79,6 +79,34 @@ def stack_frames(observations: np.ndarray, episode_starts: np.ndarray, frame_sta
     return stacked
 
 
+def build_chunked_actions(raw_actions: np.ndarray, episode_starts: np.ndarray, K: int) -> np.ndarray:
+    """Turn per-step actions into K-step chunk targets (action chunking).
+
+    Sample t's target becomes [a_t, ..., a_{t+K-1}] flattened to (N, K*A).
+    Windows never cross an episode boundary: indices past the episode's last
+    step repeat that final action (same padding policy as the LIBERO pixel
+    dataset, where chunking was first validated). Call BEFORE computing action
+    stats / normalization so act_min/max cover the chunked vector.
+    """
+    if K <= 1:
+        return raw_actions
+    n, a = raw_actions.shape
+    episode_id = np.cumsum(episode_starts) - 1
+    # For each step, the absolute index of its episode's LAST step.
+    last_of_ep = np.empty(n, dtype=np.int64)
+    ep_last: dict[int, int] = {}
+    for i in range(n - 1, -1, -1):
+        e = int(episode_id[i])
+        if e not in ep_last:
+            ep_last[e] = i
+        last_of_ep[i] = ep_last[e]
+    chunks = np.empty((n, K, a), dtype=np.float32)
+    for k in range(K):
+        idx = np.minimum(np.arange(n) + k, last_of_ep)
+        chunks[:, k] = raw_actions[idx]
+    return chunks.reshape(n, K * a)
+
+
 class D4RLDataset(Dataset):
     """Minari D4RL dataset wrapper with IBC-paper-faithful normalization.
 
@@ -101,8 +129,10 @@ class D4RLDataset(Dataset):
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
         obs_indices: list[int] | None = None,
+        action_chunk: int = 1,
     ):
         self.dataset_name = root
+        self.action_chunk = max(1, int(action_chunk))
         self.dataset = self._load_dataset(root, download=download)
         self.frame_stack = frame_stack
         self.normalize_actions = normalize_actions
@@ -139,6 +169,13 @@ class D4RLDataset(Dataset):
         self.observations = np.concatenate(all_observations).astype(np.float32)
         raw_actions = np.concatenate(all_actions).astype(np.float32)
         self._episode_starts = np.concatenate(episode_starts)
+
+        # Action chunking: replace per-step targets with K-step windows BEFORE
+        # stats so normalization covers the full (K*A) chunk vector.
+        if self.action_chunk > 1:
+            raw_actions = build_chunked_actions(
+                raw_actions, self._episode_starts, self.action_chunk
+            )
 
         # ─── Dataset statistics (paper-faithful, from raw obs/actions) ──────
         # Obs stats are computed on UNSTACKED obs — ObservationNormalizer tiles

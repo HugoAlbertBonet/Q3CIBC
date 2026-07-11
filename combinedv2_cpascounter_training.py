@@ -248,6 +248,7 @@ def load_dataset():
         return D4RLDataset(
             dataset_name, download=True, frame_stack=frame_stack,
             obs_indices=obs_indices,
+            action_chunk=int(env_config.get("training", {}).get("action_chunk", 1)),
         )
     elif active_env == "particle":
         from utils.datasets import ParticleDataset
@@ -602,6 +603,9 @@ def main():
             "action_norm_range": getattr(dataset, "action_norm_range", (-1.0, 1.0)),
             "frame_stack": frame_stack,
             "env_id": env_id,
+            # Action chunking (1 = off). Eval reads this to rebuild the model
+            # with action_dim*K and to execute chunks open-loop.
+            "action_chunk": int(getattr(dataset, "action_chunk", 1)),
         }
         # libero_goal_pixels: persist the pixel + conditioning schema so the
         # render-eval sim rebuilds an identical (image, cond) input.

@@ -1,0 +1,55 @@
+# Batch penChunkA — action chunking on AdroitHandPen (D4RL pen-human, state).
+#
+# Motivation: chunking was transformative on LIBERO-Goal (scratch 48->84,
+# ImageNet 58->90) — human-teleop demos are exactly the regime where it helps
+# (noisy, temporally-correlated, multimodal across time). Pen is our OTHER
+# human-demo env: a gain here shows the finding generalizes beyond LIBERO.
+# Chunked rows are NEW rows in pen_inference_results.csv — the existing
+# CP-argmax/DFO/Langevin rows stay untouched.
+#
+# Pen caveat: in-hand DYNAMIC manipulation = the most reactivity-hungry task
+# we have; executing K steps blind may drop the pen. Hence the sweep leans
+# SMALL (K=2,4 multi-seeded; 8 probed; 16 a long shot). If even K=2 hurts,
+# that's the honest negative result; receding-horizon execution (predict K,
+# execute E<K) is the planned follow-up if long chunks plan well but fly
+# blind too long.
+#
+# Recipe: pen winner pattern (cp=100/top_k=30, mlp 512x8, spectral-norm Q,
+# lr 5e-4, 100k steps, 8 Langevin negatives) — the same config as the
+# "Q3C-B4 CP-argmax" 2575-reward row. Pure CP-argmax inference (refinement
+# wrappers are NOT chunk-aware): inference_langevin_iterations=0.
+# Metric: avg_reward over 100 eval seeds (IBC Table 2 protocol).
+#
+# PREREQUISITES (server): git pull (chunk wiring for D4RLDataset + pen sim +
+# flat eval rebuild). No uv sync. No render -> no MUJOCO_GL dependency, but
+# the template sets it anyway (harmless).
+#
+# Trials (8):
+#   P1-P4 chunk sweep 2/4/8/16 @ seed 0
+#   P5-P6 chunk4 @ seeds 1,2  (expected sweet spot, 3 seeds total)
+#   P7    chunk2 @ seed 1
+#   P8    chunk8 @ seed 1
+
+# -- P1: chunk=2 @ seed 0
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":2,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- P2: chunk=4 @ seed 0
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":4,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- P3: chunk=8 @ seed 0
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":8,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- P4: chunk=16 @ seed 0 (long shot; horizon 100 -> 7 replans)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":16,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- P5: chunk=4 @ seed 1
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"action_chunk":4,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- P6: chunk=4 @ seed 2
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"action_chunk":4,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- P7: chunk=2 @ seed 1
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"action_chunk":2,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- P8: chunk=8 @ seed 1
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"action_chunk":8,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'

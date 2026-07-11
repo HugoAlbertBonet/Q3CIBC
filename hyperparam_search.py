@@ -219,7 +219,7 @@ SEARCH_SPACE: dict[str, dict] = {
     # Predict a chunk of K consecutive actions per CP (executed open-loop at
     # eval). 1 = single-step (legacy). DP predicts 16, executes 8.
     "action_chunk": {
-        "values": [1, 4, 8, 16],
+        "values": [1, 2, 4, 8, 16],
         "type": "int",
         "location": "env_training",
     },
@@ -1016,9 +1016,13 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             flat_input_dim = int(norm_stats["state_shape"])
         else:
             flat_input_dim = state_dim * frame_stack
+        # Action chunking: the model was trained on K-step chunk targets, so
+        # its output/action dim is action_dim*K (norm_stats carries K).
+        flat_action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
+        flat_action_dim = action_dim * flat_action_chunk
         cp_gen = ControlPointGenerator(
             input_dim=flat_input_dim,
-            output_dim=action_dim,
+            output_dim=flat_action_dim,
             control_points=control_points,
             hidden_dims=[cp_width] * cp_depth,
             action_bounds=action_bounds,
@@ -1034,7 +1038,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
         q_est = QEstimator(
             state_dim=flat_input_dim,
-            action_dim=action_dim,
+            action_dim=flat_action_dim,
             hidden_dims=[q_width] * q_depth,
             use_spectral_norm=q_use_spectral_norm,
             network_kind=q_network_kind,
