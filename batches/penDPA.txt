@@ -1,0 +1,46 @@
+# Batch penDPA - Diffusion Policy on D4RL AdroitHandPen (pen/human-v2).
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pen
+#
+# State-based (45D obs, 24D action, frame_stack=1, action in [-1,1]). Flat DP:
+# denoiser reuses the QEstimator trunk, no encoder. Hard env: Q3C pen tops ~75-76%
+# success (avg_reward ~2500-2800).
+#
+# ARCHITECTURE + ABLATION-CRITICAL PARAMS matched to Q3C pen best trials:
+#   mlp, width=512, depth=8, spectral_norm=ON (Q3C pen q_use_spectral_norm=true),
+#   training_steps=100000, batch_size=512, learning_rate=5e-4, frame_stack=1,
+#   num_eval_seeds=100. Action normalized [-1,1].
+#
+# DP-INTRINSIC (no IBC analog, standard): T=100, cosine beta, t-emb 128,
+# ema 0.999, DDIM eval {5,10,25}.
+#
+# Two recipes, 3 seeds each (pixel study showed epsilon @ matched budget can
+# undertrain and v-prediction is 2x more efficient — run both up front):
+#   penDPA1-3: epsilon-prediction  (strict matched baseline)
+#   penDPA4-6: v-prediction        (Salimans & Ho 2022; fair DP-intrinsic recipe)
+#
+# NOTE: spectral_norm=ON matches Q3C's trunk (fair capacity/regularization match)
+# but is atypical for a diffusion denoiser (Lipschitz constraint on eps-regression).
+# If both recipes underperform, penDPB will test spectral_norm=OFF as a labeled
+# fair variant (SN is IBC energy-stability regularization; DP has no energy).
+#
+# After: check convergence (loss still dropping + success vs steps). If undertrained
+# like pixels, ladder the budget (penDPC). Match Q3C's converged budget for the
+# fair headline; report DP's convergence cost as a result.
+
+# -- penDPA1: epsilon @ mlp512x8 SN, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":true,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPA2: epsilon @ mlp512x8 SN, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":true,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPA3: epsilon @ mlp512x8 SN, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":true,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPA4: v-prediction @ mlp512x8 SN, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":true,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPA5: v-prediction @ mlp512x8 SN, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":true,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPA6: v-prediction @ mlp512x8 SN, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":true,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'

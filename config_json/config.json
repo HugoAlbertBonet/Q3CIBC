@@ -65,6 +65,20 @@
                     "polynomial_decay_power": 2.0,
                     "delta_action_clip": 0.5,
                     "noise_scale": 0.5
+                },
+                "diffusion": {
+                    "num_train_timesteps": 100,
+                    "beta_schedule": "cosine",
+                    "prediction_type": "epsilon",
+                    "time_emb_dim": 128,
+                    "denoiser_network_kind": "mlp",
+                    "denoiser_width": 512,
+                    "denoiser_depth": 8,
+                    "denoiser_use_spectral_norm": true,
+                    "ema_decay": 0.999,
+                    "ddim_eval_steps": [10, 25],
+                    "ddim_eta": 0.0,
+                    "eval_ddpm": true
                 }
             }
         },

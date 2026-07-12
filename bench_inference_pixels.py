@@ -143,13 +143,15 @@ MSE_SR_STD = 0.041
 MSE_SEEDS = 3
 
 # Diffusion Policy (THIS repo) — Pixels, PAPER-FAITHFUL arch: ConvMaxpoolEncoder
-# + DenseResnetValue(1024, 1 block) epsilon head (== PixelQEstimator). From
-# pushing_pixels DP trials 4-9 (dense_resnet, 150k, batch 128, lr 3e-4;
-# 6 runs = 2 reps x seeds 0/1/2). SR = (mean, std, n_runs).
-DP_DDPM   = (0.657, 0.069, 6)
-DP_DDIM5  = (0.693, 0.098, 6)
-DP_DDIM10 = (0.665, 0.094, 6)
-DP_DDIM25 = (0.683, 0.121, 6)
+# + DenseResnetValue(1024, 1 block) head (== PixelQEstimator). CONVERGED number:
+# v-prediction, 750k steps, batch 128, lr 3e-4, seeds 0/1/2 (pushing_pixels DP
+# trials DPD3/DPE1/DPE2). SR = (mean, std, n).
+#   NB: DP needs ~5x Q3C's training budget (750k vs 150k) + v-prediction to reach
+#   this. epsilon-pred @150k was only ~66% (undertrained); see DPB/DPC.
+DP_DDPM   = (0.940, 0.022, 3)
+DP_DDIM5  = (0.927, 0.017, 3)
+DP_DDIM10 = (0.907, 0.041, 3)
+DP_DDIM25 = (0.933, 0.012, 3)
 
 
 # ─── Timing harness ───────────────────────────────────────────────────────
