@@ -2040,6 +2040,60 @@ def print_analysis(
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
+# ─── Completion notification (Telegram) ─────────────────────────────────────
+
+def _notify_completion(status: str) -> None:
+    """Send a Telegram message when the search finishes: which job ended + squeue --me.
+
+    Opt-in: does nothing unless TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set
+    in the environment (export them in ~/.bashrc or the sbatch script). Never
+    raises — a notification failure must not turn a successful run into a
+    failed job. Uses stdlib urllib so SLURM nodes need no extra packages.
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+
+    import html
+    import urllib.parse
+    import urllib.request
+
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    job_name = os.environ.get("SLURM_JOB_NAME", "")
+    try:
+        squeue_out = subprocess.run(
+            ["squeue", "--me"], capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+    except Exception as exc:
+        squeue_out = f"(squeue failed: {exc})"
+
+    # <pre> keeps squeue's column alignment in the Telegram client.
+    # Telegram rejects messages over 4096 chars, so clamp the table.
+    squeue_block = html.escape(squeue_out or "(no jobs in queue)")
+    if len(squeue_block) > 3200:
+        squeue_block = squeue_block[:3200] + "\n… (truncated)"
+    text = (
+        f"<b>hyperparam_search {html.escape(status)}</b>\n"
+        f"job {html.escape(str(job_id))} {html.escape(job_name)}\n"
+        f"<code>{html.escape(' '.join(sys.argv[1:]))}</code>\n\n"
+        f"<b>squeue --me</b>\n<pre>{squeue_block}</pre>"
+    )
+
+    data = urllib.parse.urlencode(
+        {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    ).encode()
+    try:
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage", data=data
+            ),
+            timeout=15,
+        )
+    except Exception as exc:
+        print(f"[notify] Telegram send failed: {exc}", file=sys.stderr)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Agent-assisted hyperparameter search for Q3C-IBC training scripts.",
@@ -2243,4 +2297,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    _status = "completed"
+    try:
+        main()
+    except BaseException as exc:  # noqa: BLE001 — report crashes/cancellations too
+        _status = f"FAILED ({type(exc).__name__}: {exc})"
+        raise
+    finally:
+        # --analyze is a quick local read; only notify for actual runs.
+        if "--analyze" not in sys.argv:
+            _notify_completion(_status)
