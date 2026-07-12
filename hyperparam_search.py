@@ -2053,6 +2053,25 @@ def _notify_completion(status: str) -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
+        # Fallback: ~/.telegram.env (KEY=VALUE lines). SLURM's --export=ALL
+        # snapshots the env at *submission* time, so jobs queued before the
+        # exports existed have no TELEGRAM_* vars — but they read this file
+        # at completion time, so notifications work without resubmitting.
+        env_file = Path.home() / ".telegram.env"
+        try:
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip().strip("'\"")
+                if key == "TELEGRAM_BOT_TOKEN" and not token:
+                    token = value
+                elif key == "TELEGRAM_CHAT_ID" and not chat_id:
+                    chat_id = value
+        except OSError:
+            pass
+    if not token or not chat_id:
         return
 
     import html
