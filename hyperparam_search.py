@@ -223,6 +223,14 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_training",
     },
+    # Receding horizon: execute only the first R steps of the K-step chunk,
+    # then replan. 0 (default) = execute the whole chunk (pure chunking).
+    # Eval-time only — does not change training. DP-style: K=16, R=8.
+    "action_execute_horizon": {
+        "values": [0, 1, 2, 4, 8],
+        "type": "int",
+        "location": "env_training",
+    },
     "encoder_num_kp": {
         "values": [32, 64, 128],
         "type": "int",
@@ -1441,7 +1449,12 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         )
     elif active_env in ("pen", "door", "kitchen"):
         # Adroit D4RL + FrankaKitchen — no goal_dist_tolerance / n_dim knobs.
-        pass
+        if active_env == "kitchen":
+            # Receding horizon (execute R of the K-step chunk then replan).
+            # 0 = execute all K (pure chunking). Eval-time-only knob.
+            sim_kwargs["execute_horizon"] = int(
+                env_config.get("training", {}).get("action_execute_horizon", 0)
+            )
     elif active_env == "libero_goal":
         # Multi-task language-conditioned eval — obs schema + goal embeddings
         # come from norm_stats; no n_dim / tolerance knobs.

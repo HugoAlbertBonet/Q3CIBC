@@ -40,6 +40,7 @@ class KitchenSimulation(BaseSimulation):
         frame_stack: int = 1,
         norm_stats: dict | None = None,
         dataset_name: str = "D4RL/kitchen/complete-v2",
+        execute_horizon: int = 0,
     ) -> None:
         super().__init__(
             env_id="FrankaKitchen-v1",
@@ -56,6 +57,15 @@ class KitchenSimulation(BaseSimulation):
         # policy must see exactly the dims it was trained on.
         self._obs_indices = (
             norm_stats.get("obs_indices") if isinstance(norm_stats, dict) else None
+        )
+        # Action chunking: K comes from training (norm_stats — the model's
+        # output IS a K*A vector). execute_horizon R is eval-time: execute the
+        # first R steps of each chunk then replan; 0/>=K = execute all K
+        # (pure chunking, pen-style).
+        self.action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
+        eh = int(execute_horizon or 0)
+        self.execute_horizon = (
+            self.action_chunk if eh <= 0 else min(eh, self.action_chunk)
         )
 
         if norm_stats is not None and "obs_mean" in norm_stats and "obs_std" in norm_stats:
@@ -147,14 +157,22 @@ class KitchenSimulation(BaseSimulation):
         tasks_completed = 0
 
         while not done:
-            action = self.select_action(stacked_obs)
-            obs, reward, terminated, truncated, info = self.env.step(action)
-            stacked_obs = self._update_frame_buffer(self._obs_vec(obs))
-            total_reward += float(reward)
-            episode_length += 1
-            # episode_task_completions accumulates the target subtasks solved.
-            tasks_completed = len(info.get("episode_task_completions", []))
-            done = terminated or truncated
+            # select_action returns a K*A chunk when action_chunk > 1 (the
+            # model's native output); execute the first `execute_horizon`
+            # steps, then replan. K=1 degenerates to the single-step loop.
+            chunk = np.asarray(self.select_action(stacked_obs)).reshape(
+                self.action_chunk, -1
+            )
+            for k in range(self.execute_horizon):
+                obs, reward, terminated, truncated, info = self.env.step(chunk[k])
+                stacked_obs = self._update_frame_buffer(self._obs_vec(obs))
+                total_reward += float(reward)
+                episode_length += 1
+                # episode_task_completions accumulates the target subtasks solved.
+                tasks_completed = len(info.get("episode_task_completions", []))
+                done = terminated or truncated
+                if done:
+                    break
 
         # success = ALL target subtasks solved (remaining == 0).
         n_targets = tasks_completed + len(info.get("tasks_to_complete", []))
