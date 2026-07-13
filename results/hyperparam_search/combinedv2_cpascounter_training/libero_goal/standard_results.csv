@@ -1,13 +1,14 @@
 # SOTA baselines — LIBERO-Goal under the STANDARD protocol
 # (pixels: agentview + wrist RGB + proprio; language/task embedding; multitask;
 #  success rate = mean over all 10 tasks x rollouts).
-# HAND-EDITED ONLY. No script reads or writes this file. Add rows as you collect
-# numbers; keep a source URL per row. Our Q3CIBC pixel results (Astandardlibero)
-# are protocol-comparable but use an IBC ConvMaxpool encoder, not ResNet/ViT.
-method,obs,task_conditioning,libero_goal_success_rate,source
-Diffusion Policy (scratch),pixel,language,68.3,https://arxiv.org/abs/2406.09246
-OpenVLA,pixel-VLA,language,79.2,https://arxiv.org/abs/2406.09246
-Octo (fine-tuned),pixel,language,84.6,https://arxiv.org/abs/2406.09246
-ProgressVLA,pixel-VLA,language,86.0,https://arxiv.org/pdf/2603.27670
-Dream-VLA,pixel-VLA,language,97.2,https://arxiv.org/pdf/2512.22615
-OpenVLA-OFT,pixel-VLA,language,97.9,https://openvla-oft.github.io/
+# Hand-maintained final-comparison input. Q3C rows are current interim means;
+# the planned 3-seed x 500-episode final evaluations are not complete yet.
+method,obs,task_conditioning,libero_goal_success_rate,pretraining,n_seeds,evaluation,source
+Diffusion Policy (scratch),pixel,language,68.3,scratch,3,paper,https://arxiv.org/abs/2406.09246
+OpenVLA,pixel-VLA,language,79.2,pretrained,,paper,https://arxiv.org/abs/2406.09246
+Octo (fine-tuned),pixel,language,84.6,pretrained,,paper,https://arxiv.org/abs/2406.09246
+ProgressVLA,pixel-VLA,language,86.0,pretrained,,paper,https://arxiv.org/pdf/2603.27670
+Q3CIBC scratch (chunk16),pixel,language,82.0,scratch,3,50 evals/seed,libero_goal_pixels trials 31/58/60
+Q3CIBC ImageNet (chunk8),pixel,language,86.7,pretrained,3,50 evals/seed,libero_goal_pixels trials 40/56/57
+Dream-VLA,pixel-VLA,language,97.2,pretrained,,paper,https://arxiv.org/pdf/2512.22615
+OpenVLA-OFT,pixel-VLA,language,97.9,pretrained,,paper,https://openvla-oft.github.io/

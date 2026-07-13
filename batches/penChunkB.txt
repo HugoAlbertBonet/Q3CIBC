@@ -1,0 +1,48 @@
+# Batch penChunkB — receding-horizon evaluation of the existing Pen K=4 models.
+#
+# penChunkA conclusion:
+#   K=2: 2517.5 reward (2 train seeds) — neutral vs unchunked B4 2498.8
+#   K=4: 2541.6 reward (3 train seeds) — best chunk, but +42.7 is noise-sized
+#   K=8: 2390.0 reward (2 train seeds) — trends worse
+#   K=16: CUDA OOM — invalid, not a zero-reward result
+#
+# Hypothesis: K=4 may learn useful short trajectories, but executing all four
+# actions blind is too open-loop for in-hand manipulation. These jobs reuse
+# the three completed K=4 checkpoints and change ONLY the eval-time execution
+# horizon: predict four actions, execute R={1,2}, then observe and replan.
+# No training is performed.
+#
+# Source checkpoints (pen trials.jsonl):
+#   trial 110 — K=4, train seed 0, open-loop reward 2404.2
+#   trial 111 — K=4, train seed 1, open-loop reward 2716.2
+#   trial 114 — K=4, train seed 2, open-loop reward 2504.3
+#
+# Each command runs 100 evaluation episodes and appends a new record tagged
+# reeval_only=true, reeval_of_trial=<source>, and action_execute_horizon=R.
+# The six jobs are independent and can run in parallel.
+#
+# Decision rule after this batch:
+#   Continue chunking only if one R improves mean reward by roughly >=150 over
+#   unchunked B4 AND the gain is directionally consistent across all 3 train
+#   seeds. Otherwise close Pen chunking as a neutral/negative result. Test K=8
+#   receding horizon only if K=4 passes this gate.
+#
+# Prerequisite: git pull (Pen execute_horizon wiring + reeval override support).
+
+# -- B1: K=4 seed 0, execute 1 then replan
+uv run --extra libero python scripts/reeval_trials.py --active-env pen --trials 110 --param-overrides '{"action_execute_horizon":1}'
+
+# -- B2: K=4 seed 1, execute 1 then replan
+uv run --extra libero python scripts/reeval_trials.py --active-env pen --trials 111 --param-overrides '{"action_execute_horizon":1}'
+
+# -- B3: K=4 seed 2, execute 1 then replan
+uv run --extra libero python scripts/reeval_trials.py --active-env pen --trials 114 --param-overrides '{"action_execute_horizon":1}'
+
+# -- B4: K=4 seed 0, execute 2 then replan
+uv run --extra libero python scripts/reeval_trials.py --active-env pen --trials 110 --param-overrides '{"action_execute_horizon":2}'
+
+# -- B5: K=4 seed 1, execute 2 then replan
+uv run --extra libero python scripts/reeval_trials.py --active-env pen --trials 111 --param-overrides '{"action_execute_horizon":2}'
+
+# -- B6: K=4 seed 2, execute 2 then replan
+uv run --extra libero python scripts/reeval_trials.py --active-env pen --trials 114 --param-overrides '{"action_execute_horizon":2}'

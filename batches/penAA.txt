@@ -1,0 +1,74 @@
+# Batch penAA — Q3C implementation-parity ablations on Pen B4 (CP=100).
+#
+# Purpose: test implementation changes borrowed from IBC/DP without changing
+# Q3C's deterministic CP proposal + Q-ranking policy. All runs use pure
+# CP-argmax at inference and the established B4 capacity/training budget.
+#
+# Existing reference (do not rerun): B4, L2 GP, Q spectral norm ON, no EMA,
+# legacy training Langevin. Ten-seed mean = 2498.8 reward.
+#
+# Four independent 3-seed blocks:
+#   AA1-AA3   L-infinity GP only. Corrects Q3C/IBC GP-norm mismatch.
+#   AA4-AA6   L-infinity GP + Q spectral norm OFF. Isolates SN from AA1-AA3.
+#   AA7-AA9   L-infinity GP + EMA 0.999. Isolates EMA from AA1-AA3.
+#   AA10-AA12 L-infinity GP + IBC training-chain mechanics/schedule, with the
+#              same 8 Langevin-chain budget as B4. Isolates sampler fidelity.
+#
+# The blocks intentionally do NOT stack SN-off + EMA + IBC-chain. Combine only
+# factors that win across all three training seeds in the next batch.
+# Every job trains once, evaluates 100 fixed Pen episodes, and is independent.
+#
+# Shared B4 recipe: action_chunk=1; CP=100/top-k=30; Q+CP MLP 512x8;
+# 100k steps; batch=512; cosine; 8 training Langevin negatives; no inference
+# refinement. Legacy-chain controls are set explicitly to avoid config drift.
+
+# ── AA1-AA3: L-infinity gradient penalty, SN ON, no EMA ────────────────────
+
+# AA1: seed 0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA2: seed 1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA3: seed 2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── AA4-AA6: L-infinity GP + Q spectral norm OFF ───────────────────────────
+
+# AA4: seed 0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA5: seed 1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA6: seed 2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── AA7-AA9: L-infinity GP + EMA, SN ON ───────────────────────────────────
+
+# AA7: seed 0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.999,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA8: seed 1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.999,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA9: seed 2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"langevin_noise_via_stepsize":false,"langevin_boundary_buffer":0.0,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.999,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── AA10-AA12: L-infinity GP + IBC training sampler, SN ON/no EMA ──────────
+# Uses IBC's 0.1→1e-5 schedule, linear stepsize noise, noise=1.0, clip=0.1,
+# and a 0.05 padded action box. Chain count remains B4's 8 for compute parity.
+
+# AA10: seed 0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":1.0,"langevin_noise_via_stepsize":true,"langevin_boundary_buffer":0.05,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA11: seed 1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":1.0,"langevin_noise_via_stepsize":true,"langevin_boundary_buffer":0.05,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# AA12: seed 2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"action_chunk":1,"control_points":100,"top_k_control_points":30,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":true,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":1.0,"langevin_noise_via_stepsize":true,"langevin_boundary_buffer":0.05,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","gradient_penalty_norm":"linf","ema_decay":0.0,"infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# Decision rule:
+# Compare each 3-seed block to paired B4 seeds 0/1/2 and to AA1-AA3. Advance a
+# factor only if mean reward improves by roughly >=150 and the direction is
+# consistent in at least 2/3 seeds. Then combine winning factors in penAB.

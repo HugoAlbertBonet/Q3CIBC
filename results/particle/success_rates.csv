@@ -1,8 +1,10 @@
-n_dim,success_rate_dfo,train_time_dfo,inference_time_dfo,success_rate_q3cibc,train_time_q3cibc,inference_time_q3cibc,num_seeds
-2,0.920000,7208.2,186.4,0.940000,976.8,1.8,50
-3,0.880000,7208.2,186.4,0.90000,976.8,1.8,50
-4,0.940000,7208.2,186.4,0.960000,976.8,1.8,50
-5,0.920000,,180.4,0.920000,976.8,1.5,50
-6,0.980000,11734.7,203.8,0.94000,1054.7,1.7,50
-8,0.99000, 13322.1,187.2,0.980000,1232.0,14.9,50
-16,0.000000,,,0.940000,4211.9,,50
+n_dim,success_rate_dfo,train_time_dfo,inference_time_dfo,success_rate_q3cibc,train_time_q3cibc,inference_time_q3cibc,num_seeds,success_rate_ibc_paper,success_rate_mse_paper,inference_time_ibc_paper_benchmark_ms,ibc_paper_source,inference_time_q3cibc_local_ms_per_action,inference_time_ibc_local_ms_per_action,particle_timing_source
+2,0.920000,7208.2,186.4,0.940000,976.8,1.8,50,1.00,0.99,,IBC paper Figure 6 (digitized),0.720,74.560,local 50-seed x 50-step wall time normalized per action
+3,0.880000,7208.2,186.4,0.90000,976.8,1.8,50,0.98,0.98,,IBC paper Figure 6 (digitized),0.720,74.560,local 50-seed x 50-step wall time normalized per action
+4,0.940000,7208.2,186.4,0.960000,976.8,1.8,50,0.95,0.98,,IBC paper Figure 6 (digitized),0.720,74.560,local 50-seed x 50-step wall time normalized per action
+5,0.920000,,180.4,0.920000,976.8,1.5,50,0.97,0.95,,IBC paper Figure 6 (digitized),0.600,72.160,local 50-seed x 50-step wall time normalized per action
+6,0.980000,11734.7,203.8,0.94000,1054.7,1.7,50,0.99,0.96,,IBC paper Figure 6 (digitized),0.680,81.520,local 50-seed x 50-step wall time normalized per action
+8,0.99000, 13322.1,187.2,0.980000,1232.0,14.9,50,0.97,0.99,,IBC paper Figure 6 (digitized),5.960,74.880,local 50-seed x 50-step wall time normalized per action
+16,0.000000,,,0.940000,4211.9,222.593,50,0.99,0.03,479.192,IBC paper Figure 6 success + local paper-config timing benchmark,222.593,479.192,local per-action microbenchmark
+1,,,,,,,,0.98,0.99,,IBC paper Figure 6 (digitized),,,
+32,,,,,,,,0.06,0.00,,IBC paper Figure 6 (digitized),,,

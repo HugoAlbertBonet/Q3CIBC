@@ -4,6 +4,7 @@ Uses config.json to determine which environment to train on.
 Set "active_env" in config to switch between environments.
 """
 
+import copy
 import os
 import random
 import time
@@ -86,6 +87,22 @@ langevin_delta_clip = env_training.get(
 langevin_noise_scale = env_training.get(
     "langevin_noise_scale", langevin_config.get("noise_scale", 1.0)
 )
+# Training-only IBC sampler fidelity knobs. Defaults preserve every existing
+# Q3C run: textbook sqrt(stepsize) noise and the exact action box.
+langevin_noise_via_stepsize = bool(
+    env_training.get(
+        "langevin_noise_via_stepsize",
+        training_shared.get("langevin_noise_via_stepsize", False),
+    )
+)
+langevin_boundary_buffer = float(
+    env_training.get(
+        "langevin_boundary_buffer",
+        training_shared.get("langevin_boundary_buffer", 0.0),
+    )
+)
+if langevin_boundary_buffer < 0.0:
+    raise ValueError("langevin_boundary_buffer must be >= 0")
 
 # IBC counter-example mixture (Florence et al., 2021, §4.1).
 # Estimator's InfoNCE negatives = top-k generator CPs (existing) + uniform random
@@ -156,10 +173,23 @@ gradient_penalty_margin = env_training.get(
 gradient_penalty_form = env_training.get(
     "gradient_penalty_form", training_shared.get("gradient_penalty_form", "hinge")
 )
+gradient_penalty_norm = env_training.get(
+    "gradient_penalty_norm", training_shared.get("gradient_penalty_norm", "l2")
+).lower()
 if gradient_penalty_form not in ("hinge", "target"):
     raise ValueError(
         f"gradient_penalty_form must be 'hinge' or 'target', got {gradient_penalty_form!r}"
     )
+if gradient_penalty_norm not in ("l2", "linf"):
+    raise ValueError(
+        f"gradient_penalty_norm must be 'l2' or 'linf', got {gradient_penalty_norm!r}"
+    )
+
+# Exponential moving averages are generic optimization stabilization, not a
+# change to Q3C's CP-proposal + Q-ranking policy. Zero keeps legacy behavior.
+ema_decay = float(env_training.get("ema_decay", training_shared.get("ema_decay", 0.0)))
+if not 0.0 <= ema_decay < 1.0:
+    raise ValueError("ema_decay must satisfy 0 <= ema_decay < 1")
 
 # Deterministic seeding & NaN recovery — both fight the ~33% training-divergence rate.
 trial_seed = env_training.get("trial_seed", training_shared.get("trial_seed", 0))
@@ -322,10 +352,14 @@ def main():
     print(f"IBC uniform negatives: {num_uniform_negatives}")
     print(f"IBC Langevin negatives: {num_langevin_negatives} (iters={langevin_num_iterations}, "
           f"lr={langevin_lr_init}, noise={langevin_noise_scale}, clip={langevin_delta_clip}, "
-          f"init_kind={langevin_init_kind}, init_jitter={langevin_init_jitter})")
+          f"init_kind={langevin_init_kind}, init_jitter={langevin_init_jitter}, "
+          f"noise_via_stepsize={langevin_noise_via_stepsize}, "
+          f"boundary_buffer={langevin_boundary_buffer})")
     print(f"Noisy expert (estimator-only): count={noisy_expert_count} "
           f"sigma_start={noisy_expert_sigma_start} sigma_final={noisy_expert_sigma_final}")
-    print(f"Gradient penalty: weight={gradient_penalty_weight}, margin={gradient_penalty_margin}, form={gradient_penalty_form}")
+    print(f"Gradient penalty: weight={gradient_penalty_weight}, margin={gradient_penalty_margin}, "
+          f"form={gradient_penalty_form}, norm={gradient_penalty_norm}")
+    print(f"EMA decay: {ema_decay} ({'enabled' if ema_decay > 0.0 else 'disabled'})")
     print(f"NaN abort threshold (consecutive bad batches): {nan_abort_threshold}")
     print(f"Frame stack: {frame_stack}")
     
@@ -460,6 +494,43 @@ def main():
             depth=q_depth,
             resnet_final_activation=q_resnet_final_act,
         ).to(device)
+
+    ema_generator = copy.deepcopy(control_point_generator) if ema_decay > 0.0 else None
+    ema_estimator = copy.deepcopy(estimator) if ema_decay > 0.0 else None
+    for ema_model in (ema_generator, ema_estimator):
+        if ema_model is not None:
+            ema_model.eval()
+            for parameter in ema_model.parameters():
+                parameter.requires_grad_(False)
+
+    @torch.no_grad()
+    def update_ema(ema_model: nn.Module, source_model: nn.Module) -> None:
+        """Average parameters and copy buffers (BN/SN state) from source."""
+        source_parameters = dict(source_model.named_parameters())
+        for name, ema_parameter in ema_model.named_parameters():
+            ema_parameter.mul_(ema_decay).add_(
+                source_parameters[name].detach(), alpha=1.0 - ema_decay
+            )
+        source_buffers = dict(source_model.named_buffers())
+        for name, ema_buffer in ema_model.named_buffers():
+            ema_buffer.copy_(source_buffers[name].detach())
+
+    def save_checkpoints() -> None:
+        os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+        torch.save(
+            control_point_generator.state_dict(),
+            os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"),
+        )
+        torch.save(estimator.state_dict(), os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
+        if ema_generator is not None and ema_estimator is not None:
+            torch.save(
+                ema_generator.state_dict(),
+                os.path.join(MODEL_SAVE_DIR, "control_point_generator_ema.pt"),
+            )
+            torch.save(
+                ema_estimator.state_dict(),
+                os.path.join(MODEL_SAVE_DIR, "q_estimator_ema.pt"),
+            )
 
     # Helper: call estimator with (state, candidate_actions). For pixels we
     # pass un-expanded (B, C, H, W) state + (B, N, A) actions so the model's
@@ -754,6 +825,9 @@ def main():
                         # Q ascent ≡ descent on -Q (sample_langevin descends).
                         return -estimator(obs_expanded_lv, actions_batch).squeeze(-1)
 
+                langevin_action_min = action_min_tensor - langevin_boundary_buffer
+                langevin_action_max = action_max_tensor + langevin_boundary_buffer
+
                 # Build the chain's starting distribution: uniform (paper) or CP-anchored.
                 if langevin_init_kind == "cps":
                     # Sample one starting CP per chain, with replacement; optional
@@ -767,7 +841,9 @@ def main():
                     if langevin_init_jitter > 0.0:
                         initial_actions = initial_actions + torch.randn_like(initial_actions) * langevin_init_jitter
                     initial_actions = torch.clamp(
-                        initial_actions, action_min_tensor.squeeze(0), action_max_tensor.squeeze(0)
+                        initial_actions,
+                        langevin_action_min.squeeze(0),
+                        langevin_action_max.squeeze(0),
                     )
                 else:
                     initial_actions = None  # sample_langevin will draw uniform starts
@@ -776,8 +852,8 @@ def main():
                     energy_function=_neg_energy_fn,
                     observations=states,
                     num_samples=num_langevin_negatives,
-                    action_min=action_min_tensor,
-                    action_max=action_max_tensor,
+                    action_min=langevin_action_min,
+                    action_max=langevin_action_max,
                     num_iterations=langevin_num_iterations,
                     lr_init=langevin_lr_init,
                     lr_final=langevin_lr_final,
@@ -786,6 +862,7 @@ def main():
                     noise_scale=langevin_noise_scale,
                     initial_actions=initial_actions,
                     device=device,
+                    noise_via_stepsize=langevin_noise_via_stepsize,
                 )
 
                 for p in estimator.parameters():
@@ -842,7 +919,11 @@ def main():
                     inputs=gp_actions,
                     create_graph=True,
                 )[0]
-                grad_norms = gp_grad.flatten(start_dim=2).norm(dim=-1)
+                gp_grad_flat = gp_grad.flatten(start_dim=2)
+                if gradient_penalty_norm == "linf":
+                    grad_norms = gp_grad_flat.abs().amax(dim=-1)
+                else:
+                    grad_norms = gp_grad_flat.norm(dim=-1)
                 if gradient_penalty_form == "hinge":
                     # IBC-faithful: only penalize gradients ABOVE the margin.
                     penalty = torch.clamp(
@@ -915,6 +996,9 @@ def main():
 
             optimizer_estimator.step()
             optimizer_generator.step()
+            if ema_generator is not None and ema_estimator is not None:
+                update_ema(ema_generator, control_point_generator)
+                update_ema(ema_estimator, estimator)
             scheduler_generator.step()
             scheduler_estimator.step()
 
@@ -981,20 +1065,14 @@ def main():
             # Save checkpoint (overwrite the same file each interval so we
             # don't accumulate one .pt per step across long runs).
             if step % save_interval == 0:
-                os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-                torch.save(control_point_generator.state_dict(),
-                           os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
-                torch.save(estimator.state_dict(),
-                           os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
+                save_checkpoints()
     
     # Training complete
     total_time = time.time() - start_time
     print(f"\nTraining completed in {total_time:.1f}s ({total_time/60:.2f} min)")
     
     # Save trained models
-    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-    torch.save(control_point_generator.state_dict(), os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
-    torch.save(estimator.state_dict(), os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
+    save_checkpoints()
 
     # Persist normalization stats for pushing — the eval-time PushingSimulation
     # uses these to recreate the exact same obs-standardize + action-denorm
@@ -1014,6 +1092,9 @@ def main():
     artifact = wandb.Artifact("model-checkpoints", type="model")
     artifact.add_file(os.path.join(MODEL_SAVE_DIR, "control_point_generator.pt"))
     artifact.add_file(os.path.join(MODEL_SAVE_DIR, "q_estimator.pt"))
+    if ema_generator is not None and ema_estimator is not None:
+        artifact.add_file(os.path.join(MODEL_SAVE_DIR, "control_point_generator_ema.pt"))
+        artifact.add_file(os.path.join(MODEL_SAVE_DIR, "q_estimator_ema.pt"))
     wandb.log_artifact(artifact)
     
     # Log final metrics

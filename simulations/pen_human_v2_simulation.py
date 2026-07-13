@@ -43,6 +43,7 @@ class PenHumanV2Simulation(BaseSimulation):
         render_mode: str | None = None,
         frame_stack: int = 1,
         norm_stats: dict | None = None,
+        execute_horizon: int = 0,
     ) -> None:
         super().__init__(
             env_id="AdroitHandPen-v1",
@@ -54,9 +55,14 @@ class PenHumanV2Simulation(BaseSimulation):
         )
         self.render_mode = render_mode
         self.norm_stats = norm_stats
-        # Action chunking: model emits K*24 per CP; execute the K steps
-        # open-loop (re-plan after each chunk). 1 = legacy single-step.
+        # Action chunking: model emits K*24 per CP. execute_horizon R is an
+        # eval-time receding-horizon knob: execute the first R actions and
+        # then replan. 0/>=K preserves pure open-loop chunk execution.
         self.action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
+        eh = int(execute_horizon or 0)
+        self.execute_horizon = (
+            self.action_chunk if eh <= 0 else min(eh, self.action_chunk)
+        )
 
         # Replace the base ObservationNormalizer (built from JSON bounds in
         # minmax mode) with the dataset-derived standardize one when
@@ -168,7 +174,7 @@ class PenHumanV2Simulation(BaseSimulation):
         while not done:
             chunk = self.select_action(stacked_obs)  # (K*24,) denormalized
             steps = np.asarray(chunk).reshape(self.action_chunk, -1)
-            for k in range(self.action_chunk):
+            for k in range(self.execute_horizon):
                 obs, reward, terminated, truncated, info = self.env.step(steps[k])
                 stacked_obs = self._update_frame_buffer(obs)
                 total_reward += float(reward)

@@ -448,6 +448,18 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # Training-chain fidelity switches. False/0 preserve legacy Q3C; True
+    # plus a 0.05 buffer matches the official IBC update mechanics.
+    "langevin_noise_via_stepsize": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env_training",
+    },
+    "langevin_boundary_buffer": {
+        "values": [0.0, 0.05],
+        "type": "float",
+        "location": "env_training",
+    },
     # IBC negative mixture (Florence et al., 2021).
     "num_uniform_negatives": {
         "values": [0, 16, 32, 64, 128],
@@ -507,6 +519,17 @@ SEARCH_SPACE: dict[str, dict] = {
         "values": ["hinge", "target"],
         "type": "str",
         "location": "training_shared",
+    },
+    "gradient_penalty_norm": {
+        # Official IBC uses linf; l2 is retained for old Q3C compatibility.
+        "values": ["l2", "linf"],
+        "type": "str",
+        "location": "training_shared",
+    },
+    "ema_decay": {
+        "values": [0.0, 0.99, 0.999],
+        "type": "float",
+        "location": "env_training",
     },
     # Deterministic seed — searchable so we can run reps with seed=0,1,2,...
     "trial_seed": {
@@ -667,6 +690,7 @@ def append_trial(script_name: str, record: dict, active_env: str | None = None) 
 # Params consumed at evaluation time only (never referenced by training scripts).
 # They must still appear in the search so they get tuned.
 INFERENCE_ONLY_PARAMS: set[str] = {
+    "action_execute_horizon",
     "inference_langevin_iterations",
     "inference_langevin_lr_init",
     "inference_langevin_lr_final",
@@ -925,8 +949,18 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         env_config.get("training", {}).get("inference_langevin_top_k", 0)
     )
 
-    cp_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
-    q_path = os.path.join(checkpoint_dir, "q_estimator.pt")
+    cp_raw_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
+    q_raw_path = os.path.join(checkpoint_dir, "q_estimator.pt")
+    cp_ema_path = os.path.join(checkpoint_dir, "control_point_generator_ema.pt")
+    q_ema_path = os.path.join(checkpoint_dir, "q_estimator_ema.pt")
+    eval_ema_decay = float(env_config.get("training", {}).get("ema_decay", 0.0))
+    use_ema = (
+        eval_ema_decay > 0.0
+        and os.path.exists(cp_ema_path)
+        and os.path.exists(q_ema_path)
+    )
+    cp_path = cp_ema_path if use_ema else cp_raw_path
+    q_path = q_ema_path if use_ema else q_raw_path
     norm_stats_path = os.path.join(checkpoint_dir, "norm_stats.pt")
 
     if not os.path.exists(cp_path) or not os.path.exists(q_path):
@@ -935,6 +969,13 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             "avg_reward": 0.0,
             "error": f"Checkpoints not found in {checkpoint_dir}",
         }
+    if eval_ema_decay > 0.0 and not use_ema:
+        print(
+            f"Warning: EMA requested (decay={eval_ema_decay}) but paired EMA "
+            "checkpoints are missing; evaluating raw weights."
+        )
+    elif use_ema:
+        print(f"Evaluating Q3C EMA weights (decay={eval_ema_decay}).")
 
     # Presence of norm_stats.pt = ibc_with_cps (actions normalized to [0,1]
     # before the Q estimator sees them).
@@ -1449,7 +1490,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         )
     elif active_env in ("pen", "door", "kitchen"):
         # Adroit D4RL + FrankaKitchen — no goal_dist_tolerance / n_dim knobs.
-        if active_env == "kitchen":
+        if active_env in ("pen", "kitchen"):
             # Receding horizon (execute R of the K-step chunk then replan).
             # 0 = execute all K (pure chunking). Eval-time-only knob.
             sim_kwargs["execute_horizon"] = int(
