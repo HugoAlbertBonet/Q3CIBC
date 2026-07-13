@@ -1,0 +1,38 @@
+# Batch penQ3C_snoff - Q3C on pen with SPECTRAL NORM OFF (DP-inspired test).
+# Driver: hyperparam_search.py + combinedv2_cpascounter_training.py --active-env pen
+#
+# HYPOTHESIS (from the DP arc): spectral norm over-constrains the Q-net's Lipschitz
+# and flattens the energy on pen's 24-D action space, so argmax lands on mode-
+# averaged/suboptimal actions. Hardest evidence: DP with SN scored ~400 reward,
+# DP without SN scored ~3050 (penDPA->DPB, only SN changed). Q3C pen currently
+# runs q_use_spectral_norm=true and tops ~2500 (< DP's ~3077).
+#
+# CONFOUND: SN also bounds the energy's Lipschitz constant, which STABILIZES the
+# inference-time Langevin ascent. Removing SN may fit a better energy BUT break
+# Langevin (gradients explode). So test BOTH inference regimes:
+#   snoff1-3: SN off + inference Langevin=100 (matches penA recipe; isolate SN on
+#             the full pipeline). Watch for Langevin blow-up / NaN.
+#   snoff4-6: SN off + inference Langevin=0 (pure CP-argmax; SN's effect on the
+#             raw energy WITHOUT the Langevin confound).
+# Compare vs penA (SN on): if snoff > penA -> SN was hurting; report the win.
+#
+# All else identical to penA Q3C pen recipe: cp=20, top_k=8, mlp 512x8 (q+cp),
+# lr 5e-4, batch 512, training-Langevin negatives (unchanged), 100k, cosine.
+
+# -- snoff1: SN off, inference Langevin=100, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- snoff2: SN off, inference Langevin=100, seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- snoff3: SN off, inference Langevin=100, seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- snoff4: SN off, inference Langevin=0 (pure argmax), seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- snoff5: SN off, inference Langevin=0 (pure argmax), seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'
+
+# -- snoff6: SN off, inference Langevin=0 (pure argmax), seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"mlp","q_width":512,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":512,"cp_depth":8,"cp_use_spectral_norm":false,"learning_rate":5e-4,"estimator_learning_rate":5e-4,"batch_size":512,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.5,"langevin_lr_final":1e-5,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_noise_scale":0.5,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":50000,"training_steps":100000,"cosine_t_max":100000}'

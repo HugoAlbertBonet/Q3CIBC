@@ -567,6 +567,63 @@ def _aggregate(trials: list[dict], label: str) -> dict:
     }
 
 
+# ─── Diffusion Policy (this repo): matched flat denoiser, DDPM + DDIM ─────────
+
+def make_method_dp(device: torch.device, sampler: str, ddim_steps, name: str):
+    """DP inference on pen: flat epsilon-denoiser (mlp 512x8, SN OFF — matched to
+    Q3C pen q-net topology; SN is an IBC energy regularizer that chokes eps-
+    regression, see penDPA vs penDPB). DDPM full chain or DDIM sub-sampled.
+    """
+    from utils.diffusion import build_denoiser, build_diffusion, resolve_dp_params
+    dp = resolve_dp_params({"model": {"diffusion": {
+        "denoiser_network_kind": "mlp", "denoiser_width": 512, "denoiser_depth": 8,
+        "denoiser_use_spectral_norm": False, "time_emb_dim": 128,
+        "num_train_timesteps": 100, "beta_schedule": "cosine",
+    }}})
+    model = build_denoiser(OBS_DIM, ACTION_DIM, dp, device).eval()
+    diffusion = build_diffusion(dp, device, (-1.0, 1.0))
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            if sampler == "ddpm":
+                a = diffusion.ddpm_sample(model, obs, ACTION_DIM)
+            else:
+                a = diffusion.ddim_sample(model, obs, ACTION_DIM, num_steps=ddim_steps)
+        return a[0]
+
+    return name, select_action
+
+
+def _dp_pen_trials() -> list[dict]:
+    """penDPB baseline: epsilon, 100k, SN off, mlp 512x8 (matched + converged)."""
+    path = (ROOT / "results" / "hyperparam_search" / "diffusion_policy_training"
+            / "d4rl" / "pen" / "trials.jsonl")
+    trials = _load_jsonl(path)
+    out = []
+    for t in trials:
+        p = t.get("params") or {}
+        if (not t.get("training_failed")
+                and p.get("prediction_type") == "epsilon"
+                and p.get("training_steps") == 100000
+                and p.get("denoiser_use_spectral_norm") is False
+                and p.get("denoiser_width") == 512):
+            out.append(t)
+    return out
+
+
+def dp_stats(sampler: str, label: str) -> dict:
+    """Aggregate per-sampler avg_reward over the DP pen baseline seeds."""
+    remapped = []
+    for t in _dp_pen_trials():
+        r = t.get(f"{sampler}_avg_reward")
+        if r is None:
+            continue
+        remapped.append({"avg_reward": r, "std_reward": t.get(f"{sampler}_std_reward"),
+                         "params": t.get("params"), "trial_id": t.get("trial_id")})
+    return _aggregate(remapped, label)
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -617,7 +674,23 @@ def main():
     q3c_dfo_st = q3c_dfo_stats()
     q3c_lang_st = q3c_langevin_stats()
     ibc_stats = ibc_paper_stats()
-    all_stats = (q3c_stats, q3c_dfo_st, q3c_lang_st, ibc_stats)
+    all_stats = [q3c_stats, q3c_dfo_st, q3c_lang_st, ibc_stats]
+
+    # ── Diffusion Policy: time DDPM + DDIM {5,10,25}, reward from penDPB ─────
+    dp_specs = [
+        # (method_name, sampler, ddim_steps, reward_key_prefix_in_trials)
+        ("dp_ddpm100", "ddpm", None, "ddpm"),
+        ("dp_ddim5",   "ddim", 5,    "ddim5"),
+        ("dp_ddim10",  "ddim", 10,   "ddim10"),
+        ("dp_ddim25",  "ddim", 25,   "ddim25"),
+    ]
+    for name, sampler, steps, reward_key in dp_specs:
+        _, fn = make_method_dp(device, sampler, steps, name)
+        print(f"\nTiming: {name}")
+        t = time_block(fn, num_steps=args.num_steps, warmup=args.warmup, device=device)
+        print(f"  mean={t['mean_ms']:.3f}ms  median={t['median_ms']:.3f}ms  stdev={t['stdev_ms']:.3f}ms")
+        methods.append((name, t))
+        all_stats.append(dp_stats(reward_key, name))
     print("\nReward stats (from existing trials):")
     for s in all_stats:
         if s["n_seeds"] == 0:

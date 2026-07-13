@@ -1,0 +1,39 @@
+# Batch kitchenDPA - Diffusion Policy on FrankaKitchen (kitchen-complete-v2).
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env kitchen
+#
+# State-based (59D obs, 9D action, frame_stack=1, action [-1,1]). Flat DP: denoiser
+# reuses the QEstimator trunk, no encoder. HEADLINE METRIC = avg_reward, which for
+# kitchen-complete is the subtask COUNT completed (0..4); success = solved ALL 4.
+# Q3C kitchen (kcA) tops ~avg_tasks ~3.x / success ~fraction-solving-all-4.
+#
+# ARCHITECTURE + ABLATION-CRITICAL PARAMS matched to Q3C kitchen (kcA):
+#   mlp, width=512, depth=8, training_steps=100000, batch_size=512, lr=5e-4,
+#   frame_stack=1, num_eval_seeds=100, action [-1,1].
+# SPECTRAL NORM OFF on the denoiser (pen lesson: SN chokes eps/v-regression; it is
+# an IBC energy regularizer that does not transfer to DP). Q3C's q-net keeps SN.
+#
+# DP-INTRINSIC: T=100, cosine, t-emb 128, ema 0.999, DDIM eval {5,10,25}.
+#
+# Two recipes, 3 seeds each (pen showed eps ~= v-pred on state envs; pixels needed
+# v-pred -- run both to be safe):
+#   kitchenDPA1-3: epsilon-prediction   (matched baseline)
+#   kitchenDPA4-6: v-prediction
+# Check convergence on reward (kitchen may converge at 100k like pen, or need more).
+
+# -- kitchenDPA1: epsilon, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPA2: epsilon, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":1,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPA3: epsilon, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":2,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPA4: v-prediction, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPA5: v-prediction, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":1,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPA6: v-prediction, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":2,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
