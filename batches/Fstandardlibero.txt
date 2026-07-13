@@ -1,0 +1,58 @@
+# Batch Fstandardlibero — final seeds + 500-episode paper evals.
+#
+# E verdict (multi-seed means, n=50/seed): ImageNet+chunk16 91.0 (2 seeds),
+# R3M+chunk8 90.0 (2), scratch+chunk16+FiLM 90 (1), ImageNet+chunk8 86.7 (3),
+# scratch+chunk8+FiLM 86.0 (2), scratch+chunk16 82.0 (3). FiLM helps scratch
+# only; fs2 + per-camera confirmed dead ends.
+#
+# F finishes the paper table:
+#   F1-F5   third/second seeds for the headline rows (normal train+eval jobs).
+#   F6-F13  500-EPISODE final evals of existing winner checkpoints (eval-only,
+#           scripts/reeval_trials.py --num-eval-seeds 500; standard LIBERO
+#           protocol is 50 rollouts/task = 500). Each appends a new record
+#           noted "500-episode final eval". ~10x normal eval time per job but
+#           no training.
+#   After F1-F5 finish, run the same 500-ep eval on their new trial ids
+#   (they'll be #65+ — check trials.jsonl) to complete 3-seed x 500-ep rows.
+#
+# PREREQUISITES (server): git pull (includes reeval --num-eval-seeds); no uv
+# sync. MUJOCO_GL via submit template. Do NOT use --managed-python.
+
+# -- F1 ImageNet + chunk16 @ seed 2  (3rd seed for the 91% row)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":2,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000,"encoder_kind":"resnet18","encoder_norm_kind":"gn","encoder_num_kp":128,"image_crop_size":116,"encoder_per_camera":false,"frame_stack":1,"cond_fusion":"concat","action_chunk":16,"encoder_pretrained":"imagenet","encoder_lr_scale":0.1}'
+
+# -- F2 R3M + chunk8 @ seed 2       (3rd seed for the 90% row)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":2,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000,"encoder_kind":"resnet18","encoder_norm_kind":"gn","encoder_num_kp":128,"image_crop_size":116,"encoder_per_camera":false,"frame_stack":1,"cond_fusion":"concat","action_chunk":8,"encoder_pretrained":"r3m","encoder_lr_scale":0.1}'
+
+# -- F3 scratch + chunk8 + FiLM @ seed 2 (3rd seed for the 86% row)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":2,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000,"encoder_kind":"resnet18","encoder_norm_kind":"gn","encoder_num_kp":128,"image_crop_size":116,"encoder_per_camera":false,"frame_stack":1,"cond_fusion":"film","action_chunk":8,"encoder_pretrained":false,"encoder_lr_scale":1.0}'
+
+# -- F4 scratch + chunk16 + FiLM @ seed 1 (2nd seed for the 90% row)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":1,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000,"encoder_kind":"resnet18","encoder_norm_kind":"gn","encoder_num_kp":128,"image_crop_size":116,"encoder_per_camera":false,"frame_stack":1,"cond_fusion":"film","action_chunk":16,"encoder_pretrained":false,"encoder_lr_scale":1.0}'
+
+# -- F5 scratch + chunk16 + FiLM @ seed 2 (3rd seed)
+uv run --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":2,"control_points":100,"top_k_control_points":30,"cp_network_kind":"mlp","cp_width":512,"cp_depth":4,"cp_use_spectral_norm":false,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"batch_size":128,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":100,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_decay_power":2.0,"langevin_delta_clip":0.1,"langevin_noise_scale":0.1,"inference_langevin_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"gradient_penalty_form":"hinge","infonce_logit_clamp":20.0,"scheduler_type":"cosine","cosine_t0":75000,"training_steps":150000,"cosine_t_max":150000,"encoder_kind":"resnet18","encoder_norm_kind":"gn","encoder_num_kp":128,"image_crop_size":116,"encoder_per_camera":false,"frame_stack":1,"cond_fusion":"film","action_chunk":16,"encoder_pretrained":false,"encoder_lr_scale":1.0}'
+
+# -- F6  final-eval 500ep: ImageNet+chunk16 seed0 (#53, 88%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 53 --num-eval-seeds 500
+
+# -- F7  final-eval 500ep: ImageNet+chunk16 seed1 (#54, 94%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 54 --num-eval-seeds 500
+
+# -- F8  final-eval 500ep: R3M+chunk8 seed0 (#42, 88%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 42 --num-eval-seeds 500
+
+# -- F9  final-eval 500ep: R3M+chunk8 seed1 (#59, 92%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 59 --num-eval-seeds 500
+
+# -- F10 final-eval 500ep: scratch+chunk16+FiLM seed0 (#63, 90%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 63 --num-eval-seeds 500
+
+# -- F11 final-eval 500ep: scratch+chunk16 seed0 (#31, 84%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 31 --num-eval-seeds 500
+
+# -- F12 final-eval 500ep: scratch+chunk16 seed1 (#58, 86%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 58 --num-eval-seeds 500
+
+# -- F13 final-eval 500ep: scratch+chunk16 seed2 (#60, 76%)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 60 --num-eval-seeds 500

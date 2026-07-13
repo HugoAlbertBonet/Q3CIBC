@@ -32,6 +32,9 @@ def main() -> None:
     ap.add_argument("--script", default="combinedv2_cpascounter_training.py")
     ap.add_argument("--trials", type=int, nargs="+", required=True,
                     help="trial ids (from trials.jsonl) to re-evaluate")
+    ap.add_argument("--num-eval-seeds", type=int, default=None,
+                    help="override eval episode count (e.g. 500 for final paper "
+                         "numbers; default = the per-run config's value)")
     args = ap.parse_args()
 
     trials_path = (
@@ -57,6 +60,8 @@ def main() -> None:
             continue
         with open(cfg_path) as f:
             config = json.load(f)
+        if args.num_eval_seeds:
+            config["environments"][args.active_env]["num_eval_seeds"] = int(args.num_eval_seeds)
         print(f"\n=== re-eval trial #{tid} ({ckpt_dir}) ===")
         try:
             eval_results = hs.evaluate_q3c(ckpt_dir, config)
@@ -74,7 +79,8 @@ def main() -> None:
             median_reward=eval_results.get("median_reward"),
             num_seeds=eval_results.get("num_seeds"),
             error=None,
-            note=f"reeval of trial #{tid} (eval-side fix; same checkpoint)",
+            note=(f"reeval of trial #{tid} (same checkpoint"
+                  + (f", {args.num_eval_seeds}-episode final eval)" if args.num_eval_seeds else ")")),
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
         new_id = hs.append_trial(args.script, new_rec, active_env=args.active_env)
