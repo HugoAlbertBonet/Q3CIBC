@@ -1,0 +1,36 @@
+# Batch penDPB - DP on pen, SPECTRAL NORM OFF (fix for penDPA failure).
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pen
+#
+# WHY: penDPA (SN=ON, matching Q3C's q-net) FAILED -- eps loss stuck ~0.82,
+# v-pred ~0.44 (a zero-predictor scores ~1.0), success ~5%. Spectral norm caps
+# the denoiser's Lipschitz constant and chokes eps/v-regression across noise
+# levels. Every working DP so far (pushing, pixels) used SN=OFF.
+#
+# FAIRNESS: SN is an IBC/EBM-specific regularizer (stabilizes the ENERGY for
+# Langevin/InfoNCE). DP has no energy -> SN is inapplicable, and removing it is
+# NOT a capacity gift, it's dropping an IBC-method component that doesn't transfer
+# (cf. IBC gets Langevin, DP gets EMA/v-pred). Core trunk (mlp 512x8) stays matched
+# to Q3C pen. All other ablation-critical params unchanged: 100k, batch 512,
+# lr 5e-4, frame_stack 1, 100 eval seeds, action [-1,1].
+#
+# penDPB1-3: epsilon, SN=off.   penDPB4-6: v-prediction, SN=off.
+# Expect loss to drop to ~0.01 (like pixels) if SN was the blocker. Then check
+# convergence like pixels (may need budget ladder).
+
+# -- penDPB1: epsilon, SN=off, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPB2: epsilon, SN=off, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPB3: epsilon, SN=off, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPB4: v-prediction, SN=off, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPB5: v-prediction, SN=off, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":1,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPB6: v-prediction, SN=off, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":2,"learning_rate":5e-4,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'

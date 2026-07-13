@@ -74,7 +74,7 @@
                     "denoiser_network_kind": "mlp",
                     "denoiser_width": 512,
                     "denoiser_depth": 8,
-                    "denoiser_use_spectral_norm": true,
+                    "denoiser_use_spectral_norm": false,
                     "ema_decay": 0.999,
                     "ddim_eval_steps": [
                         10,

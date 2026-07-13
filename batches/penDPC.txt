@@ -1,0 +1,30 @@
+# Batch penDPC - DP pen v-prediction BUDGET LADDER (SN off). Metric = REWARD.
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env pen
+#
+# HEADLINE METRIC for pen is avg_reward (Adroit return), NOT success_rate.
+# Q3C pen best ~2500-2800 reward (~75% success secondary). Compare DP on reward.
+#
+# PURPOSE: pen trains cheap (~1200s / 100k), so find DP's reward plateau. penDPB
+# gives v-pred @ 100k; this ladders seed0 to 300k/500k/750k/1M to locate the knee.
+# Reward is continuous (less seed-noisy than binary success), so a single-seed
+# ladder should read cleanly. Then run 3 seeds at the knee (penDPD) for the final
+# converged reward + variance. Report DP's convergence budget vs Q3C's ~100k as
+# a result (pixels needed ~5x; pen TBD).
+#
+# RECIPE: v-prediction (best DP recipe), SN OFF (penDPA showed SN chokes the
+# denoiser), else matched: mlp 512x8, lr 5e-4, batch 512, T=100, cosine. LR
+# cosine anneal auto-extends to each training_steps.
+#
+# Trials: DPC1=300k, DPC2=500k, DPC3=750k, DPC4=1M, all seed=0, v-pred, SN off.
+
+# -- penDPC1: v-pred SN-off @ 300k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":300000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPC2: v-pred SN-off @ 500k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":500000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPC3: v-pred SN-off @ 750k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":750000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- penDPC4: v-pred SN-off @ 1M, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pen --fixed-params '{"trial_seed":0,"learning_rate":5e-4,"batch_size":512,"training_steps":1000000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":512,"denoiser_depth":8,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
