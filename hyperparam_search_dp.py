@@ -136,7 +136,7 @@ def _summarize(all_results: list[dict]) -> dict:
     successes = [bool(r.get("success", r.get("terminated", False))) for r in all_results]
     rewards = [float(r.get("total_reward", 0.0)) for r in all_results]
     ep_len = [int(r.get("episode_length", 0)) for r in all_results]
-    return {
+    out = {
         "success_rate": float(np.mean(successes)) if successes else 0.0,
         "success_rate_std": float(np.std(successes)) if successes else 0.0,
         "avg_reward": float(np.mean(rewards)) if rewards else 0.0,
@@ -144,6 +144,13 @@ def _summarize(all_results: list[dict]) -> dict:
         "median_reward": float(np.median(rewards)) if rewards else 0.0,
         "avg_episode_length": float(np.mean(ep_len)) if ep_len else 0.0,
     }
+    # Kitchen (and any env whose sim reports it): partial-credit subtask count
+    # (0..N). This is the FrankaKitchen headline metric, not summed reward.
+    tasks = [int(r["tasks_completed"]) for r in all_results if r.get("tasks_completed") is not None]
+    if tasks:
+        out["avg_tasks_completed"] = float(np.mean(tasks))
+        out["std_tasks_completed"] = float(np.std(tasks))
+    return out
 
 
 def evaluate_dp(checkpoint_dir: str, config: dict) -> dict:
@@ -258,17 +265,24 @@ def evaluate_dp(checkpoint_dir: str, config: dict) -> dict:
         combined[f"{name}_std_reward"] = summ["std_reward"]
         combined[f"{name}_avg_episode_length"] = summ["avg_episode_length"]
         combined[f"{name}_ms_per_step"] = round(ms_per_step, 3)
+        if "avg_tasks_completed" in summ:
+            combined[f"{name}_avg_tasks_completed"] = summ["avg_tasks_completed"]
+            combined[f"{name}_std_tasks_completed"] = summ["std_tasks_completed"]
+        tc = f" avg_tasks={summ['avg_tasks_completed']:.2f}" if "avg_tasks_completed" in summ else ""
         print(f"    [{name}] success_rate={summ['success_rate']:.2%} "
-              f"avg_reward={summ['avg_reward']:.3f} {ms_per_step:.2f} ms/step")
+              f"avg_reward={summ['avg_reward']:.3f}{tc} {ms_per_step:.2f} ms/step")
 
         if primary is None:  # DDPM if present, else first DDIM
             primary = summ
             per_seed_primary = [
                 {"seed": seeds[i], "success": bool(r.get("success", r.get("terminated", False))),
                  "reward": float(r.get("total_reward", 0.0)),
+                 "tasks_completed": r.get("tasks_completed"),
                  "episode_length": int(r.get("episode_length", 0))}
                 for i, r in enumerate(results)
             ]
+    if primary and "avg_tasks_completed" in primary:
+        combined["avg_tasks_completed"] = primary["avg_tasks_completed"]
 
     combined["success_rate"] = primary["success_rate"] if primary else 0.0
     combined["avg_reward"] = primary["avg_reward"] if primary else 0.0
@@ -358,6 +372,10 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--run", action="store_true", help="Run a single trial")
     mode.add_argument("--analyze", action="store_true", help="Print summary of past trials")
+    mode.add_argument("--eval-only", type=str, default=None, metavar="CKPT_DIR",
+                      help="Re-evaluate an existing checkpoint dir (needs config.json + "
+                           "denoiser.pt + norm_stats.pt). No training. Prints metrics "
+                           "including avg_tasks_completed. Comma-separate several dirs.")
     parser.add_argument("--params", type=str, default=None)
     parser.add_argument("--fixed-params", type=str, default=None)
     parser.add_argument("--reduced-steps", type=int, default=None)
@@ -375,6 +393,21 @@ def main() -> None:
 
     if args.analyze:
         hps.print_analysis(script_name, active_env=args.active_env, min_trial_id=args.min_trial_id)
+        return
+
+    if args.eval_only:
+        for ckpt in args.eval_only.split(","):
+            ckpt = ckpt.strip()
+            cfg_path = Path(ckpt) / "config.json"
+            if not cfg_path.exists():
+                print(f"[eval-only] no config.json in {ckpt} — skip")
+                continue
+            with open(cfg_path) as f:
+                config = json.load(f)
+            print(f"\n[eval-only] {ckpt}  (active_env={config.get('active_env')})")
+            res = evaluate_dp(ckpt, config)
+            printable = {k: v for k, v in res.items() if k != "per_seed"}
+            print(json.dumps(printable, indent=2, default=str))
         return
 
     params: dict = {}
