@@ -1,0 +1,35 @@
+# Batch Gstandardlibero — last 500-episode final evals; completes the paper table.
+#
+# F verdict (500-ep where run): scratch+chunk16+FiLM 93.8 (s0) with s1/s2 at
+# 94/96 (n=50); ImageNet+chunk16 92.8/92.4; R3M+chunk8 87.6/90.4;
+# scratch+chunk16 3x500ep COMPLETE at 84.8±2.9.
+#
+# G re-evals the five NEW F checkpoints at the standard 50 rollouts/task = 500
+# episodes (eval-only, no training). One job per checkpoint so they parallelize.
+# After G, every headline row is 3 seeds x 500 episodes:
+#   scratch+chunk16+FiLM  -> trials 67 + G1 + G2
+#   ImageNet+chunk16      -> trials 65/66 + G3
+#   R3M+chunk8            -> trials 72/68 + G4
+#   scratch+chunk8+FiLM   -> (s0/s1 need their own 500ep pass if this row stays)
+#
+# PREREQUISITES (server): git pull; no uv sync. MUJOCO_GL via submit template.
+
+# -- G1 500ep: scratch+chunk16+FiLM seed 1 (#77, 94% @ n=50)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 77 --num-eval-seeds 500
+
+# -- G2 500ep: scratch+chunk16+FiLM seed 2 (#76, 96% @ n=50)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 76 --num-eval-seeds 500
+
+# -- G3 500ep: ImageNet+chunk16 seed 2 (#74, 80% @ n=50 — outlier arbitration)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 74 --num-eval-seeds 500
+
+# -- G4 500ep: R3M+chunk8 seed 2 (#73, 92% @ n=50)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 73 --num-eval-seeds 500
+
+# -- G5 500ep: scratch+chunk8+FiLM seed 2 (#75, 90% @ n=50)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 75 --num-eval-seeds 500
+# -- G6 500ep: scratch+chunk8+FiLM seed 0 (#37, 84% @ n=50) — completes that row
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 37 --num-eval-seeds 500
+
+# -- G7 500ep: scratch+chunk8+FiLM seed 1 (#62, 88% @ n=50)
+uv run --extra libero python scripts/reeval_trials.py --active-env libero_goal_pixels --trials 62 --num-eval-seeds 500
