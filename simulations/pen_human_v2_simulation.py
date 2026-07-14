@@ -63,6 +63,14 @@ class PenHumanV2Simulation(BaseSimulation):
         self.execute_horizon = (
             self.action_chunk if eh <= 0 else min(eh, self.action_chunk)
         )
+        # CP selection: "argmax" (default) picks the highest-Q control point;
+        # "sample" draws from softmax(Q / temperature) over the CP cloud — a
+        # generative, multimodal-friendly selection (closer to how a diffusion
+        # policy samples a mode, vs argmax's mode-averaging). Read from norm_stats
+        # so every eval path (evaluate_q3c, best-ckpt eval) shares the setting.
+        _ns = norm_stats or {}
+        self.cp_selection = str(_ns.get("cp_selection", "argmax"))
+        self.cp_selection_temperature = float(_ns.get("cp_selection_temperature", 1.0) or 1.0)
 
         # Replace the base ObservationNormalizer (built from JSON bounds in
         # minmax mode) with the dataset-derived standardize one when
@@ -147,8 +155,12 @@ class PenHumanV2Simulation(BaseSimulation):
             control_points = self.control_point_generator(obs_tensor)
             obs_expanded = obs_tensor.unsqueeze(1).expand(-1, control_points.shape[1], -1)
             q_values = self.q_estimator(obs_expanded, control_points).squeeze(-1)
-            best_idx = q_values.argmax(dim=1)
-            action_normalized = control_points[0, best_idx[0], :].cpu().numpy()
+            if self.cp_selection == "sample":
+                probs = torch.softmax(q_values[0] / self.cp_selection_temperature, dim=-1)
+                sel = int(torch.multinomial(probs, 1)[0].item())
+            else:
+                sel = int(q_values.argmax(dim=1)[0].item())
+            action_normalized = control_points[0, sel, :].cpu().numpy()
             q_range = (q_values.min().item(), q_values.max().item())
 
         action = self._denormalize_action(action_normalized)

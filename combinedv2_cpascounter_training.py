@@ -191,6 +191,15 @@ ema_decay = float(env_training.get("ema_decay", training_shared.get("ema_decay",
 if not 0.0 <= ema_decay < 1.0:
     raise ValueError("ema_decay must satisfy 0 <= ema_decay < 1")
 
+# Best-checkpoint selection: periodically eval in the env DURING training and
+# keep the highest-reward weights, instead of the (possibly-collapsed) final
+# weights. Motivated by pen's high-ceiling/unstable-endpoint behaviour (same
+# config gives final reward 863..4985). Gated OFF by default so existing batches
+# are unaffected. When ema_decay>0 the EMA weights are the ones evaluated/kept.
+best_ckpt = bool(env_training.get("best_ckpt", training_shared.get("best_ckpt", False)))
+best_ckpt_eval_interval = int(env_training.get("best_ckpt_eval_interval", 20000))
+best_ckpt_eval_seeds = int(env_training.get("best_ckpt_eval_seeds", 20))
+
 # Deterministic seeding & NaN recovery — both fight the ~33% training-divergence rate.
 trial_seed = env_training.get("trial_seed", training_shared.get("trial_seed", 0))
 nan_abort_threshold = env_training.get(
@@ -677,6 +686,11 @@ def main():
             # Action chunking (1 = off). Eval reads this to rebuild the model
             # with action_dim*K and to execute chunks open-loop.
             "action_chunk": int(getattr(dataset, "action_chunk", 1)),
+            # CP selection at eval: "argmax" (default) or "sample" from
+            # softmax(Q/temperature) over the CP cloud. Read by the sim's
+            # select_action so all eval paths share it.
+            "cp_selection": str(env_training.get("cp_selection", "argmax")),
+            "cp_selection_temperature": float(env_training.get("cp_selection_temperature", 1.0)),
         }
         # libero_goal_pixels: persist the pixel + conditioning schema so the
         # render-eval sim rebuilds an identical (image, cond) input.
@@ -732,6 +746,47 @@ def main():
     # Save norm stats up front — makes wall-killed runs (periodic checkpoints)
     # evaluable without retraining.
     persist_norm_stats()
+
+    # ── Best-checkpoint env-eval helper (only used when best_ckpt) ────────────
+    def _build_eval_sim(cp_model, q_model, ns):
+        common = dict(
+            control_point_generator=cp_model, q_estimator=q_model, device=str(device),
+            max_episode_steps=int(env_config.get("max_episode_steps", 100)),
+            frame_stack=frame_stack, norm_stats=ns,
+        )
+        if active_env == "pen":
+            from simulations.pen_human_v2_simulation import PenHumanV2Simulation as S
+        elif active_env == "door":
+            from simulations.door_human_v2_simulation import DoorHumanV2Simulation as S
+        elif active_env == "kitchen":
+            from simulations.kitchen_simulation import KitchenSimulation as S
+        elif active_env == "pushing":
+            from simulations.pushing_simulation import PushingSimulation as S
+        else:
+            return None
+        import inspect as _inspect
+        sig = _inspect.signature(S.__init__)
+        return S(**{k: v for k, v in common.items() if k in sig.parameters})
+
+    def _eval_reward(cp_model, q_model, ns, n_seeds) -> float | None:
+        sim = _build_eval_sim(cp_model, q_model, ns)
+        if sim is None:
+            return None
+        rewards = []
+        for s in range(n_seeds):
+            rewards.append(float(sim.run_episode(seed=s).get("total_reward", 0.0)))
+        if hasattr(sim, "close"):
+            sim.close()
+        return float(np.mean(rewards)) if rewards else None
+
+    eval_norm_stats = None
+    if best_ckpt:
+        _ns_path = os.path.join(MODEL_SAVE_DIR, "norm_stats.pt")
+        if os.path.exists(_ns_path):
+            eval_norm_stats = torch.load(_ns_path, weights_only=False)
+        print(f"Best-checkpoint selection: ON (every {best_ckpt_eval_interval} steps, "
+              f"{best_ckpt_eval_seeds} seeds, keep max reward)")
+    best_reward = float("-inf")
 
     # Training timing
     start_time = time.time()
@@ -1003,7 +1058,24 @@ def main():
             scheduler_estimator.step()
 
             step += 1
-            
+
+            # ── Best-checkpoint: periodic env-eval, keep max-reward weights ──
+            if best_ckpt and step % best_ckpt_eval_interval == 0:
+                use_ema_eval = ema_generator is not None and ema_estimator is not None
+                eval_cp = ema_generator if use_ema_eval else control_point_generator
+                eval_q = ema_estimator if use_ema_eval else estimator
+                if not use_ema_eval:
+                    control_point_generator.eval(); estimator.eval()
+                r = _eval_reward(eval_cp, eval_q, eval_norm_stats, best_ckpt_eval_seeds)
+                if not use_ema_eval:
+                    control_point_generator.train(); estimator.train()
+                if r is not None and r > best_reward:
+                    best_reward = r
+                    save_checkpoints()
+                    print(f"[best-ckpt] step {step}: reward {r:.1f} -> NEW BEST, saved")
+                elif r is not None:
+                    print(f"[best-ckpt] step {step}: reward {r:.1f} (best {best_reward:.1f})")
+
             # Logging
             if step % log_interval == 0:
                 current_lr = scheduler_generator.get_last_lr()[0]
@@ -1064,15 +1136,27 @@ def main():
             
             # Save checkpoint (overwrite the same file each interval so we
             # don't accumulate one .pt per step across long runs).
-            if step % save_interval == 0:
+            # Skip when best_ckpt: the best-reward eval owns the saved weights;
+            # an interval save here would clobber them with a non-best snapshot.
+            if step % save_interval == 0 and not best_ckpt:
                 save_checkpoints()
     
     # Training complete
     total_time = time.time() - start_time
     print(f"\nTraining completed in {total_time:.1f}s ({total_time/60:.2f} min)")
-    
-    # Save trained models
-    save_checkpoints()
+
+    # Save trained models. When best_ckpt is ON, the checkpoint already holds the
+    # best-reward weights found during training — do NOT overwrite with the final
+    # (possibly collapsed) weights. Fallback: if no eval ever ran (interval >
+    # training_steps), save the final weights so the run is still evaluable.
+    if best_ckpt:
+        if best_reward == float("-inf"):
+            save_checkpoints()
+            print("[best-ckpt] no eval ran; saved final weights as fallback")
+        else:
+            print(f"[best-ckpt] keeping best-reward checkpoint (reward {best_reward:.1f})")
+    else:
+        save_checkpoints()
 
     # Persist normalization stats for pushing — the eval-time PushingSimulation
     # uses these to recreate the exact same obs-standardize + action-denorm

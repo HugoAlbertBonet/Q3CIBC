@@ -531,6 +531,33 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # Best-checkpoint selection: keep max-reward weights via periodic env-eval.
+    "best_ckpt": {
+        "values": [False, True],
+        "type": "bool",
+        "location": "env_training",
+    },
+    "best_ckpt_eval_interval": {
+        "values": [10000, 20000],
+        "type": "int",
+        "location": "env_training",
+    },
+    "best_ckpt_eval_seeds": {
+        "values": [20, 50],
+        "type": "int",
+        "location": "env_training",
+    },
+    # Stochastic CP selection at eval: "argmax" or "sample" from softmax(Q/temp).
+    "cp_selection": {
+        "values": ["argmax", "sample"],
+        "type": "str",
+        "location": "env_training",
+    },
+    "cp_selection_temperature": {
+        "values": [0.5, 1.0, 2.0],
+        "type": "float",
+        "location": "env_training",
+    },
     # Deterministic seed — searchable so we can run reps with seed=0,1,2,...
     "trial_seed": {
         "values": [0, 1, 2, 3, 4],
