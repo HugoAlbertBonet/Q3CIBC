@@ -208,7 +208,7 @@ def langevin_pass_ibc(q_net, obs, actions, num_iterations, lr_init, lr_final,
 def make_method_q3c(device: torch.device):
     cp_gen = build_q3c_cpgen(device)
     q_net = build_q3c_q(device)
-    name = f"Q3C-B4 CP-argmax (cp={Q3C_CP}, no refinement)"
+    name = "Q3C CP-argmax (SN-off, cp=20, no refinement)"
 
     def select_action():
         obs = torch.randn(1, OBS_DIM, device=device)
@@ -294,8 +294,7 @@ def make_method_q3c_langevin(device: torch.device):
     """
     cp_gen = build_q3c_cpgen_n(device, Q3C_LANG_CP)
     q_net = build_q3c_q(device)
-    name = (f"Q3C+gentle Langevin (cp={Q3C_LANG_CP}, {Q3C_LANG_NUM_ITERS} iters, "
-            f"very-gentle)")
+    name = "Q3C + Langevin-100 (SN-off, cp=20)"
 
     def select_action():
         obs = torch.randn(1, OBS_DIM, device=device)
@@ -386,32 +385,24 @@ def q3c_b4_stats() -> dict:
     Q3C_PROTOCOL_MIN_ID are dropped (different env protocol). When the same
     seed has multiple matching trials, the LATEST trial wins.
     """
+    # UPDATED: SN-off argmax (penQ3C_snoff snoff4-6). Spectral-norm-OFF beats the
+    # old SN-on argmax baseline on pen (2631 vs 2499) with far tighter variance
+    # (cross-seed ±90 vs the SN-on pool's ±846). SN is an IBC energy regularizer
+    # that over-constrains the Q-net; see the DP arc (penDPA vs penDPB).
     trials = _load_jsonl(Q3C_TRIALS)
     keep = []
     for t in trials:
         if t.get("training_failed") or t.get("eval_error"):
             continue
-        if int(t.get("trial_id", 0)) < Q3C_PROTOCOL_MIN_ID:
-            continue
         p = t.get("params", {}) or {}
-        if (p.get("control_points") == 100
-                and p.get("top_k_control_points") == 30
+        if (p.get("q_use_spectral_norm") is False
+                and p.get("control_points") == 20
                 and p.get("inference_langevin_iterations", 0) == 0
                 and p.get("inference_dfo_iterations", 0) == 0
                 and p.get("training_steps") == 100000
                 and p.get("learning_rate") == 5e-4
-                and p.get("gradient_penalty_weight") == 1.0
-                and p.get("gradient_penalty_form") == "hinge"
-                and p.get("num_langevin_negatives") == 8
-                and p.get("num_uniform_negatives", 0) == 0
                 and p.get("q_width") == 512
-                and p.get("q_depth") == 8
-                and p.get("langevin_init_kind", "uniform") == "uniform"
-                and p.get("entropy_bandwidth", 0.2) == 0.2
-                and p.get("cp_use_spectral_norm", False) is False
-                and p.get("noisy_expert_count", 0) == 0
-                and p.get("cp_width") == 512
-                and p.get("cp_depth") == 8):
+                and p.get("q_depth") == 8):
             keep.append(t)
     # Dedupe by seed — keep the latest trial per seed.
     keep.sort(key=lambda t: int(t.get("trial_id", 0)))
@@ -419,7 +410,7 @@ def q3c_b4_stats() -> dict:
     for t in keep:
         by_seed[(t.get("params") or {}).get("trial_seed")] = t
     deduped = list(by_seed.values())
-    return _aggregate(deduped, label="Q3C-B4")
+    return _aggregate(deduped, label="Q3C CP-argmax (SN-off)")
 
 
 def q3c_dfo_stats() -> dict:
@@ -473,36 +464,30 @@ def q3c_langevin_stats() -> dict:
     inference_langevin_lr_init=0.01, inference_langevin_delta_clip=0.01,
     inference_langevin_noise_scale=0.1. Dedupe by seed.
     """
+    # UPDATED: SN-off + standard inference Langevin-100 (penQ3C_snoff snoff1-3).
+    # With SN ON, inference Langevin DIVERGES on pen (reward ~-384). With SN OFF
+    # the standard 100-iter Langevin ascent is stable and scores ~2536 ± 82.
     trials = _load_jsonl(Q3C_TRIALS)
     keep = []
     for t in trials:
         if t.get("training_failed") or t.get("eval_error"):
             continue
-        if int(t.get("trial_id", 0)) < Q3C_PROTOCOL_MIN_ID:
-            continue
         p = t.get("params", {}) or {}
-        if (p.get("control_points") == 80
-                and p.get("top_k_control_points") == 25
-                and p.get("inference_langevin_iterations") == 25
+        if (p.get("q_use_spectral_norm") is False
+                and p.get("control_points") == 20
+                and p.get("inference_langevin_iterations") == 100
                 and p.get("inference_dfo_iterations", 0) == 0
-                and float(p.get("inference_langevin_lr_init", 0)) == 0.01
-                and float(p.get("inference_langevin_delta_clip", 0)) == 0.01
-                and float(p.get("inference_langevin_noise_scale", 0)) == 0.1
                 and p.get("training_steps") == 100000
                 and p.get("learning_rate") == 5e-4
-                and p.get("num_langevin_negatives") == 8
-                and p.get("num_uniform_negatives", 0) == 0
                 and p.get("q_width") == 512
-                and p.get("q_depth") == 8
-                and p.get("cp_width") == 512
-                and p.get("cp_depth") == 8):
+                and p.get("q_depth") == 8):
             keep.append(t)
     keep.sort(key=lambda t: int(t.get("trial_id", 0)))
     by_seed: dict[int, dict] = {}
     for t in keep:
         by_seed[(t.get("params") or {}).get("trial_seed")] = t
     deduped = list(by_seed.values())
-    return _aggregate(deduped, label="Q3C+gentleLangevin")
+    return _aggregate(deduped, label="Q3C Langevin-100 (SN-off)")
 
 
 def ibc_paper_stats() -> dict:
