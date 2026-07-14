@@ -6,6 +6,9 @@ state vector to give the model temporal context.
 
 import os
 import glob
+import pickle
+import re
+import zipfile
 from typing import Optional
 import numpy as np
 from torch.utils.data import Dataset
@@ -1015,6 +1018,215 @@ class PushingPixelsDataset(Dataset):
 
     def __len__(self):
         return len(self._encoded_rgb)
+
+
+class PushTRealPixelsDataset(Dataset):
+    """Real-robot Push-T demonstrations stored in a BridgeData-style zip.
+
+    The 2026-03-23 collection contains one transition-aligned observation for
+    each policy output plus a final observation.  Each policy output is 7-D,
+    but collection used ``action_mode=2trans``: only x/y translation deltas
+    are nonzero.  This loader therefore trains on the first two dimensions and
+    exposes their physical range through ``act_min``/``act_max`` for real-robot
+    denormalization.
+
+    Model state is channel-stacked RGB in this order::
+
+        [oldest/camera0, oldest/camera1, ..., newest/camera0, newest/camera1]
+
+    The archive stays compressed/on shared storage.  Every DataLoader worker
+    opens its own lazy ZipFile handle, avoiding a 10+ GiB extraction and the
+    unsafe sharing of one zip handle across forked workers.
+    """
+
+    _TRAJ_RE = re.compile(
+        r"^(?P<root>.*?/)?raw/traj_group0/traj(?P<index>[0-9]+)/policy_out[.]pkl$"
+    )
+
+    def __init__(
+        self,
+        archive_path: str,
+        frame_stack: int = 2,
+        camera_streams: tuple[str, ...] = ("images0", "images1"),
+        resize_hw: tuple[int, int] = (240, 320),
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
+        max_trajectories: Optional[int] = None,
+    ):
+        self.archive_path = os.path.abspath(os.path.expanduser(archive_path))
+        if not os.path.isfile(self.archive_path):
+            raise FileNotFoundError(f"Push-T archive not found: {self.archive_path}")
+        if frame_stack < 1:
+            raise ValueError(f"frame_stack must be >= 1, got {frame_stack}")
+        if resize_hw[0] < 1 or resize_hw[1] < 1:
+            raise ValueError(f"resize_hw must be positive, got {resize_hw}")
+        if not camera_streams:
+            raise ValueError("camera_streams must contain at least one RGB stream")
+        if any(not re.fullmatch(r"images[0-9]+", name) for name in camera_streams):
+            raise ValueError(
+                f"camera_streams must be RGB folders like images0/images1; got {camera_streams}"
+            )
+
+        self.frame_stack = int(frame_stack)
+        self.camera_streams = tuple(camera_streams)
+        self.resize_hw = (int(resize_hw[0]), int(resize_hw[1]))
+        self.normalize_actions = bool(normalize_actions)
+        self.action_norm_range = (
+            float(action_norm_range[0]),
+            float(action_norm_range[1]),
+        )
+        self.action_chunk = 1
+        self.action_dims = (0, 1)
+        self.action_semantics = "planar end-effector delta (x, y), metres per control step"
+        self._zip: zipfile.ZipFile | None = None
+
+        trajectory_prefixes: list[tuple[int, str]] = []
+        raw_actions_by_traj: list[np.ndarray] = []
+        samples: list[tuple[int, int]] = []
+
+        with zipfile.ZipFile(self.archive_path, "r") as archive:
+            member_names = archive.namelist()
+            member_set = set(member_names)
+            for member in member_names:
+                match = self._TRAJ_RE.match(member)
+                if match:
+                    prefix = member[: -len("policy_out.pkl")]
+                    trajectory_prefixes.append((int(match.group("index")), prefix))
+
+            trajectory_prefixes.sort(key=lambda pair: pair[0])
+            if max_trajectories is not None:
+                trajectory_prefixes = trajectory_prefixes[: int(max_trajectories)]
+            if not trajectory_prefixes:
+                raise ValueError(
+                    f"No raw/traj_group0/traj*/policy_out.pkl entries in {self.archive_path}"
+                )
+
+            for traj_slot, (_, prefix) in enumerate(trajectory_prefixes):
+                # This is a locally supplied demonstration archive.  policy_out
+                # contains only builtins and NumPy arrays (verified for this
+                # collection); agent_data.pkl is intentionally not unpickled
+                # because it contains ROS message classes.
+                policy_out = pickle.loads(archive.read(prefix + "policy_out.pkl"))
+                actions_7d = np.asarray(
+                    [step["actions"] for step in policy_out], dtype=np.float32
+                )
+                if actions_7d.ndim != 2 or actions_7d.shape[1] < 2:
+                    raise ValueError(
+                        f"Bad actions in {prefix}policy_out.pkl: {actions_7d.shape}"
+                    )
+                raw_actions = actions_7d[:, :2]
+
+                # There must be a current RGB frame for every executed action.
+                # The archive also contains one final frame, which has no action
+                # target and is deliberately excluded from behavioral cloning.
+                for stream in self.camera_streams:
+                    for step in range(len(raw_actions)):
+                        image_member = f"{prefix}{stream}/im_{step}.jpg"
+                        if image_member not in member_set:
+                            raise ValueError(
+                                f"Missing action-aligned image {image_member}"
+                            )
+
+                raw_actions_by_traj.append(raw_actions)
+                samples.extend((traj_slot, step) for step in range(len(raw_actions)))
+
+        self._trajectory_prefixes = [prefix for _, prefix in trajectory_prefixes]
+        self._raw_actions_by_traj = raw_actions_by_traj
+        self._samples = samples
+
+        raw_actions_all = np.concatenate(raw_actions_by_traj, axis=0)
+        self.act_min = raw_actions_all.min(axis=0).astype(np.float32)
+        self.act_max = raw_actions_all.max(axis=0).astype(np.float32)
+        if self.normalize_actions:
+            lo, hi = self.action_norm_range
+            denom = np.where(
+                self.act_max == self.act_min,
+                np.ones_like(self.act_max),
+                self.act_max - self.act_min,
+            )
+            self._actions_by_traj = [
+                (lo + (actions - self.act_min) * (hi - lo) / denom).astype(np.float32)
+                for actions in raw_actions_by_traj
+            ]
+        else:
+            self._actions_by_traj = raw_actions_by_traj
+
+        self._H, self._W = self.resize_hw
+        self.in_channels = 3 * len(self.camera_streams) * self.frame_stack
+        self.state_shape = (self.in_channels, self._H, self._W)
+        self.action_shape = 2
+
+        print(
+            "PushTRealPixelsDataset: "
+            f"{len(self._trajectory_prefixes)} trajectories, {len(self._samples)} transitions, "
+            f"cameras={self.camera_streams}, frame_stack={self.frame_stack}, "
+            f"state_shape={self.state_shape}, raw action range={self.act_min} -> {self.act_max}"
+        )
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # ZipFile objects cannot be pickled and must not be shared between
+        # DataLoader workers.
+        state["_zip"] = None
+        return state
+
+    def _archive(self) -> zipfile.ZipFile:
+        if self._zip is None:
+            self._zip = zipfile.ZipFile(self.archive_path, "r")
+        return self._zip
+
+    def __del__(self):
+        archive = getattr(self, "_zip", None)
+        if archive is not None:
+            archive.close()
+
+    def _decode_rgb(self, member: str) -> np.ndarray:
+        if not TF_AVAILABLE:
+            raise ImportError(
+                "TensorFlow is required to decode Push-T JPEG frames. "
+                "Build the project environment with `uv sync`."
+            )
+        encoded = self._archive().read(member)
+        image = tf.io.decode_jpeg(encoded, channels=3)
+        if tuple(image.shape[:2]) != self.resize_hw:
+            image = tf.image.resize(
+                image,
+                self.resize_hw,
+                method=tf.image.ResizeMethod.AREA,
+                antialias=True,
+            )
+            image = tf.cast(tf.clip_by_value(tf.round(image), 0, 255), tf.uint8)
+        return image.numpy()
+
+    def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
+        if not self.normalize_actions:
+            return np.asarray(normalized_action, dtype=np.float32)
+        lo, hi = self.action_norm_range
+        scale = (self.act_max - self.act_min) / (hi - lo)
+        return (
+            self.act_min
+            + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale
+        ).astype(np.float32)
+
+    def __getitem__(self, index):
+        traj_slot, step = self._samples[index]
+        prefix = self._trajectory_prefixes[traj_slot]
+        frames: list[np.ndarray] = []
+        for offset in range(self.frame_stack - 1, -1, -1):
+            frame_step = max(0, step - offset)
+            for stream in self.camera_streams:
+                frames.append(
+                    self._decode_rgb(f"{prefix}{stream}/im_{frame_step}.jpg")
+                )
+        stacked = np.concatenate(frames, axis=-1)
+        stacked = np.transpose(stacked, (2, 0, 1))
+        return {
+            "state": stacked,
+            "action": self._actions_by_traj[traj_slot][step],
+        }
+
+    def __len__(self):
+        return len(self._samples)
 
 
 class LiberoGoalDataset(Dataset):

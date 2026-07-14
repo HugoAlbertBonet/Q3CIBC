@@ -306,6 +306,18 @@ def load_dataset():
         from utils.datasets import PushingPixelsDataset
         data_dir = env_config["data_dir"]
         return PushingPixelsDataset(data_dir=data_dir, frame_stack=frame_stack)
+    elif active_env == "pusht_real_pixels":
+        from utils.datasets import PushTRealPixelsDataset
+        return PushTRealPixelsDataset(
+            archive_path=env_config["data_archive"],
+            frame_stack=frame_stack,
+            camera_streams=tuple(env_config.get("camera_streams", ["images0", "images1"])),
+            resize_hw=(
+                int(env_config.get("image_height", 240)),
+                int(env_config.get("image_width", 320)),
+            ),
+            max_trajectories=env_config.get("max_trajectories"),
+        )
     elif active_env == "libero_goal":
         from utils.datasets import LiberoGoalDataset
         return LiberoGoalDataset(
@@ -373,6 +385,9 @@ def main():
     print(f"Frame stack: {frame_stack}")
     
     # Initialize Weights & Biases
+    wandb_run_name = f"{active_env}_combined_cp{control_points}_lr{learning_rate}"
+    if active_env == "pusht_real_pixels":
+        wandb_run_name += f"_seed{trial_seed}"
     wandb.init(
         project="Q3CIBC",
         config={
@@ -380,7 +395,7 @@ def main():
             "env_config": env_config,
             "training_shared": training_shared,
         },
-        name=f"{active_env}_combined_cp{control_points}_lr{learning_rate}"
+        name=wandb_run_name,
     )
     
     # Load dataset
@@ -404,7 +419,7 @@ def main():
             )
     
     # Create models
-    if active_env in ("pushing_pixels", "libero_goal_pixels"):
+    if active_env in ("pushing_pixels", "pusht_real_pixels", "libero_goal_pixels"):
         # Image-conditioned models with vendored IBC ConvMaxpoolEncoder.
         # dataset.state_shape is (C, H, W); only C and the encoder target
         # resolution are passed to the model (the encoder bilinearly resizes
@@ -593,7 +608,7 @@ def main():
     # envs keep num_workers=0 since their dataset is fully in RAM as ndarrays.
     num_workers = env_config.get(
         "dataloader_num_workers",
-        4 if active_env == "pushing_pixels" else 0,
+        4 if active_env in ("pushing_pixels", "pusht_real_pixels") else 0,
     )
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -610,7 +625,7 @@ def main():
     # bounds. The pushing stats also feed `norm_stats.pt` so the eval-time
     # PushingSimulation can recreate the exact same normalizer.
     particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
-    if active_env in ("pushing_pixels", "libero_goal_pixels"):
+    if active_env in ("pushing_pixels", "pusht_real_pixels", "libero_goal_pixels"):
         # The ConvMaxpoolEncoder handles its own preprocessing (uint8 → float
         # → /255 → bilinear resize) on every forward, matching IBC's
         # image_prepro.preprocess. So we skip the standardize/minmax
@@ -673,7 +688,7 @@ def main():
         after training completed. Saving up front makes partial runs salvageable.
         """
         if active_env not in (
-            "pushing", "pushing_multi", "pushing_pixels", "pen", "door",
+            "pushing", "pushing_multi", "pushing_pixels", "pusht_real_pixels", "pen", "door",
             "kitchen", "libero_goal", "libero_goal_pixels",
         ):
             return
@@ -716,6 +731,17 @@ def main():
             norm_stats["action_chunk"] = int(env_config.get("training", {}).get("action_chunk", 1))
             # Eval must center-crop to the train-time random-crop size.
             norm_stats["image_crop_size"] = int(env_config.get("training", {}).get("image_crop_size", 0))
+        if active_env == "pusht_real_pixels":
+            # Everything deployment needs to recreate the exact camera/frame
+            # ordering and convert normalized policy output back to metres.
+            norm_stats["camera_streams"] = list(dataset.camera_streams)
+            norm_stats["image_hw"] = [dataset._H, dataset._W]
+            norm_stats["state_shape"] = list(dataset.state_shape)
+            norm_stats["in_channels"] = dataset.in_channels
+            norm_stats["action_dims"] = list(dataset.action_dims)
+            norm_stats["action_semantics"] = dataset.action_semantics
+            norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 180)
+            norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 240)
         # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
         # its own [0,1] scaling + bilinear resize on every forward, matching
         # IBC's image_prepro.preprocess). Only persist these when present.
