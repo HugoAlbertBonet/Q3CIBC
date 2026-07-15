@@ -59,5 +59,5 @@ srun "${PYTHON}" scripts/train_pusht_real.py \
     --batch-size 64 \
     --workers "${SLURM_CPUS_PER_TASK}" \
     --frame-stack 2 \
-    --cameras images0 images1 \
+    --cameras images1 \
     --output-root "${OUTPUT_ROOT}"
