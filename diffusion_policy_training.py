@@ -69,7 +69,18 @@ def load_dataset():
     """Mirror combinedv2_cpascounter_training.load_dataset (state-based envs)."""
     if active_env in ("pen", "door", "kitchen"):
         from utils.datasets import D4RLDataset
-        return D4RLDataset(env_config["dataset_name"], download=True, frame_stack=frame_stack)
+        # Mirror combinedv2: kitchen_qpos_only drops the port-added velocity dims
+        # -> IBC's input content (robot qpos [0:9] + object qpos [18:39]) = 30-D.
+        # Must match Q3C's final kitchen stack or the comparison is unmatched.
+        obs_indices = None
+        if active_env == "kitchen" and bool(env_training.get("kitchen_qpos_only", False)):
+            obs_indices = list(range(0, 9)) + list(range(18, 39))
+            print(f"kitchen_qpos_only: obs -> {len(obs_indices)}-D (qpos only)")
+        return D4RLDataset(
+            env_config["dataset_name"], download=True, frame_stack=frame_stack,
+            obs_indices=obs_indices,
+            action_chunk=int(env_training.get("action_chunk", 1)),
+        )
     elif active_env == "particle":
         from utils.datasets import ParticleDataset
         return ParticleDataset(env_config["data_dir"], n_dim=env_config.get("n_dim", 2), frame_stack=frame_stack)
@@ -230,6 +241,12 @@ def main():
     if hasattr(dataset, "obs_mean"):
         norm_stats["obs_mean"] = dataset.obs_mean
         norm_stats["obs_std"] = dataset.obs_std
+    # Action chunking K — the sims read this to step chunk[k]. 1 = single action.
+    norm_stats["action_chunk"] = int(getattr(dataset, "action_chunk", 1) or 1)
+    # Kitchen: persist the column selection (kitchen_qpos_only) so eval rebuilds
+    # the identical policy input (mirrors combinedv2 / the libero state_shape trick).
+    if active_env == "kitchen":
+        norm_stats["obs_indices"] = getattr(dataset, "obs_indices", None)
     if active_env == "libero_goal":
         norm_stats["libero_obs_keys"] = dataset.libero_obs_keys
         norm_stats["libero_obs_dims"] = dataset.libero_obs_dims

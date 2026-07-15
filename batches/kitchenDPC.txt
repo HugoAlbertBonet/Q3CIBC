@@ -1,0 +1,47 @@
+# Batch kitchenDPC - DP kitchen MATCHED TO Q3C'S FINAL STACK. Metric = avg_tasks_completed (0..4).
+# Driver: hyperparam_search_dp.py + diffusion_policy_training.py --active-env kitchen
+#
+# WHY: kitchenDPA/DPB were UNMATCHED vs the Q3C numbers in kitchen_inference_results.csv.
+# Q3C's reported kitchen results come from a later "final stack" that differs from
+# the config's kitchen block on three axes:
+#     obs   : kitchen_qpos_only=True -> 30-D (robot qpos[0:9] + object qpos[18:39]),
+#             dropping the port-added velocity dims. DPA/DPB used the full 59-D obs.
+#     arch  : resnet width=512 depth=4  (DPA/DPB used mlp 512x8)
+#     steps : 150k                      (DPA/DPB used 100k)
+# Comparing DPA/DPB to that CSV would be a confounded row. This batch matches all three.
+#
+# MATCHED to Q3C final stack (trials with control_points=200/top_k=50/resnet-4/
+# qpos_only/150k, tasks ~1.2-3.6, best-config CSV aggregate = 3.245 w/ Langevin;
+# Q3C CP-argmax = 2.28):
+#   kitchen_qpos_only=true -> 30-D obs, denoiser resnet width=512 depth=4,
+#   learning_rate=5e-4, batch_size=512, training_steps=150000, frame_stack=1,
+#   num_eval_seeds=100, action [-1,1], action_chunk=1 (Q3C final stack is also 1).
+#
+# SPECTRAL NORM: Q3C final stack uses q_use_spectral_norm=true; DP uses FALSE.
+# Same justification as pen (penDPA->DPB): SN is an IBC energy-stability regularizer
+# that chokes eps/v-regression (loss stuck ~0.8 -> reward ~-90). It does not transfer
+# to a denoiser. Core trunk topology (resnet 512x4) stays matched.
+#
+# Requires the DP training script's new kitchen_qpos_only support (obs_indices ->
+# D4RLDataset) + norm_stats["obs_indices"] so KitchenSimulation slices obs the same
+# way at eval. Verify the log prints: "kitchen_qpos_only: obs -> 30-D (qpos only)".
+#
+# DPC1-3: epsilon-prediction.  DPC4-6: v-prediction (better on kitchen in DPA: 2.24 vs 2.03).
+
+# -- kitchenDPC1: epsilon, resnet 512x4, qpos-only, 150k, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"learning_rate":5e-4,"batch_size":512,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":512,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPC2: epsilon, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":1,"kitchen_qpos_only":true,"learning_rate":5e-4,"batch_size":512,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":512,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPC3: epsilon, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":2,"kitchen_qpos_only":true,"learning_rate":5e-4,"batch_size":512,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":512,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPC4: v-prediction, seed=0
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":0,"kitchen_qpos_only":true,"learning_rate":5e-4,"batch_size":512,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":512,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPC5: v-prediction, seed=1
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":1,"kitchen_qpos_only":true,"learning_rate":5e-4,"batch_size":512,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":512,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# -- kitchenDPC6: v-prediction, seed=2
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env kitchen --fixed-params '{"trial_seed":2,"kitchen_qpos_only":true,"learning_rate":5e-4,"batch_size":512,"training_steps":150000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","time_emb_dim":128,"denoiser_network_kind":"resnet","denoiser_width":512,"denoiser_depth":4,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
