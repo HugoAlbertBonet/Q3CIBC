@@ -1,0 +1,48 @@
+# Batch ppA - Q3C on pushing_pixels: EMA + action chunking.
+# Driver: hyperparam_search.py + combinedv2_cpascounter_training.py --active-env pushing_pixels
+#
+# BASE = the best Q3C pixel recipe (J5): 200k steps, cp=30, top_k=12, cp mlp 256x2,
+# lr 3e-4, DFO inference 5 iters (std=0.005, decay=0.5, +24 uniform) -> 95.7% success.
+# Metric = success_rate.
+#
+# Arms (3 seeds each):
+#   A ema1-3:   ema_decay=0.999   -> EMA weights at eval (env-agnostic, already wired)
+#   B chunk2:   action_chunk=2    -> K-step action chunks, open-loop execution
+#   C chunk4:   action_chunk=4
+#
+# NOTE on chunking: NEW for pushing_pixels this batch — PushingPixelsDataset now
+# takes action_chunk (K-step targets via build_chunked_actions, episode-boundary
+# safe) and PushingPixelsSimulation reshapes/executes the chunk (execute_horizon
+# defaults to open-loop K). Model emits K*2 per CP.
+# PRIOR: chunking gave Q3C NOTHING on pen (K=4: 2542 vs 2499 baseline, noise-sized)
+# and receding horizon didn't help either. Pushing is a different regime (2D
+# quasi-static vs in-hand manipulation), so it may differ — but temper expectations.
+# EMA also did nothing on pen (2523 vs 2631). Both are being retested here because
+# the envs differ, not because pen suggested they'd work.
+
+# -- ppA1: A EMA 0.999, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 0, "ema_decay": 0.999}'
+
+# -- ppA2: A EMA 0.999, seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 1, "ema_decay": 0.999}'
+
+# -- ppA3: A EMA 0.999, seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 2, "ema_decay": 0.999}'
+
+# -- ppA4: B action_chunk=2, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 0, "action_chunk": 2}'
+
+# -- ppA5: B action_chunk=2, seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 1, "action_chunk": 2}'
+
+# -- ppA6: B action_chunk=2, seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 2, "action_chunk": 2}'
+
+# -- ppA7: C action_chunk=4, seed=0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 0, "action_chunk": 4}'
+
+# -- ppA8: C action_chunk=4, seed=1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 1, "action_chunk": 4}'
+
+# -- ppA9: C action_chunk=4, seed=2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"control_points": 30, "top_k_control_points": 12, "cp_network_kind": "mlp", "cp_width": 256, "cp_depth": 2, "learning_rate": 0.0003, "estimator_learning_rate": 0.0003, "num_uniform_negatives": 0, "num_langevin_negatives": 0, "langevin_num_iterations": 0, "inference_langevin_iterations": 0, "inference_dfo_iterations": 5, "inference_dfo_iteration_std": 0.005, "inference_dfo_iteration_std_decay": 0.5, "inference_dfo_num_uniform": 24, "noisy_expert_count": 0, "gradient_penalty_weight": 1.0, "gradient_penalty_margin": 1.0, "training_steps": 200000, "cosine_t_max": 200000, "trial_seed": 2, "action_chunk": 4}'

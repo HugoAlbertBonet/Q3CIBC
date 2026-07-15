@@ -195,12 +195,12 @@ def make_method_argmax(device):
     return name, select_action
 
 
-def make_method_langevin(device, iters: int, again_iters: int):
+def make_method_langevin(device, iters: int, again_iters: int, lr: float = LV_LR_INIT):
     """Faithful chain on the full CP cloud — same sample_langevin the eval uses."""
     cp_gen, q_net = build_cpgen(device), build_q(device)
     lo, hi = _bounds(device)
     energy = _neg_q(q_net)
-    name = f"Q3C+Langevin {iters}+{again_iters} (cp={Q3C_CP}, lr {LV_LR_INIT}, faithful chain)"
+    name = f"Q3C+Langevin {iters}+{again_iters} (cp={Q3C_CP}, lr {lr}, faithful chain)"
 
     def select_action():
         obs = torch.randn(1, OBS_DIM, device=device)
@@ -211,7 +211,7 @@ def make_method_langevin(device, iters: int, again_iters: int):
         refined = sample_langevin(
             energy_function=energy, observations=obs,
             num_samples=cps.shape[1], action_min=lo, action_max=hi,
-            num_iterations=iters, lr_init=LV_LR_INIT, lr_final=LV_LR_FINAL,
+            num_iterations=iters, lr_init=lr, lr_final=LV_LR_FINAL,
             polynomial_decay_power=LV_DECAY, delta_action_clip=LV_DELTA_CLIP,
             noise_scale=LV_NOISE, initial_actions=cps.clone(), device=device,
             noise_via_stepsize=True,
@@ -339,7 +339,10 @@ def _final_stack(p: dict) -> bool:
             and p.get("kitchen_qpos_only") is True
             and p.get("num_langevin_negatives") == 16
             and p.get("training_steps") == 150000
-            and p.get("noisy_expert_count", 0) == 0)
+            and p.get("noisy_expert_count", 0) == 0
+            # chunked trials (action_chunk>1) are separate configs — keep the
+            # CSV rows single-step so quality matches the timed methods
+            and p.get("action_chunk", 1) == 1)
 
 
 def _dedupe_by_seed(trials: list[dict]) -> list[dict]:
@@ -389,6 +392,9 @@ def q3c_stats(mode: str) -> dict:
             keep.append(t)
         elif mode == "lv50" and lv == 50 and ag == 30 and lr == 0.1 and dfo == 0:
             keep.append(t)
+        elif (mode == "lv50g" and lv == 50 and ag == 30 and lr == 0.05 and dfo == 0
+              and p.get("action_chunk", 1) == 1):
+            keep.append(t)
         elif (mode == "dfo" and lv == 0 and dfo == DFO_ITERS
               and float(p.get("inference_dfo_iteration_std", 0)) == DFO_STD):
             keep.append(t)
@@ -417,6 +423,66 @@ def ibc_stats() -> dict:
     return _aggregate(_dedupe_by_seed(keep), label="IBC-full-faithful")
 
 
+# ─── Diffusion Policy (this repo), matched to Q3C's final kitchen stack ──────
+
+def make_method_dp(device, sampler: str, ddim_steps, name: str):
+    """DP inference on kitchen: flat denoiser matched to Q3C's final stack
+    (resnet 512x4, qpos-only 30-D obs). SN OFF — it is an IBC energy regularizer
+    that chokes eps/v-regression (penDPA->DPB). DDPM full chain or DDIM sub-sampled.
+    """
+    from utils.diffusion import build_denoiser, build_diffusion, resolve_dp_params
+    dp = resolve_dp_params({"model": {"diffusion": {
+        "denoiser_network_kind": "resnet", "denoiser_width": 512, "denoiser_depth": 4,
+        "denoiser_use_spectral_norm": False, "time_emb_dim": 128,
+        "num_train_timesteps": 100, "beta_schedule": "cosine",
+    }}})
+    model = build_denoiser(OBS_DIM, ACTION_DIM, dp, device).eval()
+    diffusion = build_diffusion(dp, device, (ACTION_MIN, ACTION_MAX))
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            if sampler == "ddpm":
+                a = diffusion.ddpm_sample(model, obs, ACTION_DIM)
+            else:
+                a = diffusion.ddim_sample(model, obs, ACTION_DIM, num_steps=ddim_steps)
+        return a[0]
+
+    return name, select_action
+
+
+def _dp_kitchen_trials() -> list[dict]:
+    """kitchenDPC: epsilon, qpos-only 30-D, resnet 512x4, 150k — the run matched
+    to Q3C's final stack. (Unmatched DPA/DPB rows are excluded on purpose.)"""
+    path = (ROOT / "results" / "hyperparam_search" / "diffusion_policy_training"
+            / "d4rl" / "kitchen" / "trials.jsonl")
+    out = []
+    for t in _load_jsonl(path):
+        p = t.get("params") or {}
+        if (not t.get("training_failed")
+                and p.get("kitchen_qpos_only") is True
+                and p.get("denoiser_network_kind") == "resnet"
+                and p.get("denoiser_width") == 512
+                and p.get("denoiser_depth") == 4
+                and p.get("training_steps") == 150000
+                and p.get("prediction_type") == "epsilon"):
+            out.append(t)
+    return out
+
+
+def dp_stats(key: str, label: str) -> dict:
+    """Aggregate per-sampler avg_tasks_completed over the matched DP kitchen seeds."""
+    remapped = []
+    for t in _dp_kitchen_trials():
+        v = t.get(f"{key}_avg_tasks_completed")
+        if v is None:
+            continue
+        remapped.append({"avg_tasks_completed": v,
+                         "avg_reward": t.get(f"{key}_avg_reward"),
+                         "params": t.get("params"), "trial_id": t.get("trial_id")})
+    return _aggregate(_dedupe_by_seed(remapped), label)
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -441,8 +507,13 @@ def main():
         ("argmax", make_method_argmax(device)),
         ("lv30", make_method_langevin(device, 30, 20)),
         ("lv50", make_method_langevin(device, 50, 30)),
+        ("lv50g", make_method_langevin(device, 50, 30, lr=0.05)),
         ("dfo", make_method_dfo(device)),
         ("ibc", make_method_ibc(device)),
+        ("dp_ddpm100", make_method_dp(device, "ddpm", None, "DP + DDPM (100 steps, eps, resnet 512x4)")),
+        ("dp_ddim5", make_method_dp(device, "ddim", 5, "DP + DDIM (5 steps, eps, resnet 512x4)")),
+        ("dp_ddim10", make_method_dp(device, "ddim", 10, "DP + DDIM (10 steps, eps, resnet 512x4)")),
+        ("dp_ddim25", make_method_dp(device, "ddim", 25, "DP + DDIM (25 steps, eps, resnet 512x4)")),
     )
     timed = []
     for key, (name, fn) in builders:
@@ -461,8 +532,13 @@ def main():
         "argmax": q3c_stats("argmax"),
         "lv30": q3c_stats("lv30"),
         "lv50": q3c_stats("lv50"),
+        "lv50g": q3c_stats("lv50g"),
         "dfo": q3c_stats("dfo"),
         "ibc": ibc_stats(),
+        "dp_ddpm100": dp_stats("ddpm", "DP-ddpm100"),
+        "dp_ddim5": dp_stats("ddim5", "DP-ddim5"),
+        "dp_ddim10": dp_stats("ddim10", "DP-ddim10"),
+        "dp_ddim25": dp_stats("ddim25", "DP-ddim25"),
     }
     print("\nQuality (avg_tasks_completed /4, from recorded trials):")
     for k, s in quality.items():

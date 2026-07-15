@@ -41,6 +41,7 @@ class PushingPixelsSimulation(BaseSimulation):
         frame_stack: int = 1,
         norm_stats: Optional[dict] = None,
         goal_dist_tolerance: float = 0.02,
+        execute_horizon: int = 0,
     ) -> None:
         super().__init__(
             env_id="PushingPixels-v0",
@@ -53,6 +54,15 @@ class PushingPixelsSimulation(BaseSimulation):
         self.render_mode = render_mode
         self.goal_dist_tolerance = goal_dist_tolerance
         self.norm_stats = norm_stats
+        # Action chunking: the model emits K*2 per CP. execute_horizon R is the
+        # eval-time receding-horizon knob — execute the first R actions of the
+        # chunk then replan. 0 (or >=K) keeps pure open-loop chunk execution.
+        # Mirrors PenHumanV2Simulation.
+        self.action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
+        _eh = int(execute_horizon or 0)
+        self.execute_horizon = (
+            self.action_chunk if _eh <= 0 else min(_eh, self.action_chunk)
+        )
 
         # See PushingSimulation: these `_act_*_t` are reserved for the legacy
         # ibc_with_cps action remapping. Set to None to short-circuit the
@@ -138,13 +148,18 @@ class PushingPixelsSimulation(BaseSimulation):
         info: dict = {}
 
         while not done:
-            action = self.select_action(stacked_obs)
-            obs, reward, terminated, truncated, info = self.env.step(action)
-            stacked_obs = self._update_frame_buffer(obs)
-            total_reward += float(reward)
-            episode_length += 1
-            min_dist = min(min_dist, float(info.get("block_to_target_distance", np.inf)))
-            done = terminated or truncated
+            # (K*2,) denormalized when chunking; (2,) when action_chunk == 1.
+            chunk = self.select_action(stacked_obs)
+            steps = np.asarray(chunk).reshape(self.action_chunk, -1)
+            for k in range(self.execute_horizon):
+                obs, reward, terminated, truncated, info = self.env.step(steps[k])
+                stacked_obs = self._update_frame_buffer(obs)
+                total_reward += float(reward)
+                episode_length += 1
+                min_dist = min(min_dist, float(info.get("block_to_target_distance", np.inf)))
+                done = terminated or truncated
+                if done:
+                    break
 
         return {
             "episode_length": episode_length,

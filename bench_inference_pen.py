@@ -394,6 +394,10 @@ def q3c_b4_stats() -> dict:
     for t in trials:
         if t.get("training_failed") or t.get("eval_error"):
             continue
+        # Protocol guard: trials < MIN_ID ran max_episode_steps=200 (double the
+        # dense reward) — NOT comparable to the current 100-step protocol.
+        if int(t.get("trial_id", 0)) < Q3C_PROTOCOL_MIN_ID:
+            continue
         p = t.get("params", {}) or {}
         if (p.get("q_use_spectral_norm") is False
                 and p.get("control_points") == 20
@@ -471,6 +475,10 @@ def q3c_langevin_stats() -> dict:
     keep = []
     for t in trials:
         if t.get("training_failed") or t.get("eval_error"):
+            continue
+        # Protocol guard: trials < MIN_ID ran max_episode_steps=200 (double the
+        # dense reward) — NOT comparable to the current 100-step protocol.
+        if int(t.get("trial_id", 0)) < Q3C_PROTOCOL_MIN_ID:
             continue
         p = t.get("params", {}) or {}
         if (p.get("q_use_spectral_norm") is False

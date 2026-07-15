@@ -844,6 +844,7 @@ class PushingPixelsDataset(Dataset):
         max_samples: Optional[int] = None,
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
+        action_chunk: int = 1,
     ):
         if not TF_AVAILABLE:
             raise ImportError(
@@ -855,6 +856,8 @@ class PushingPixelsDataset(Dataset):
         self.data_dir = data_dir
         self.normalize_actions = normalize_actions
         self.action_norm_range = action_norm_range
+        # K-step action chunking (1 = off). action_shape becomes K*2.
+        self.action_chunk = max(1, int(action_chunk))
 
         pattern = os.path.join(data_dir, self._TFRECORD_GLOB)
         self.tfrecord_files = sorted(glob.glob(pattern))
@@ -869,6 +872,14 @@ class PushingPixelsDataset(Dataset):
             raw_actions,
             self._episode_starts,
         ) = self._scan_all(max_samples=max_samples)
+
+        # Action chunking: replace per-step targets with K-step windows BEFORE
+        # stats so normalization covers the full (K*A) chunk vector. Windows
+        # never cross an episode boundary (see build_chunked_actions).
+        if self.action_chunk > 1:
+            raw_actions = build_chunked_actions(
+                raw_actions, self._episode_starts, self.action_chunk
+            )
 
         self.act_min = raw_actions.min(axis=0).astype(np.float32)
         self.act_max = raw_actions.max(axis=0).astype(np.float32)

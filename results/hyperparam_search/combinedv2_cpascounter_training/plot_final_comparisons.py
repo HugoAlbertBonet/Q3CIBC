@@ -73,7 +73,7 @@ def family(method: str) -> str:
         return "Explicit BC"
     if low.startswith("ibc"):
         return "IBC EBM"
-    if "diffusion" in low or low.startswith("dp_"):
+    if "diffusion" in low or low.startswith("dp_") or low.startswith("dp "):
         return "Diffusion Policy"
     return "Other"
 
@@ -97,6 +97,7 @@ def short_method(method: str) -> str:
         "Q3C CP-argmax (cp=200, resnet gen, no refinement)": "Q3C argmax",
         "Q3C+Langevin 30+20 (cp=200, lr 0.1, faithful chain)": "Q3C Lv 30+20",
         "Q3C+Langevin 50+30 (cp=200, lr 0.1, faithful chain)": "Q3C Lv 50+30",
+        "Q3C+Langevin 50+30 (cp=200, lr 0.05, faithful chain)": "Q3C Lv 50+30 (0.05)",
         "Q3C+CP-DFO (cp=200, it5 std0.05 dec0.5)": "Q3C CP-DFO",
         "IBC full-faithful Langevin (100+100 iters x 512 samples)": "our IBC EBM",
         "IBC paper-reported EBM (official quality; faithful timing)": "IBC official",
@@ -104,6 +105,12 @@ def short_method(method: str) -> str:
         "Q3C+CP-DFO (cp=100, 10 iters, +32 uniform safety)": "Q3C CP-DFO",
         "Q3C+gentle Langevin (cp=80, 25 iters, very-gentle)": "Q3C gentle Lv",
         "IBC paper-reported EBM (official quality; paper-exact timing)": "IBC official",
+        "Q3C CP-argmax (SN-off, cp=20, no refinement)": "Q3C argmax",
+        "Q3C + Langevin-100 (SN-off, cp=20)": "Q3C Langevin-100",
+        "DP + DDPM (100 steps, eps, resnet 512x4)": "DP DDPM-100",
+        "DP + DDIM (5 steps, eps, resnet 512x4)": "DP DDIM-5",
+        "DP + DDIM (10 steps, eps, resnet 512x4)": "DP DDIM-10",
+        "DP + DDIM (25 steps, eps, resnet 512x4)": "DP DDIM-25",
     }
     if method in aliases:
         return aliases[method]
@@ -153,6 +160,7 @@ def connected_scatter(
     labels: dict[str, tuple[str, int, int]] | None = None,
     *,
     line_alpha: float = .7,
+    yerr_key: str | None = None,
 ) -> None:
     """Connect variants from the same method family, then draw their points."""
     labels = labels or {}
@@ -167,6 +175,12 @@ def connected_scatter(
             ax.plot([p[0] for p in points], [p[1] for p in points], color=color,
                     lw=1.55, alpha=line_alpha, zorder=2)
         for index, (x, y, row) in enumerate(points):
+            if yerr_key and row.get(yerr_key, "").strip():
+                yerr = float(row[yerr_key])
+                if yerr > 0:
+                    ax.errorbar(x, y, yerr=yerr, fmt="none", ecolor=color,
+                                elinewidth=.75, capsize=2.2, capthick=.75,
+                                alpha=.55, zorder=3)
             ax.scatter(x, y, s=48 if fam == "Q3CIBC" else 40, c=color,
                        edgecolor="white", linewidth=.65, zorder=4)
             if row["method"] in labels:
@@ -279,6 +293,10 @@ def main() -> None:
     pixels = read_csv(ROOT / "pushing_pixels" / "single_target_pixels.csv")
     kitchen = read_csv(ROOT / "d4rl" / "kitchen" / "kitchen_inference_results.csv")
     pen = read_csv(ROOT / "d4rl" / "pen" / "pen_inference_results.csv")
+    # Retain the local IBC row in the final CSV for provenance, but honor the
+    # requested paper comparison by plotting only its official reported quality.
+    pen = [r for r in pen if not r["method"].startswith("IBC ")
+           or r["method"].startswith("IBC paper-reported")]
     libero = read_csv(ROOT / "libero_goal" / "standard_results.csv", comments=True)
 
     fig = plt.figure(figsize=(15.5, 19.5), facecolor=BG)
@@ -306,10 +324,10 @@ def main() -> None:
         "Q3CIBC + CP-DFO (3 iters)": ("Q3C 3-it CP-DFO\n100% · 4.64 ms", -20, 10),
         "Q3CIBC + CP-DFO (0 iters — pure CP-argmax)": ("Q3C argmax\n99% · 0.89 ms", 8, -5),
         "Diffusion Policy + DDPM (100 steps)": ("DP DDPM\n99.3% · 72.1 ms", -72, 8),
-    })
+    }, yerr_key="success_stdev_pp")
     ax.set_xscale("log")
     ax.set_xlim(.65, 100)
-    ax.set_ylim(97.8, 100.45)
+    ax.set_ylim(97.0, 101.2)
     ax.set_xlabel("inference time (ms, log scale)", color=MUTED)
     ax.set_ylabel("success rate (%)", color=MUTED)
 
@@ -334,11 +352,11 @@ def main() -> None:
             "q3c_5iter": ("Q3C 5-it · 95.7%", 7, 6),
             "ibc": ("IBC EBM · 100%", -58, 7),
             "ibc_mdn": ("MDN explicit · 10%", 7, -2),
-        })
+        }, yerr_key="success_rate_std_pct")
         ax_part.set_xscale("log")
         ax_part.set_xlim(.85, 80)
-    ax_hi.set_ylim(84, 102)
-    ax_lo.set_ylim(7, 13)
+    ax_hi.set_ylim(82, 102)
+    ax_lo.set_ylim(5, 15)
     ax_hi.spines["bottom"].set_visible(False)
     ax_lo.spines["top"].set_visible(False)
     ax_hi.tick_params(labelbottom=False)
@@ -355,14 +373,34 @@ def main() -> None:
     ax = fig.add_subplot(gs[2, 0])
     style_card(ax, "(e) D4RL Kitchen", "Tasks completed vs. latency; official IBC result included")
     connected_scatter(ax, kitchen, "inference_time_mean_ms", "avg_tasks_completed", {
-        "Q3C CP-argmax (cp=200, resnet gen, no refinement)": ("Q3C argmax\n2.28 · 2.15 ms", 7, 7),
-        "Q3C+Langevin 50+30 (cp=200, lr 0.1, faithful chain)": ("Q3C Lv 50+30\n3.25 · 181.6 ms", -88, 8),
-        "IBC full-faithful Langevin (100+100 iters x 512 samples)": ("our IBC\n3.05", -62, -24),
-        "IBC paper-reported EBM (official quality; faithful timing)": ("IBC official\n3.37", -62, 8),
-    })
+        "Explicit BC MSE (paper arch 2048x8-dense; quality: paper-reported)":
+            ("MSE-BC\n1.76 · 0.98 ms", 7, 7),
+        "Q3C CP-argmax (cp=200, resnet gen, no refinement)":
+            ("Q3C argmax\n2.28 · 2.86 ms", 7, 7),
+        "Q3C+CP-DFO (cp=200, it5 std0.05 dec0.5)":
+            ("Q3C CP-DFO\n2.29 · 14.1 ms", 7, -24),
+        "Q3C+Langevin 30+20 (cp=200, lr 0.1, faithful chain)":
+            ("Q3C Lv 30+20\n2.95 · 164.5 ms", -90, -23),
+        "Q3C+Langevin 50+30 (cp=200, lr 0.1, faithful chain)":
+            ("Q3C Lv 50+30 (0.10)\n3.25 · 249.4 ms", -105, -26),
+        "Q3C+Langevin 50+30 (cp=200, lr 0.05, faithful chain)":
+            ("Q3C Lv 50+30 (0.05)\n3.41 · 254.5 ms", -105, 9),
+        "IBC full-faithful Langevin (100+100 iters x 512 samples)":
+            ("our IBC\n3.05 · 1026 ms", -88, -25),
+        "IBC paper-reported EBM (official quality; faithful timing)":
+            ("IBC official\n3.37 · 1026 ms", -88, 8),
+        "DP + DDPM (100 steps, eps, resnet 512x4)":
+            ("DP DDPM-100\n2.45 · 110.8 ms", -35, -25),
+        "DP + DDIM (5 steps, eps, resnet 512x4)":
+            ("DP DDIM-5\n2.60 · 7.20 ms", -18, 9),
+        "DP + DDIM (10 steps, eps, resnet 512x4)":
+            ("DP DDIM-10\n2.63 · 12.2 ms", 7, -25),
+        "DP + DDIM (25 steps, eps, resnet 512x4)":
+            ("DP DDIM-25\n2.59 · 34.7 ms", 7, 8),
+    }, yerr_key="SEM")
     ax.set_xscale("log")
-    ax.set_xlim(.55, 700)
-    ax.set_ylim(1.5, 3.55)
+    ax.set_xlim(.55, 1600)
+    ax.set_ylim(1.5, 3.62)
     ax.set_xlabel("inference time (ms, log scale)", color=MUTED)
     ax.set_ylabel("average tasks completed", color=MUTED)
     ax.text(.98, .06, "Official quality paired with faithful-architecture timing.",
@@ -371,10 +409,19 @@ def main() -> None:
     ax = fig.add_subplot(gs[2, 1])
     style_card(ax, "(f) D4RL Pen", "Average reward vs. latency; only official IBC quality shown")
     connected_scatter(ax, pen, "inference_time_mean_ms", "avg_reward", {
-        "Q3C-B4 CP-argmax (cp=100, no refinement)": ("Q3C argmax\n2499 · 1.65 ms", 7, -23),
-        "IBC paper-reported EBM (official quality; paper-exact timing)": ("IBC official\n2586 · 210.7 ms", -77, 8),
-        "dp_ddim5": ("DP DDIM-5\n3077 · 4.50 ms", 7, 7),
-    })
+        "Q3C CP-argmax (SN-off, cp=20, no refinement)":
+            ("Q3C argmax\n2631 · 1.73 ms", 7, -24),
+        "Q3C+CP-DFO (cp=100, 10 iters, +32 uniform safety)":
+            ("Q3C CP-DFO\n2482 · 18.6 ms", 7, -24),
+        "Q3C + Langevin-100 (SN-off, cp=20)":
+            ("Q3C Lv-100\n2536 · 52.8 ms", 7, 8),
+        "IBC paper-reported EBM (official quality; paper-exact timing)":
+            ("IBC official\n2586 · 215.1 ms", -88, 8),
+        "dp_ddpm100": ("DP DDPM-100\n3050 · 66.0 ms", 7, -24),
+        "dp_ddim5": ("DP DDIM-5\n3077 · 4.88 ms", 7, 8),
+        "dp_ddim10": ("DP DDIM-10\n3001 · 8.59 ms", 7, -25),
+        "dp_ddim25": ("DP DDIM-25\n3008 · 21.3 ms", 7, 8),
+    }, yerr_key="SEM")
     ax.set_xscale("log")
     ax.set_xlim(1, 320)
     ax.set_ylim(2200, 3250)
@@ -425,6 +472,7 @@ def main() -> None:
              "while pretrained visual representations improve LIBERO-Goal performance.",
              ha="left", color=TEXT, fontsize=9.1)
     fig.text(.075, .018,
+             "Error bars show CSV-reported variability (SD for Pushing; SEM for D4RL). "
              "Source: final comparison CSVs in results/particle and results/hyperparam_search/combinedv2_cpascounter_training.",
              ha="left", color=MUTED, fontsize=7.6)
 

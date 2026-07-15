@@ -305,7 +305,10 @@ def load_dataset():
     elif active_env == "pushing_pixels":
         from utils.datasets import PushingPixelsDataset
         data_dir = env_config["data_dir"]
-        return PushingPixelsDataset(data_dir=data_dir, frame_stack=frame_stack)
+        return PushingPixelsDataset(
+            data_dir=data_dir, frame_stack=frame_stack,
+            action_chunk=int(env_config.get("training", {}).get("action_chunk", 1)),
+        )
     elif active_env == "pusht_real_pixels":
         from utils.datasets import PushTRealPixelsDataset
         return PushTRealPixelsDataset(
