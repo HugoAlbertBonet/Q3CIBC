@@ -16,7 +16,9 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-ROOT_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+# Slurm executes a spooled copy of this script under /var/spool/slurm.  The
+# submit directory, rather than BASH_SOURCE, is therefore the project root.
+ROOT_DIR=${SLURM_SUBMIT_DIR:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}
 cd "${ROOT_DIR}"
 
 SEEDS=(11 29 47 83)
