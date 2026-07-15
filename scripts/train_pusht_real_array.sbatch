@@ -24,6 +24,11 @@ SEED=${SEEDS[$SLURM_ARRAY_TASK_ID]}
 DATASET=${PUSHT_DATASET:-"${ROOT_DIR}/data/03-23-pusht-data.zip"}
 OUTPUT_ROOT=${PUSHT_OUTPUT_ROOT:-"${ROOT_DIR}/checkpoints/pusht_real_combinedv2"}
 PYTHON=${PYTHON:-"${ROOT_DIR}/.venv/bin/python"}
+LOG_DIR=${PUSHT_LOG_DIR:-"${ROOT_DIR}/slurm_jobs/pusht"}
+LOG_FILE="${LOG_DIR}/pusht_$(printf '%03d' "$((SLURM_ARRAY_TASK_ID + 1))").out"
+
+mkdir -p "${LOG_DIR}"
+exec >"${LOG_FILE}" 2>&1
 
 if [[ ! -f "${DATASET}" ]]; then
     echo "Dataset not found on the compute node: ${DATASET}" >&2
