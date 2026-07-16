@@ -307,10 +307,16 @@ def main() -> int:
     frame_buf = collections.deque(maxlen=frame_stack)
     period = 1.0 / max(args.hz, 1e-3)
 
-    def refresh_frame():
-        o = client.get_observation()
-        f = preprocess(pick_blue_frame(o, args.obs_key), (image_h, image_w), args.swap_rgb)
-        return f
+    def refresh_frame(retries: int = 25):
+        # get_observation() can transiently return None (server busy/restarting).
+        # Retry instead of crashing on None.get in pick_blue_frame.
+        for _ in range(retries):
+            o = client.get_observation()
+            frame = None if o is None else pick_blue_frame(o, args.obs_key)
+            if frame is not None:
+                return preprocess(frame, (image_h, image_w), args.swap_rgb)
+            time.sleep(0.2)
+        raise RuntimeError("no observation from server after retries (server down?)")
 
     first = refresh_frame()
     for _ in range(frame_stack):     # pad episode start with the first frame
