@@ -8,9 +8,10 @@ back via ``step_action`` (action_mode ``2trans``).
 
 Camera identity (must match training):
     seed_00XX trained on ``images1`` == ``/blue/image_raw`` == the fixed
-    Logitech scene camera == ``over_shoulder_img`` (``full_image[1]``) from
-    ``WidowXClient.get_observation()``. ``images0`` (D435, arm-mounted) is NOT
-    used.
+    Logitech scene camera. The D435 (``images0``) is no longer on the rig, so
+    the server runs a single camera: blue is ``full_image[0]`` and arrives as
+    ``external_img``. This client auto-picks the blue frame: ``over_shoulder_img``
+    if a second camera is present (legacy dual-cam), else ``external_img``.
 
 Preprocessing reproduced from utils.datasets.PushTRealPixelsDataset:
     - decode -> RGB, resize to (image_height, image_width) with INTER_AREA,
@@ -58,8 +59,9 @@ if str(ROOT) not in sys.path:
 # (D435), index 1 -> over_shoulder_img (blue) == training images1.
 FIXED_Z_HEIGHT = 0.02
 DEPLOY_ENV_PARAMS = {
+    # Single camera on the current rig: blue (Logitech). It is full_image[0],
+    # so the server returns it as external_img.
     "camera_topics": [
-        {"name": "/D435/color/image_raw"},
         {"name": "/blue/image_raw"},
     ],
     "gripper_attached": "custom",
@@ -91,6 +93,10 @@ def parse_args() -> argparse.Namespace:
                    help="use raw weights instead of the EMA copy")
     p.add_argument("--keep-bgr", action="store_true",
                    help="do NOT convert live BGR->RGB (debug only; breaks color match)")
+    p.add_argument("--obs-key", default="auto",
+                   choices=["auto", "external_img", "over_shoulder_img"],
+                   help="which get_observation() field holds the blue frame "
+                        "(auto: over_shoulder_img if present else external_img)")
     p.add_argument("--dry-run", action="store_true",
                    help="no motion: dump fed frames + print predicted actions")
     p.add_argument("--dry-run-steps", type=int, default=20)
@@ -172,6 +178,23 @@ def load_weights(model, path: Path, device):
     state = torch.load(path, map_location=device)
     model.load_state_dict(state)
     return model
+
+
+def pick_blue_frame(obs: dict, obs_key: str) -> np.ndarray:
+    """Return the blue-camera BGR frame from a get_observation() dict.
+
+    auto: prefer over_shoulder_img (legacy dual-cam: blue = full_image[1]),
+    else external_img (single-cam: blue = full_image[0]).
+    """
+    if obs_key == "auto":
+        if obs.get("over_shoulder_img") is not None:
+            return obs["over_shoulder_img"]
+        if obs.get("external_img") is not None:
+            return obs["external_img"]
+        raise RuntimeError("no blue frame: obs has neither over_shoulder_img nor external_img")
+    if obs.get(obs_key) is None:
+        raise RuntimeError(f"requested --obs-key {obs_key} missing from observation")
+    return obs[obs_key]
 
 
 def preprocess(frame_bgr: np.ndarray, out_hw, keep_bgr: bool) -> np.ndarray:
@@ -261,18 +284,18 @@ def main() -> int:
         if obs is None:
             print("Waiting for robot/cameras...")
             time.sleep(1.0)
-    if "over_shoulder_img" not in obs:
-        raise RuntimeError(
-            "over_shoulder_img missing: the server has <2 cameras. images1/blue "
-            "must be camera_topics[1]. Check usb_connector_chart.yml / rostopic list."
-        )
+    blue0 = pick_blue_frame(obs, args.obs_key)   # raises with a clear msg if absent
+    resolved_key = ("over_shoulder_img"
+                    if (args.obs_key == "auto" and obs.get("over_shoulder_img") is not None)
+                    else ("external_img" if args.obs_key == "auto" else args.obs_key))
+    print(f"Blue frame source: {resolved_key} (raw {blue0.shape})")
 
     frame_buf = collections.deque(maxlen=frame_stack)
     period = 1.0 / max(args.hz, 1e-3)
 
     def refresh_frame():
         o = client.get_observation()
-        f = preprocess(o["over_shoulder_img"], (image_h, image_w), args.keep_bgr)
+        f = preprocess(pick_blue_frame(o, args.obs_key), (image_h, image_w), args.keep_bgr)
         return f
 
     first = refresh_frame()

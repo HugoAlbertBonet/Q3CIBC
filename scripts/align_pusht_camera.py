@@ -36,10 +36,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REF = ROOT / "scripts" / "assets" / "pusht_images1_ref.jpg"
 
-# Same env init the deploy client uses; index 1 == blue == images1.
+# Same env init the deploy client uses. Single camera on the current rig:
+# blue (Logitech) == full_image[0] == external_img.
 DEPLOY_ENV_PARAMS = {
     "camera_topics": [
-        {"name": "/D435/color/image_raw"},
         {"name": "/blue/image_raw"},
     ],
     "gripper_attached": "custom",
@@ -66,7 +66,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out", type=Path, default=ROOT / "camera_align.png")
     p.add_argument("--no-init", action="store_true",
                    help="skip client.init (use if the env is already initialized)")
+    p.add_argument("--obs-key", default="auto",
+                   choices=["auto", "external_img", "over_shoulder_img"],
+                   help="which get_observation() field holds the blue frame")
     return p.parse_args()
+
+
+def pick_blue_frame(obs: dict, obs_key: str):
+    """over_shoulder_img if present (dual-cam) else external_img (single-cam)."""
+    if obs_key == "auto":
+        return obs.get("over_shoulder_img") if obs.get("over_shoulder_img") is not None \
+            else obs.get("external_img")
+    return obs.get(obs_key)
 
 
 def main() -> int:
@@ -91,8 +102,8 @@ def main() -> int:
     obs = None
     while obs is None:
         obs = client.get_observation()
-        if obs is None or "over_shoulder_img" not in (obs or {}):
-            print("Waiting for over_shoulder_img (blue/images1)...")
+        if obs is None or pick_blue_frame(obs, args.obs_key) is None:
+            print("Waiting for blue frame (images1)...")
             obs = None
             time.sleep(1.0)
 
@@ -105,9 +116,10 @@ def main() -> int:
     try:
         while True:
             obs = client.get_observation()
-            if obs is None or "over_shoulder_img" not in obs:
+            live = None if obs is None else pick_blue_frame(obs, args.obs_key)
+            if live is None:
                 continue
-            live = obs["over_shoulder_img"]                 # BGR (cv2 decode)
+            # BGR (cv2 decode)
             if live.shape[:2] != (H, W):
                 live = cv2.resize(live, (W, H), interpolation=cv2.INTER_AREA)
 
