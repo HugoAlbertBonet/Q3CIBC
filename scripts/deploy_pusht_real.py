@@ -357,6 +357,7 @@ def main() -> int:
             # with the server's numpy 1.x requires the CLIENT env to also run
             # numpy<2 (else numpy._core is unresolvable server-side).
             res = client.step_action(np.asarray(act, np.float32), blocking=False)
+            print(f"[{step:03d}] norm={np.round(na, 3)} -> action(dx,dy)={np.round(act, 4)}")
             if res == WidowXStatus.NO_CONNECTION:
                 print("Lost connection to server. Stopping.")
                 break
