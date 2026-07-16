@@ -347,7 +347,9 @@ def main() -> int:
             obs_u8 = stack_to_tensor(frame_buf, device)
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp)
             act = unnormalize(na, act_min, act_max, norm_range)
-            res = client.step_action(np.asarray(act, np.float32), blocking=False)
+            # Send a plain Python list, not a numpy array: the server's numpy
+            # (1.x, in docker) cannot unpickle a numpy 2.x array (numpy._core).
+            res = client.step_action([float(x) for x in act], blocking=False)
             if res == WidowXStatus.NO_CONNECTION:
                 print("Lost connection to server. Stopping.")
                 break
