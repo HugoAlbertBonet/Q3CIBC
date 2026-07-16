@@ -20,10 +20,10 @@ Preprocessing reproduced from utils.datasets.PushTRealPixelsDataset:
     - action = model output in the normalized range, unnormalized with the
       dataset's act_min/act_max (persisted in norm_stats.pt), then executed.
 
-The live camera comes back BGR (edgeml jpeg_to_mat = cv2.imdecode); training
-decoded JPEGs as RGB (tf.io.decode_jpeg). We convert BGR->RGB by default so
-channel-0 is red, exactly as in training. `--dry-run` dumps the fed frames so
-you can eyeball that the T renders red before any motion.
+Channel order: on this rig the server frame already has red in channel 0 (same
+as the tf-decoded training JPEGs), so we feed it as-is (no swap). Verified via
+`--dry-run`, which dumps the fed frames: the T renders red. `--swap-rgb` is
+available for a rig whose camera pipeline differs.
 
 Run on the Alienware (localhost) with the server already up:
 
@@ -91,8 +91,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hz", type=float, default=5.0, help="control loop rate")
     p.add_argument("--no-ema", action="store_true",
                    help="use raw weights instead of the EMA copy")
-    p.add_argument("--keep-bgr", action="store_true",
-                   help="do NOT convert live BGR->RGB (debug only; breaks color match)")
+    p.add_argument("--swap-rgb", action="store_true",
+                   help="swap channels before feeding the model. Default OFF: this "
+                        "rig's server frame already has red in channel 0, matching "
+                        "training (verified via dry-run; imshow shows the T blue).")
     p.add_argument("--obs-key", default="auto",
                    choices=["auto", "external_img", "over_shoulder_img"],
                    help="which get_observation() field holds the blue frame "
@@ -175,7 +177,8 @@ def build_models(env: dict, in_channels: int, device):
 def load_weights(model, path: Path, device):
     if not path.is_file():
         raise FileNotFoundError(f"missing checkpoint weights: {path}")
-    state = torch.load(path, map_location=device)
+    # weights_only=False: our own trusted checkpoints (state dicts + numpy).
+    state = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(state)
     return model
 
@@ -197,11 +200,16 @@ def pick_blue_frame(obs: dict, obs_key: str) -> np.ndarray:
     return obs[obs_key]
 
 
-def preprocess(frame_bgr: np.ndarray, out_hw, keep_bgr: bool) -> np.ndarray:
-    """Live over_shoulder_img (H,W,3 BGR uint8) -> (H',W',3 RGB uint8)."""
+def preprocess(frame: np.ndarray, out_hw, swap_rgb: bool) -> np.ndarray:
+    """Live blue frame (H,W,3 uint8) -> (H',W',3 uint8), channels as training.
+
+    On this rig the server frame already has red in channel 0 (same as the
+    tf-decoded training JPEGs), so no swap by default. `--swap-rgb` flips it for
+    a rig whose pipeline differs.
+    """
     import cv2
 
-    rgb = frame_bgr if keep_bgr else cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if swap_rgb else frame
     H, W = out_hw
     if rgb.shape[:2] != (H, W):
         rgb = cv2.resize(rgb, (W, H), interpolation=cv2.INTER_AREA)
@@ -241,7 +249,8 @@ def main() -> int:
 
     # --- checkpoint metadata ------------------------------------------------
     env = load_run_config(seed_dir)
-    norm_stats = torch.load(seed_dir / "norm_stats.pt", map_location="cpu")
+    norm_stats = torch.load(seed_dir / "norm_stats.pt", map_location="cpu",
+                            weights_only=False)
     act_min = np.asarray(norm_stats["act_min"], np.float32)
     act_max = np.asarray(norm_stats["act_max"], np.float32)
     norm_range = tuple(norm_stats.get("action_norm_range", (-1.0, 1.0)))
@@ -295,7 +304,7 @@ def main() -> int:
 
     def refresh_frame():
         o = client.get_observation()
-        f = preprocess(pick_blue_frame(o, args.obs_key), (image_h, image_w), args.keep_bgr)
+        f = preprocess(pick_blue_frame(o, args.obs_key), (image_h, image_w), args.swap_rgb)
         return f
 
     first = refresh_frame()
