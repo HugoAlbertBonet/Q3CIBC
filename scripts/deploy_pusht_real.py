@@ -287,6 +287,11 @@ def main() -> int:
 
     client = WidowXClient(host=args.ip, port=args.port)
     client.init(DEPLOY_ENV_PARAMS, image_size=256)
+    # init only constructs the env; reset() homes the arm AND starts the
+    # control loop that step_action depends on. Without it the first
+    # step_action throws server-side and drops the connection.
+    print("Resetting robot (home + start control loop)...")
+    client.reset()
     obs = None
     while obs is None:
         obs = client.get_observation()
