@@ -1,0 +1,51 @@
+device=cuda  dataset=/home1/halbertb/Q3CIBC/data/03-23-pusht-data.zip  samples=3000
+
+===== seed 0011 =====
+PushTRealPixelsDataset: 110 trajectories, 49463 transitions, cameras=('images1',), frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0283 -0.0417] std=[0.4318 0.5175] frac_neg=[0.473 0.517]
+  gt   mean/std  mean=[ 0.0238 -0.039 ] std=[0.4239 0.5096] frac_neg=[0.237 0.315]
+  corr(dx,dy)    -0.103   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0253 0.0262]
+  pred quadrants {'--': 709, '-+': 709, '+-': 841, '++': 741}
+  gt   quadrants {'--': 249, '-+': 461, '+-': 695, '++': 1595}
+  => looks responsive
+
+===== seed 0029 =====
+PushTRealPixelsDataset: 110 trajectories, 49463 transitions, cameras=('images1',), frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.028  -0.0435] std=[0.4323 0.5185] frac_neg=[0.468 0.522]
+  gt   mean/std  mean=[ 0.0238 -0.039 ] std=[0.4239 0.5096] frac_neg=[0.237 0.315]
+  corr(dx,dy)    -0.105   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0263 0.0274]
+  pred quadrants {'--': 720, '-+': 685, '+-': 845, '++': 750}
+  gt   quadrants {'--': 249, '-+': 461, '+-': 695, '++': 1595}
+  => looks responsive
+
+===== seed 0047 =====
+PushTRealPixelsDataset: 110 trajectories, 49463 transitions, cameras=('images1',), frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0278 -0.0424] std=[0.4317 0.5176] frac_neg=[0.463 0.505]
+  gt   mean/std  mean=[ 0.0238 -0.039 ] std=[0.4239 0.5096] frac_neg=[0.237 0.315]
+  corr(dx,dy)    -0.107   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0286 0.0319]
+  pred quadrants {'--': 688, '-+': 702, '+-': 828, '++': 782}
+  gt   quadrants {'--': 249, '-+': 461, '+-': 695, '++': 1595}
+  => looks responsive
+
+===== seed 0083 =====
+PushTRealPixelsDataset: 110 trajectories, 49463 transitions, cameras=('images1',), frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0284 -0.042 ] std=[0.4318 0.5173] frac_neg=[0.453 0.506]
+  gt   mean/std  mean=[ 0.0238 -0.039 ] std=[0.4239 0.5096] frac_neg=[0.237 0.315]
+  corr(dx,dy)    -0.105   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0248 0.0262]
+  pred quadrants {'--': 652, '-+': 706, '+-': 865, '++': 777}
+  gt   quadrants {'--': 249, '-+': 461, '+-': 695, '++': 1595}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/pusht_action_diagnostic.json
