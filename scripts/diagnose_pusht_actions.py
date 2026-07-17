@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
                    help="random transitions sampled from the dataset")
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--no-ema", action="store_true")
+    p.add_argument("--zero-motion", action="store_true",
+                   help="replace the real (t-1,t) frame stack with the newest "
+                        "frame duplicated across all slots, so the obs carries "
+                        "zero inter-frame motion. Tests whether the deploy-only "
+                        "(-,-) collapse is caused by out-of-distribution "
+                        "static/near-static stacks rather than image content.")
     p.add_argument("--device", default="cuda")
     p.add_argument("--out", type=Path, default=ROOT / "results" / "pusht_action_diagnostic.json")
     return p.parse_args()
@@ -114,6 +120,14 @@ def diagnose_seed(seed: int, args, device) -> dict:
     for start in range(0, k, args.batch_size):
         chunk = idxs[start:start + args.batch_size]
         states = np.stack([ds[int(i)]["state"] for i in chunk])          # (b,C,H,W) uint8
+        if args.zero_motion:
+            # Channels are oldest->newest (datasets.py __getitem__); the newest
+            # frame is the last per_frame channels. Duplicate it across every
+            # slot so the stack has no inter-frame motion, mimicking a static
+            # deploy observation.
+            per_frame = states.shape[1] // fs
+            newest = states[:, -per_frame:, :, :]
+            states = np.tile(newest, (1, fs, 1, 1))
         gt = np.stack([ds[int(i)]["action"] for i in chunk])             # (b,2) normalized
         obs_u8 = torch.from_numpy(np.ascontiguousarray(states)).to(device)
         pred = predict_batch(cp_gen, q_net, obs_u8).cpu().numpy()
@@ -143,6 +157,11 @@ def main() -> int:
     device = torch.device(args.device if (torch.cuda.is_available() or args.device == "cpu")
                           else "cpu")
     print(f"device={device}  dataset={args.dataset}  samples={args.num_samples}")
+    if args.zero_motion:
+        print("ZERO-MOTION mode: frame stack = newest frame duplicated "
+              "(no inter-frame motion). If a healthy policy now collapses to "
+              "-- / near-fixed actions, the deploy (-,-) runaway is an OOD "
+              "static-stack artifact, not a checkpoint or orientation bug.")
     results = []
     for seed in args.seeds:
         print(f"\n===== seed {seed:04d} =====")
