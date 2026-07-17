@@ -329,7 +329,16 @@ def main() -> int:
         print(f"DRY RUN: dumping {args.dry_run_steps} frames to {args.dump_dir} "
               f"(no step_action). Confirm the T renders RED.")
         for i in range(args.dry_run_steps):
-            frame_buf.append(refresh_frame())
+            # Also persist the RAW blue frame (exactly as the server returns it)
+            # for offline preprocessing-parity analysis vs the training pipeline.
+            raw = None
+            while raw is None:
+                o = client.get_observation()
+                raw = None if o is None else pick_blue_frame(o, args.obs_key)
+                if raw is None:
+                    time.sleep(0.2)
+            np.save(args.dump_dir / f"raw_{i:03d}.npy", np.ascontiguousarray(raw))
+            frame_buf.append(preprocess(raw, (image_h, image_w), args.swap_rgb))
             obs_u8 = stack_to_tensor(frame_buf, device)
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp)
             act = unnormalize(na, act_min, act_max, norm_range)
