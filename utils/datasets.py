@@ -1054,6 +1054,19 @@ class PushTRealPixelsDataset(Dataset):
         r"^(?P<root>.*?/)?raw/traj_group0/traj(?P<index>[0-9]+)/policy_out[.]pkl$"
     )
 
+    # Train-time appearance augmentation defaults. Ranges are anchored to the
+    # measured train->deploy gap (2026-07 forensics): the deploy T rendered at
+    # ~0.67x the training red level while the mat was identical, so the
+    # photometric ranges must cover at least a 0.6-0.7x object-level shift.
+    _AUG_DEFAULTS = {
+        "zoom_range": (0.85, 1.0),        # random crop scale (also shifts view)
+        "channel_gain_range": (0.7, 1.3),  # per-channel gain: white balance / hue-ish
+        "brightness_delta": 0.15,          # additive, in [0, 1] units
+        "contrast_range": (0.7, 1.3),
+        "saturation_range": (0.6, 1.4),
+        "noise_std_max": 0.02,             # per-frame gaussian sensor noise
+    }
+
     def __init__(
         self,
         archive_path: str,
@@ -1063,6 +1076,8 @@ class PushTRealPixelsDataset(Dataset):
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
         max_trajectories: Optional[int] = None,
+        augment: bool = False,
+        aug_params: Optional[dict] = None,
     ):
         self.archive_path = os.path.abspath(os.path.expanduser(archive_path))
         if not os.path.isfile(self.archive_path):
@@ -1089,6 +1104,13 @@ class PushTRealPixelsDataset(Dataset):
         self.action_chunk = 1
         self.action_dims = (0, 1)
         self.action_semantics = "planar end-effector delta (x, y), metres per control step"
+        self.augment = bool(augment)
+        self.aug_params = dict(self._AUG_DEFAULTS)
+        if aug_params:
+            unknown = set(aug_params) - set(self._AUG_DEFAULTS)
+            if unknown:
+                raise ValueError(f"Unknown aug_params keys: {sorted(unknown)}")
+            self.aug_params.update(aug_params)
         self._zip: zipfile.ZipFile | None = None
 
         trajectory_prefixes: list[tuple[int, str]] = []
@@ -1219,6 +1241,50 @@ class PushTRealPixelsDataset(Dataset):
             + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale
         ).astype(np.float32)
 
+    def _augment_stack(self, frames: list[np.ndarray]) -> list[np.ndarray]:
+        """Apply one random appearance transform to every frame in the stack.
+
+        All parameters are drawn ONCE per sample and shared across the stacked
+        frames: the policy reads inter-frame differences as motion, so a
+        per-frame photometric or geometric jitter would inject fake motion.
+        Only the gaussian sensor noise is drawn per frame — real camera noise
+        is temporally independent. Actions are EEF deltas in the robot frame,
+        so the small view crop/zoom (camera-pose jitter) leaves targets valid.
+        """
+        p = self.aug_params
+        rng = np.random
+        H, W = self._H, self._W
+
+        zoom = rng.uniform(*p["zoom_range"])
+        ch, cw = max(1, round(H * zoom)), max(1, round(W * zoom))
+        y0 = rng.randint(0, H - ch + 1)
+        x0 = rng.randint(0, W - cw + 1)
+        gains = rng.uniform(*p["channel_gain_range"], size=3).astype(np.float32)
+        bright = rng.uniform(-p["brightness_delta"], p["brightness_delta"])
+        contrast = rng.uniform(*p["contrast_range"])
+        sat = rng.uniform(*p["saturation_range"])
+        noise_std = rng.uniform(0.0, p["noise_std_max"])
+
+        out: list[np.ndarray] = []
+        for frame in frames:
+            x = frame[y0:y0 + ch, x0:x0 + cw]
+            if (ch, cw) != (H, W):
+                x = tf.image.resize(
+                    x, (H, W), method=tf.image.ResizeMethod.AREA, antialias=True
+                ).numpy()
+            x = x.astype(np.float32) / 255.0
+            x = x * gains
+            luma = x.mean(axis=-1, keepdims=True)
+            x = luma + (x - luma) * sat
+            x = (x - x.mean()) * contrast + x.mean()
+            x = x + bright
+            if noise_std > 0:
+                x = x + rng.normal(0.0, noise_std, size=x.shape).astype(np.float32)
+            out.append(
+                np.clip(np.round(x * 255.0), 0, 255).astype(np.uint8)
+            )
+        return out
+
     def __getitem__(self, index):
         traj_slot, step = self._samples[index]
         prefix = self._trajectory_prefixes[traj_slot]
@@ -1229,6 +1295,8 @@ class PushTRealPixelsDataset(Dataset):
                 frames.append(
                     self._decode_rgb(f"{prefix}{stream}/im_{frame_step}.jpg")
                 )
+        if self.augment:
+            frames = self._augment_stack(frames)
         stacked = np.concatenate(frames, axis=-1)
         stacked = np.transpose(stacked, (2, 0, 1))
         return {

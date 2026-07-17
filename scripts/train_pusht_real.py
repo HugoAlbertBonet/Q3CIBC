@@ -29,8 +29,8 @@ def parse_args() -> argparse.Namespace:
         help="BridgeData-style Push-T demonstration zip",
     )
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--steps", type=int, default=100_000)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--steps", type=int, default=150_000)
+    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--frame-stack", type=int, default=2)
     parser.add_argument(
@@ -44,7 +44,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=ROOT / "checkpoints" / "pusht_real_combinedv2",
+        # v2: retuned to the best pushing_pixels hyperparam-search recipe +
+        # appearance augmentation. Separate root so the deployed v1 seeds
+        # (pusht_real_combinedv2) are never overwritten.
+        default=ROOT / "checkpoints" / "pusht_real_combinedv2_v2",
+    )
+    parser.add_argument(
+        "--no-aug",
+        action="store_true",
+        help="Disable train-time appearance augmentation (photometric + "
+             "small view crop). Default ON: deploy forensics measured the "
+             "robot's T ~33%% darker than training with identical mat "
+             "exposure, so lighting/color robustness must come from data.",
     )
     parser.add_argument(
         "--dry-run",
@@ -79,6 +90,9 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "action_bounds": [-1.0, 1.0],
             "encoder_target_height": 180,
             "encoder_target_width": 240,
+            # Train-time appearance augmentation (see PushTRealPixelsDataset).
+            # Ranges cover the measured train->deploy shift (T at ~0.67x red).
+            "image_aug": not args.no_aug,
         }
     )
 
@@ -95,6 +109,20 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             # inference adds latency and was not validated on this hardware.
             "langevin_num_iterations": 0,
             "inference_langevin_iterations": 0,
+            # Best pushing_pixels recipe from the combinedv2 hyperparam search
+            # (results/hyperparam_search/combinedv2_cpascounter_training/
+            # pushing_pixels/trials.jsonl, trial 95: success_rate 0.99; the
+            # whole top-8 agrees on these). The v1 seeds inherited weaker
+            # values from config_json (lr 1e-3, clamp 20, plain cosine) and
+            # silent trainer defaults (32 uniform + 32 langevin negatives).
+            "learning_rate": 3e-4,
+            "estimator_learning_rate": 3e-4,
+            "infonce_logit_clamp": 10.0,
+            "scheduler_type": "cosine_warm_restarts",
+            "cosine_t0": 50_000,
+            "num_uniform_negatives": 0,
+            "num_langevin_negatives": 0,
+            "noisy_expert_count": 0,
         }
     )
     env["model"].update(

@@ -320,6 +320,8 @@ def load_dataset():
                 int(env_config.get("image_width", 320)),
             ),
             max_trajectories=env_config.get("max_trajectories"),
+            augment=bool(env_config.get("image_aug", False)),
+            aug_params=env_config.get("image_aug_params"),
         )
     elif active_env == "libero_goal":
         from utils.datasets import LiberoGoalDataset

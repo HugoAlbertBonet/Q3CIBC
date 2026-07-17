@@ -1,0 +1,3 @@
+Random training episode from data/03-23-pusht-data.zip
+Trajectory: 03-23-pusht-data/raw/traj_group0/traj82
+Frames: 445 (images1 = blue Logitech camera, the deploy policy input stream)

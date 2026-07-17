@@ -24,7 +24,7 @@ cd "${ROOT_DIR}"
 SEEDS=(11 29 47 83)
 SEED=${SEEDS[$SLURM_ARRAY_TASK_ID]}
 DATASET=${PUSHT_DATASET:-"${ROOT_DIR}/data/03-23-pusht-data.zip"}
-OUTPUT_ROOT=${PUSHT_OUTPUT_ROOT:-"${ROOT_DIR}/checkpoints/pusht_real_combinedv2"}
+OUTPUT_ROOT=${PUSHT_OUTPUT_ROOT:-"${ROOT_DIR}/checkpoints/pusht_real_combinedv2_v2"}
 PYTHON=${PYTHON:-"${ROOT_DIR}/.venv/bin/python"}
 LOG_DIR=${PUSHT_LOG_DIR:-"${ROOT_DIR}/slurm_jobs/pusht"}
 LOG_FILE="${LOG_DIR}/pusht_$(printf '%03d' "$((SLURM_ARRAY_TASK_ID + 1))").out"
@@ -55,8 +55,8 @@ echo "output=${OUTPUT_ROOT}/seed_$(printf '%04d' "${SEED}")"
 srun "${PYTHON}" scripts/train_pusht_real.py \
     --dataset "${DATASET}" \
     --seed "${SEED}" \
-    --steps 100000 \
-    --batch-size 64 \
+    --steps 150000 \
+    --batch-size 128 \
     --workers "${SLURM_CPUS_PER_TASK}" \
     --frame-stack 2 \
     --cameras images1 \
