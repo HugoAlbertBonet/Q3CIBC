@@ -108,6 +108,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fresh-timeout", type=float, default=0.5,
                    help="max seconds to wait for a non-duplicate frame before "
                         "proceeding with the stale one (logs a warning)")
+    p.add_argument("--log-dir", type=Path, default=None,
+                   help="if set, forensic-log every closed-loop step here: raw + "
+                        "fed frames (PNG) and a steps.jsonl row with timestamp, "
+                        "normalized + metric action, and the EEF proprio state. "
+                        "For offline review of what the arm saw and did.")
     p.add_argument("--no-ema", action="store_true",
                    help="use raw weights instead of the EMA copy")
     p.add_argument("--swap-rgb", action="store_true",
@@ -328,6 +333,7 @@ def main() -> int:
 
     require_fresh = not args.no_require_fresh
     last_raw = {"v": None}   # newest RAW blue frame, for duplicate detection
+    last_obs = {"v": None}   # newest full observation dict, for proprio logging
 
     def grab_raw(retries: int = 25):
         # get_observation() can transiently return None (server busy/restarting).
@@ -336,6 +342,7 @@ def main() -> int:
             o = client.get_observation()
             frame = None if o is None else pick_blue_frame(o, args.obs_key)
             if frame is not None:
+                last_obs["v"] = o
                 return frame
             time.sleep(0.2)
         raise RuntimeError("no observation from server after retries (server down?)")
@@ -396,6 +403,36 @@ def main() -> int:
     print(f"Closed-loop control up to {args.steps} steps @ {args.hz}Hz, "
           f"step={mode}, settle={args.settle}s. "
           f"Keep a hand on the E-stop. Ctrl-C to stop.")
+    # --- forensic logging setup ---------------------------------------------
+    log_fh = None
+    if args.log_dir is not None:
+        import cv2
+        args.log_dir.mkdir(parents=True, exist_ok=True)
+        (args.log_dir / "raw").mkdir(exist_ok=True)
+        (args.log_dir / "fed").mkdir(exist_ok=True)
+        log_fh = (args.log_dir / "steps.jsonl").open("w")
+        print(f"Forensic log -> {args.log_dir} (raw/*.npy, fed/*.png, steps.jsonl)")
+
+    def log_step(step, na, act, fed_rgb):
+        if log_fh is None:
+            return
+        np.save(args.log_dir / "raw" / f"{step:04d}.npy",
+                np.ascontiguousarray(last_raw["v"]))
+        cv2.imwrite(str(args.log_dir / "fed" / f"{step:04d}.png"),
+                    cv2.cvtColor(fed_rgb, cv2.COLOR_RGB2BGR))
+        o = last_obs["v"] or {}
+        state = o.get("state")
+        row = {
+            "step": step,
+            "t": time.time(),
+            "norm": [float(x) for x in np.ravel(na)],
+            "action": [float(x) for x in np.ravel(act)],
+            "state": (np.ravel(state).astype(float).tolist()
+                      if state is not None else None),
+        }
+        log_fh.write(json.dumps(row) + "\n")
+        log_fh.flush()
+
     step = 0
     try:
         for step in range(args.steps):
@@ -411,6 +448,7 @@ def main() -> int:
                                      blocking=not args.non_blocking)
             if args.settle > 0:
                 time.sleep(args.settle)
+            log_step(step, na, act, list(frame_buf)[-1])
             print(f"[{step:03d}] norm={np.round(na, 3)} -> action(dx,dy)={np.round(act, 4)}")
             if res == WidowXStatus.NO_CONNECTION:
                 print("Lost connection to server. Stopping.")
@@ -421,6 +459,8 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
     finally:
+        if log_fh is not None:
+            log_fh.close()
         client.stop()
         print(f"Stopped after {step + 1} steps.")
     return 0
