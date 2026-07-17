@@ -108,6 +108,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fresh-timeout", type=float, default=0.5,
                    help="max seconds to wait for a non-duplicate frame before "
                         "proceeding with the stale one (logs a warning)")
+    p.add_argument("--no-initial-move", action="store_true",
+                   help="skip moving the EEF to the demo start pose before the "
+                        "rollout. By default the arm is moved to the fixed pose all "
+                        "training demos start from (x~0.117, y~-0.019, z~0.02). "
+                        "Without it the arm starts near neutral (~x=0.29) which is "
+                        "~17cm out of the training distribution -> the policy drifts "
+                        "to a workspace corner and stalls (verified via --log-dir).")
+    p.add_argument("--start-eep-npy", type=Path,
+                   default=ROOT / "scripts" / "assets" / "pusht_start_eep.npy",
+                   help="4x4 EEF start transform to move to (mean of demo starts)")
+    p.add_argument("--start-move-duration", type=float, default=1.5)
     p.add_argument("--log-dir", type=Path, default=None,
                    help="if set, forensic-log every closed-loop step here: raw + "
                         "fed frames (PNG) and a steps.jsonl row with timestamp, "
@@ -316,6 +327,22 @@ def main() -> int:
     # step_action throws server-side and drops the connection.
     print("Resetting robot (home + start control loop)...")
     client.reset()
+
+    # Move to the pose all demos start from. Skipping this leaves the arm at
+    # neutral (~x=0.29), ~17cm off the demo start (x~0.117); from there the
+    # policy is out-of-distribution and drifts to a workspace corner and stalls.
+    if not args.no_initial_move:
+        start_T = np.load(args.start_eep_npy).astype(np.float32)
+        print(f"Moving EEF to demo start pose (x={start_T[0,3]:.3f}, "
+              f"y={start_T[1,3]:.3f}, z={start_T[2,3]:.3f})...")
+        move_status, tries = None, 0
+        while move_status != WidowXStatus.SUCCESS and tries < 5:
+            move_status = client.move(start_T, duration=args.start_move_duration)
+            tries += 1
+        if move_status != WidowXStatus.SUCCESS:
+            print(f"[warn] initial move did not report SUCCESS after {tries} tries "
+                  f"(status={move_status}); continuing anyway.")
+
     obs = None
     while obs is None:
         obs = client.get_observation()
