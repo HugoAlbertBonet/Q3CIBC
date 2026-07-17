@@ -89,6 +89,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--steps", type=int, default=985,
                    help="max control steps (default = longest training episode)")
     p.add_argument("--hz", type=float, default=5.0, help="control loop rate")
+    p.add_argument("--non-blocking", action="store_true",
+                   help="send actions non-blocking (legacy). Default is BLOCKING: "
+                        "wait for the arm to finish each delta before grabbing the "
+                        "next frame so the 2-frame stack carries real inter-frame "
+                        "motion, as in training. Non-blocking captured frames before "
+                        "the move landed -> ~zero-motion obs -> 10x MAE -> (-,-) "
+                        "collapse (see diagnose --zero-motion).")
+    p.add_argument("--settle", type=float, default=0.0,
+                   help="extra seconds to wait after each (blocking) step for the "
+                        "arm/scene to settle before capturing the next frame")
     p.add_argument("--no-ema", action="store_true",
                    help="use raw weights instead of the EMA copy")
     p.add_argument("--swap-rgb", action="store_true",
@@ -352,7 +362,9 @@ def main() -> int:
         return 0
 
     # --- closed loop --------------------------------------------------------
-    print(f"Closed-loop control up to {args.steps} steps @ {args.hz}Hz. "
+    mode = "non-blocking (legacy)" if args.non_blocking else "blocking"
+    print(f"Closed-loop control up to {args.steps} steps @ {args.hz}Hz, "
+          f"step={mode}, settle={args.settle}s. "
           f"Keep a hand on the E-stop. Ctrl-C to stop.")
     step = 0
     try:
@@ -365,7 +377,10 @@ def main() -> int:
             # Server env needs action.shape (numpy array). Pickle compatibility
             # with the server's numpy 1.x requires the CLIENT env to also run
             # numpy<2 (else numpy._core is unresolvable server-side).
-            res = client.step_action(np.asarray(act, np.float32), blocking=False)
+            res = client.step_action(np.asarray(act, np.float32),
+                                     blocking=not args.non_blocking)
+            if args.settle > 0:
+                time.sleep(args.settle)
             print(f"[{step:03d}] norm={np.round(na, 3)} -> action(dx,dy)={np.round(act, 4)}")
             if res == WidowXStatus.NO_CONNECTION:
                 print("Lost connection to server. Stopping.")
