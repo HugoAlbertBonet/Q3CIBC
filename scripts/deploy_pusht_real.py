@@ -99,6 +99,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--settle", type=float, default=0.0,
                    help="extra seconds to wait after each (blocking) step for the "
                         "arm/scene to settle before capturing the next frame")
+    p.add_argument("--no-require-fresh", action="store_true",
+                   help="disable the duplicate-frame guard. By default the client "
+                        "rejects a get_observation() frame byte-identical to the "
+                        "previous one (the server occasionally repeats images) and "
+                        "re-fetches until a fresh frame arrives or --fresh-timeout, "
+                        "so the 2-frame stack never has a stale zero-motion slot.")
+    p.add_argument("--fresh-timeout", type=float, default=0.5,
+                   help="max seconds to wait for a non-duplicate frame before "
+                        "proceeding with the stale one (logs a warning)")
     p.add_argument("--no-ema", action="store_true",
                    help="use raw weights instead of the EMA copy")
     p.add_argument("--swap-rgb", action="store_true",
@@ -317,16 +326,37 @@ def main() -> int:
     frame_buf = collections.deque(maxlen=frame_stack)
     period = 1.0 / max(args.hz, 1e-3)
 
-    def refresh_frame(retries: int = 25):
+    require_fresh = not args.no_require_fresh
+    last_raw = {"v": None}   # newest RAW blue frame, for duplicate detection
+
+    def grab_raw(retries: int = 25):
         # get_observation() can transiently return None (server busy/restarting).
         # Retry instead of crashing on None.get in pick_blue_frame.
         for _ in range(retries):
             o = client.get_observation()
             frame = None if o is None else pick_blue_frame(o, args.obs_key)
             if frame is not None:
-                return preprocess(frame, (image_h, image_w), args.swap_rgb)
+                return frame
             time.sleep(0.2)
         raise RuntimeError("no observation from server after retries (server down?)")
+
+    def refresh_frame():
+        # The server occasionally returns a repeated (stale) image. A duplicate
+        # in the frame stack means zero inter-frame motion, which the policy maps
+        # to garbage / hold actions (see diagnose --zero-motion: MAE 0.02 -> 0.22).
+        # Re-fetch until the raw frame differs from the previous one, bounded by
+        # --fresh-timeout so a genuinely static scene can't hang the loop.
+        raw = grab_raw()
+        if require_fresh and last_raw["v"] is not None:
+            t0 = time.time()
+            while np.array_equal(raw, last_raw["v"]) and (time.time() - t0) < args.fresh_timeout:
+                time.sleep(0.05)
+                raw = grab_raw()
+            if np.array_equal(raw, last_raw["v"]):
+                print(f"[warn] stale frame: server repeated image "
+                      f"(no fresh frame within {args.fresh_timeout}s)")
+        last_raw["v"] = raw
+        return preprocess(raw, (image_h, image_w), args.swap_rgb)
 
     first = refresh_frame()
     for _ in range(frame_stack):     # pad episode start with the first frame
