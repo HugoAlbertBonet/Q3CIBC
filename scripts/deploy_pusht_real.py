@@ -80,11 +80,15 @@ def parse_args() -> argparse.Namespace:
                    help="use raw weights instead of the EMA copy")
     p.add_argument("--ip", default="localhost")
     p.add_argument("--port", type=int, default=5556)
-    p.add_argument("--widowx-envs-path", type=Path,
-                   default=Path.home() / "bridge_data_robot" / "widowx_envs",
-                   help="path prepended to sys.path before importing widowx_envs. "
-                        "MUST match the widowx_envs the server runs, or the edgeml "
-                        "handshake fails with 'Incompatible config with hash'.")
+    p.add_argument("--widowx-envs-path", type=Path, default=None,
+                   help="OPTIONAL path prepended to sys.path before importing "
+                        "widowx_envs. Default: do NOT touch sys.path and import "
+                        "whatever is installed in this env (pip -e), which is what "
+                        "the previously-working client did. Only set this if the "
+                        "installed package is NOT the one the server runs -- "
+                        "pointing it at a second copy changes "
+                        "WidowXConfigs.DefaultActionConfig and the edgeml handshake "
+                        "then fails with 'Incompatible config with hash'.")
     p.add_argument("--camera-topics", nargs="+", default=CAMERA_TOPICS)
 
     # --- service image geometry (confirmed-working values) ------------------
@@ -146,10 +150,14 @@ def parse_args() -> argparse.Namespace:
 # WidowX plumbing (mirrors data/eval_widowx_bfn.py)
 # ---------------------------------------------------------------------------
 
-def load_widowx_dependencies(widowx_envs_path: Path):
-    path = Path(widowx_envs_path).expanduser()
-    if path.is_dir() and str(path) not in sys.path:
-        sys.path.insert(0, str(path))
+def load_widowx_dependencies(widowx_envs_path: Path | None):
+    # Default: import whatever widowx_envs is installed in this environment.
+    # Prepending a source directory can shadow it with a second copy whose
+    # DefaultActionConfig hashes differently than the server's.
+    if widowx_envs_path is not None:
+        path = Path(widowx_envs_path).expanduser()
+        if path.is_dir() and str(path) not in sys.path:
+            sys.path.insert(0, str(path))
     try:
         from widowx_envs.widowx_env_service import (  # type: ignore
             WidowXClient, WidowXConfigs, WidowXStatus,
