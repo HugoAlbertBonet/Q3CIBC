@@ -502,7 +502,15 @@ def _init_widowx_with_retry(
     WidowXClient, WidowXConfigs, WidowXStatus,
     host: str, port: int, env_params: Dict, image_size: int,
     timeout_s: float = 180.0, retry_interval_s: float = 2.0,
+    normalize_client_config: bool = False,
 ):
+    """
+    normalize_client_config: the reference rewrites the edgeml action config's
+    observation_keys/action_keys from set -> sorted list to keep them JSON
+    serializable. On this rig that CHANGES THE CLIENT CONFIG HASH and the server
+    rejects the handshake with "Incompatible config with hash with server", so
+    it is off by default (deploy_pusht_real.py never touched the config either).
+    """
     deadline = time.time() + timeout_s
     attempt = 0
     last_status = None
@@ -513,14 +521,16 @@ def _init_widowx_with_retry(
         attempt += 1
         try:
             if client is None:
-                cfg = getattr(WidowXConfigs, "DefaultActionConfig", None)
-                if cfg is not None:
-                    for key in ("observation_keys", "action_keys"):
-                        value = getattr(cfg, key, None)
-                        if isinstance(value, set):
-                            setattr(cfg, key, sorted(value))
+                if normalize_client_config:
+                    cfg = getattr(WidowXConfigs, "DefaultActionConfig", None)
+                    if cfg is not None:
+                        for key in ("observation_keys", "action_keys"):
+                            value = getattr(cfg, key, None)
+                            if isinstance(value, set):
+                                setattr(cfg, key, sorted(value))
                 client = WidowXClient(host=host, port=port)
-                _normalize_action_client_config(client)
+                if normalize_client_config:
+                    _normalize_action_client_config(client)
                 _set_reqrep_timeout_ms(client, timeout_ms=120_000)
 
             status = client.init(env_params, image_size=image_size)
@@ -635,6 +645,11 @@ def main():
                              "means zero inter-frame motion, which measurably degrades "
                              "this policy (offline MAE 0.02 -> 0.22).")
     parser.add_argument("--fresh_timeout", type=float, default=0.5)
+    parser.add_argument("--normalize_client_config", action="store_true",
+                        help="Apply the reference's edgeml set->list config rewrite. "
+                             "OFF by default: on this rig it changes the client "
+                             "config hash and the server rejects init with "
+                             "'Incompatible config with hash with server'.")
     parser.add_argument("--log_dir", type=str, default=None,
                         help="DEVIATION: forensic log dir (raw/*.npy, fed/*.png, "
                              "steps.jsonl with EEF proprio state)")
@@ -680,8 +695,10 @@ def main():
         port=args.port,
         env_params=env_params,
         image_size=args.im_size,
+        normalize_client_config=args.normalize_client_config,
     )
-    _normalize_action_client_config(widowx_client)
+    if args.normalize_client_config:
+        _normalize_action_client_config(widowx_client)
     print("WidowX connection established.")
 
     _go_to_neutral(widowx_client, args.initial_eep)
