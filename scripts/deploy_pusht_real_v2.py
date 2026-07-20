@@ -68,16 +68,12 @@ except ImportError:
     Image = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-for p in [
-    PROJECT_ROOT,
-    PROJECT_ROOT.parent / "bridge_data_robot" / "widowx_envs",
-    PROJECT_ROOT.parent / "bridge_data_robot" / "widowx_envs" / "multicam_server" / "src",
-    Path.home() / "bridge_data_robot" / "widowx_envs",
-    Path.home() / "bridge_data_robot" / "widowx_envs" / "multicam_server" / "src",
-]:
-    sp = str(p)
-    if p.is_dir() and sp not in sys.path:
-        sys.path.insert(0, sp)
+# Only the project root, exactly like deploy_pusht_real.py. The reference also
+# injects bridge_data_robot paths, but widowx_envs is already pip -e installed
+# in the q3c_deploy env and shadowing it with a second copy risks loading a
+# different WidowXClient than the server runs (config-hash mismatch).
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # --- reference constants (verbatim) ----------------------------------------
 STEP_DURATION = 0.2
@@ -417,8 +413,12 @@ def _get_display_bgr(raw_obs: Dict, fallback_rgb_u8, im_size: int):
 # ---------------------------------------------------------------------------
 
 def _load_widowx_sdk():
+    # NOTE: order is reversed vs the reference. deploy_pusht_real.py (which
+    # connects successfully) imports widowx_envs.widowx_env_service, so try that
+    # FIRST; picking up a second copy under experiments.* yields a different
+    # client config and the server rejects the handshake on hash.
     try:
-        from experiments.widowx_envs.widowx_env_service import (
+        from widowx_envs.widowx_env_service import (
             WidowXClient, WidowXConfigs, WidowXStatus,
         )
         return WidowXClient, WidowXConfigs, WidowXStatus
@@ -426,7 +426,7 @@ def _load_widowx_sdk():
         pass
 
     try:
-        from widowx_envs.widowx_env_service import (
+        from experiments.widowx_envs.widowx_env_service import (
             WidowXClient, WidowXConfigs, WidowXStatus,
         )
         return WidowXClient, WidowXConfigs, WidowXStatus
@@ -502,7 +502,7 @@ def _init_widowx_with_retry(
     WidowXClient, WidowXConfigs, WidowXStatus,
     host: str, port: int, env_params: Dict, image_size: int,
     timeout_s: float = 180.0, retry_interval_s: float = 2.0,
-    normalize_client_config: bool = False,
+    normalize_client_config: bool = False, tweak_timeouts: bool = False,
 ):
     """
     normalize_client_config: the reference rewrites the edgeml action config's
@@ -531,21 +531,27 @@ def _init_widowx_with_retry(
                 client = WidowXClient(host=host, port=port)
                 if normalize_client_config:
                     _normalize_action_client_config(client)
-                _set_reqrep_timeout_ms(client, timeout_ms=120_000)
+                # reset_socket() during the edgeml handshake is a v2-only
+                # behaviour; deploy_pusht_real.py never touches the socket.
+                if tweak_timeouts:
+                    _set_reqrep_timeout_ms(client, timeout_ms=120_000)
 
             status = client.init(env_params, image_size=image_size)
             last_status = status
             if _status_ok(status, WidowXStatus):
-                _set_reqrep_timeout_ms(client, timeout_ms=2_000)
+                if tweak_timeouts:
+                    _set_reqrep_timeout_ms(client, timeout_ms=2_000)
                 return client
 
             print(f"[WARN] WidowX init attempt {attempt} returned "
                   f"{_status_name(status, WidowXStatus)}; retrying...")
-            _set_reqrep_timeout_ms(client, timeout_ms=2_000)
+            if tweak_timeouts:
+                _set_reqrep_timeout_ms(client, timeout_ms=2_000)
             if _wait_for_widowx_observation(client, timeout_s=10.0, poll_s=0.5):
                 print("[INFO] WidowX observation stream is ready after init timeout.")
                 return client
-            _set_reqrep_timeout_ms(client, timeout_ms=120_000)
+            if tweak_timeouts:
+                _set_reqrep_timeout_ms(client, timeout_ms=120_000)
         except Exception as e:
             last_error = e
             print(f"[WARN] WidowX init attempt {attempt} failed: {e}; retrying...")
@@ -645,6 +651,10 @@ def main():
                              "means zero inter-frame motion, which measurably degrades "
                              "this policy (offline MAE 0.02 -> 0.22).")
     parser.add_argument("--fresh_timeout", type=float, default=0.5)
+    parser.add_argument("--tweak_timeouts", action="store_true",
+                        help="Apply the reference edgeml req/rep timeout changes. OFF "
+                             "by default: these call reset_socket() during the "
+                             "handshake, which deploy_pusht_real.py never does.")
     parser.add_argument("--normalize_client_config", action="store_true",
                         help="Apply the reference's edgeml set->list config rewrite. "
                              "OFF by default: on this rig it changes the client "
@@ -657,6 +667,8 @@ def main():
     args = parser.parse_args()
 
     WidowXClient, WidowXConfigs, WidowXStatus = _load_widowx_sdk()
+    print(f"WidowX SDK: {WidowXClient.__module__} "
+          f"({getattr(sys.modules.get(WidowXClient.__module__), '__file__', '?')})")
 
     if args.show_image and cv2 is None:
         print("[WARN] OpenCV is not installed; disabling --show_image")
@@ -696,6 +708,7 @@ def main():
         env_params=env_params,
         image_size=args.im_size,
         normalize_client_config=args.normalize_client_config,
+        tweak_timeouts=args.tweak_timeouts,
     )
     if args.normalize_client_config:
         _normalize_action_client_config(widowx_client)
