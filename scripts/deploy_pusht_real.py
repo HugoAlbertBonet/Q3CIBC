@@ -58,6 +58,16 @@ if str(ROOT) not in sys.path:
 # camera_topics order fixes the observation indexing: index 0 -> external_img
 # (D435), index 1 -> over_shoulder_img (blue) == training images1.
 FIXED_Z_HEIGHT = 0.02
+# Same bounds the reference WidowX eval scripts use (bridge / condBFNPol).
+# Format per row: [x, y, z, yaw, ?] as lower, upper. The training demos live
+# well inside these (x 0.117->0.30, y -0.019->+0.219, z 0.02), and without them
+# the policy was free to drift to y=-0.223 and park in a workspace corner
+# (results/run01, results/run02).
+WORKSPACE_BOUNDS = [[0.1, -0.15, -0.01, -1.57, 0], [0.45, 0.25, 0.25, 1.57, 0]]
+# One control step's worth of motion; matches the reference STEP_DURATION and
+# the default --hz 5 (0.2 s period). Was 0.08, i.e. the move completed well
+# before the next observation.
+STEP_DURATION = 0.2
 DEPLOY_ENV_PARAMS = {
     # Single camera on the current rig: blue (Logitech). It is full_image[0],
     # so the server returns it as external_img.
@@ -69,7 +79,8 @@ DEPLOY_ENV_PARAMS = {
     "move_to_rand_start_freq": -1,
     "fix_zangle": 0.1,
     "action_mode": "2trans",
-    "move_duration": 0.08,
+    "move_duration": STEP_DURATION,
+    "override_workspace_boundaries": WORKSPACE_BOUNDS,
     "adaptive_wait": True,
     "fixed_z_height": FIXED_Z_HEIGHT,
     "neutral_z_height": FIXED_Z_HEIGHT,
@@ -96,6 +107,43 @@ def parse_args() -> argparse.Namespace:
                         "motion, as in training. Non-blocking captured frames before "
                         "the move landed -> ~zero-motion obs -> 10x MAE -> (-,-) "
                         "collapse (see diagnose --zero-motion).")
+    p.add_argument("--cp-selection", choices=["argmax", "sample"], default=None,
+                   help="override how a control point is picked from the CP cloud "
+                        "(default: whatever norm_stats recorded, usually argmax). "
+                        "argmax on the robot under-steps badly: measured mean |a| "
+                        "is 0.325x the demos' and it emits exactly-zero actions "
+                        "0.4%% of the time vs 42.5%% in the demos, i.e. it mode-"
+                        "averages a bimodal hold/push distribution. 'sample' may "
+                        "restore commitment.")
+    p.add_argument("--cp-temperature", type=float, default=None,
+                   help="softmax temperature for --cp-selection sample "
+                        "(default: from norm_stats). Lower = closer to argmax.")
+    p.add_argument("--action-dim", type=int, default=7,
+                   help="dimensionality of the action sent to the server. Default 7 "
+                        "matches the reference WidowX evals AND the demo archive, "
+                        "whose policy_out actions are (7,) with dims 2-6 exactly "
+                        "zero across all 49463 transitions. The policy predicts "
+                        "(dx,dy); the rest are padded with zeros + --gripper-value. "
+                        "Use 2 to send a bare (dx,dy) with action_mode 2trans "
+                        "(the previous behaviour).")
+    p.add_argument("--gripper-value", type=float, default=0.0,
+                   help="value written to the gripper dim when padding to 7. The "
+                        "demos record 0.0 for every transition (the reference's "
+                        "generic default is 1.0=open, but our data is explicit).")
+    p.add_argument("--action-mode", default=None,
+                   help="override the server env action_mode. Default: unset when "
+                        "--action-dim 7 (server default, as the reference does), "
+                        "'2trans' when --action-dim 2.")
+    p.add_argument("--initial-eep", type=float, nargs=3, default=None,
+                   help="override the EEF start position (x y z). Default is the "
+                        "measured mean demo start (0.117,-0.019,0.02) from "
+                        "--start-eep-npy. The reference evals default to "
+                        "0.3 0.0 0.15, but that is the generic bridge default and "
+                        "sits 13cm above the table, out of contact with the T.")
+    p.add_argument("--max-delta-translation", type=float, default=0.03,
+                   help="safety clip on each commanded translation delta, metres "
+                        "(reference eval uses 0.03). Trained actions are ~+/-0.008 "
+                        "so this only ever catches a blow-up. 0 disables.")
     p.add_argument("--settle", type=float, default=0.0,
                    help="extra seconds to wait after each (blocking) step for the "
                         "arm/scene to settle before capturing the next frame")
@@ -272,6 +320,23 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float):
     return cps[0, idx].detach().cpu().numpy()   # normalized action
 
 
+def adapt_action_dim(act, action_dim: int, gripper_value: float) -> np.ndarray:
+    """(dx,dy) -> the vector the server expects.
+
+    The demo archive records 7-D actions whose dims 2-6 (dz, droll, dpitch,
+    dyaw, gripper) are exactly zero for all 49463 transitions, so padding with
+    zeros reproduces the commands the data was collected with.
+    """
+    act = np.asarray(act, np.float32).ravel()
+    if action_dim <= act.size:
+        return act[:action_dim]
+    out = np.zeros(action_dim, np.float32)
+    out[:act.size] = act
+    if action_dim >= 7:
+        out[6] = gripper_value
+    return out
+
+
 def unnormalize(norm_action, act_min, act_max, norm_range):
     lo, hi = norm_range
     scale = (act_max - act_min) / (hi - lo)
@@ -290,8 +355,9 @@ def main() -> int:
     act_max = np.asarray(norm_stats["act_max"], np.float32)
     norm_range = tuple(norm_stats.get("action_norm_range", (-1.0, 1.0)))
     frame_stack = int(norm_stats.get("frame_stack", env.get("frame_stack", 2)))
-    cp_selection = str(norm_stats.get("cp_selection", "argmax"))
-    cp_temp = float(norm_stats.get("cp_selection_temperature", 1.0))
+    cp_selection = args.cp_selection or str(norm_stats.get("cp_selection", "argmax"))
+    cp_temp = (args.cp_temperature if args.cp_temperature is not None
+               else float(norm_stats.get("cp_selection_temperature", 1.0)))
 
     cams = list(env.get("camera_streams", ["images1"]))
     if cams != ["images1"]:
@@ -320,8 +386,22 @@ def main() -> int:
     # --- connect to robot ---------------------------------------------------
     from widowx_envs.widowx_env_service import WidowXClient, WidowXStatus
 
+    # The demo archive's actions are (7,) with dims 2-6 identically zero, and the
+    # reference WidowX evals drive this same robot/server with 7-D actions and no
+    # action_mode override. Match that by default; --action-dim 2 restores the
+    # previous 2trans interface.
+    env_params = dict(DEPLOY_ENV_PARAMS)
+    if args.action_mode is not None:
+        env_params["action_mode"] = args.action_mode
+    elif args.action_dim == 7:
+        env_params.pop("action_mode", None)      # server default, as reference
+    else:
+        env_params["action_mode"] = "2trans"
+    print(f"Env action_mode={env_params.get('action_mode', '<server default>')} "
+          f"action_dim={args.action_dim}")
+
     client = WidowXClient(host=args.ip, port=args.port)
-    client.init(DEPLOY_ENV_PARAMS, image_size=256)
+    client.init(env_params, image_size=256)
     # init only constructs the env; reset() homes the arm AND starts the
     # control loop that step_action depends on. Without it the first
     # step_action throws server-side and drops the connection.
@@ -333,6 +413,9 @@ def main() -> int:
     # policy is out-of-distribution and drifts to a workspace corner and stalls.
     if not args.no_initial_move:
         start_T = np.load(args.start_eep_npy).astype(np.float32)
+        if args.initial_eep is not None:
+            start_T = start_T.copy()
+            start_T[:3, 3] = np.asarray(args.initial_eep, np.float32)
         print(f"Moving EEF to demo start pose (x={start_T[0,3]:.3f}, "
               f"y={start_T[1,3]:.3f}, z={start_T[2,3]:.3f})...")
         move_status, tries = None, 0
@@ -468,11 +551,14 @@ def main() -> int:
             obs_u8 = stack_to_tensor(frame_buf, device)
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp)
             act = unnormalize(na, act_min, act_max, norm_range)
+            if args.max_delta_translation > 0:
+                act = np.clip(act, -args.max_delta_translation,
+                              args.max_delta_translation)
+            cmd = adapt_action_dim(act, args.action_dim, args.gripper_value)
             # Server env needs action.shape (numpy array). Pickle compatibility
             # with the server's numpy 1.x requires the CLIENT env to also run
             # numpy<2 (else numpy._core is unresolvable server-side).
-            res = client.step_action(np.asarray(act, np.float32),
-                                     blocking=not args.non_blocking)
+            res = client.step_action(cmd, blocking=not args.non_blocking)
             if args.settle > 0:
                 time.sleep(args.settle)
             log_step(step, na, act, list(frame_buf)[-1])
@@ -480,9 +566,13 @@ def main() -> int:
             if res == WidowXStatus.NO_CONNECTION:
                 print("Lost connection to server. Stopping.")
                 break
-            dt = time.time() - t0
-            if dt < period:
-                time.sleep(period - dt)
+            # Rate-limit only in non-blocking mode: a blocking step_action
+            # already paces the loop by waiting for the arm (matches the
+            # reference eval, which skips its STEP_DURATION wait when blocking).
+            if args.non_blocking:
+                dt = time.time() - t0
+                if dt < period:
+                    time.sleep(period - dt)
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
     finally:
