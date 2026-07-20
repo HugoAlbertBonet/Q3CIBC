@@ -45,7 +45,6 @@ Run on the cluster (needs the project env with torch + tf for JPEG decode):
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 from pathlib import Path
 
@@ -57,13 +56,10 @@ import sys
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Reuse the exact model build + weight load from the IBC deploy client so this
+# utils.ibc_policy is the single source of truth for the model build, weight
+# selection and DFO, shared with scripts/deploy_pusht_real_ibc.py, so this
 # diagnostic and the robot run agree bit-for-bit.
-_spec = importlib.util.spec_from_file_location(
-    "deploy_ibc", ROOT / "scripts" / "deploy_pusht_real_ibc.py"
-)
-deploy = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(deploy)
+from utils import ibc_policy
 
 
 def parse_args() -> argparse.Namespace:
@@ -104,86 +100,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def load_run_config(seed_dir: Path) -> dict:
-    with (seed_dir / "config.json").open() as fh:
-        config = json.load(fh)
-    return config["environments"][config["active_env"]]
-
-
-def resolve_checkpoint(seed_dir: Path, ckpt_step: int | None) -> Path:
-    """Pick which weights to diagnose.
-
-    An explicit --ckpt-step wins. Otherwise prefer the final q_estimator.pt,
-    falling back to the newest q_estimator_step*.pt snapshot so a seed that is
-    still training (or whose job died) can be diagnosed as-is rather than
-    failing outright.
-    """
-    if ckpt_step is not None:
-        return seed_dir / f"q_estimator_step{ckpt_step:06d}.pt"
-    final = seed_dir / "q_estimator.pt"
-    if final.is_file():
-        return final
-    snapshots = sorted(seed_dir.glob("q_estimator_step*.pt"))
-    if not snapshots:
-        raise FileNotFoundError(
-            f"no q_estimator.pt and no q_estimator_step*.pt snapshots in {seed_dir}"
-        )
-    newest = snapshots[-1]
-    print(f"  [note] no final q_estimator.pt; using snapshot {newest.name} "
-          f"(training likely still in progress)")
-    return newest
-
-
-@torch.no_grad()
-def dfo_batch(ebm, obs_u8, num_samples, num_iterations, iteration_std,
-              std_decay, boundary_buffer, action_bounds):
-    """Batched iterative_dfo. Equivalent to deploy_pusht_real_ibc's B=1 loop.
-
-    The deploy client reproduces IBC's `tf.gather(samples, tf.repeat(arange(N),
-    bincount(idx)))` resample ordering. That expression is just the sampled
-    index multiset in sorted order, so a per-row `sort` gives the identical
-    result and batches without a Python loop over rows.
-
-    Returns (actions (B, A), initial_scores (B, N)). The initial scores are the
-    energy landscape over the *uniform* cloud, before any refinement — that is
-    the honest picture of what the EBM learned.
-    """
-    a_lo, a_hi = action_bounds
-    B = obs_u8.shape[0]
-    device = obs_u8.device
-    action_dim = ebm.action_dim
-
-    features = ebm.encode(obs_u8)  # (B, F) — encoder runs once (late fusion)
-
-    buf = (a_hi - a_lo) * boundary_buffer
-    actions = torch.empty(B, num_samples, action_dim, device=device).uniform_(
-        a_lo - buf, a_hi + buf
-    )
-    std = iteration_std
-    initial_scores = None
-    scores = None
-    for it in range(num_iterations):
-        scores = ebm.score(features, actions).squeeze(-1)  # (B, N)
-        if it == 0:
-            initial_scores = scores
-        probs = torch.softmax(scores, dim=-1)
-        idx = torch.multinomial(probs, num_samples, replacement=True)  # (B, N)
-        idx, _ = idx.sort(dim=1)          # == IBC's bincount -> repeat ordering
-        actions = torch.gather(
-            actions, 1, idx.unsqueeze(-1).expand(-1, -1, action_dim)
-        )
-        if it < num_iterations - 1:
-            actions = actions + torch.randn_like(actions) * std
-            actions = actions.clamp(a_lo, a_hi)
-            std *= std_decay
-    sel = scores.argmax(dim=1)                                    # (B,)
-    chosen = actions[torch.arange(B, device=device), sel]         # (B, A)
-    # The boundary buffer admits candidates up to 5% outside the training
-    # range; the deploy client clips before sending to hardware, so clip here
-    # too or the two paths disagree at the edges.
-    return chosen.clamp(a_lo, a_hi), initial_scores
-
-
 @torch.no_grad()
 def energy_health(ebm, obs_u8, gt_actions, initial_scores):
     """How discriminative is the energy surface? See the module docstring.
@@ -215,29 +131,24 @@ def diagnose_seed(seed: int, args, device) -> dict:
     from utils.datasets import PushTRealPixelsDataset
 
     seed_dir = (args.output_root / f"seed_{seed:04d}").resolve()
-    env = load_run_config(seed_dir)
-    cams = tuple(env.get("camera_streams", ["images1"]))
-    fs = int(env.get("frame_stack", 2))
-    hw = (int(env.get("image_height", 240)), int(env.get("image_width", 320)))
-    a_lo, a_hi = env.get("action_bounds", [-1.0, 1.0])
-
-    inf = env.get("inference", {})
-    dfo_samples = args.dfo_samples or int(inf.get("dfo_samples", 2048))
-    dfo_iters = args.dfo_iterations or int(inf.get("dfo_iterations", 3))
-    dfo_std = float(inf.get("dfo_iteration_std", 0.33))
-    dfo_decay = float(inf.get("dfo_std_decay", 0.5))
-    boundary_buffer = float(inf.get("uniform_boundary_buffer", 0.05))
+    policy = ibc_policy.load_policy(
+        seed_dir,
+        device,
+        ckpt_step=args.ckpt_step,
+        dfo_overrides={
+            "samples": args.dfo_samples,
+            "iterations": args.dfo_iterations,
+        },
+    )
+    ebm = policy.ebm
+    fs = policy.frame_stack
+    ckpt_name = policy.checkpoint.name
 
     ds = PushTRealPixelsDataset(
         archive_path=str(args.dataset), frame_stack=fs,
-        camera_streams=cams, resize_hw=hw,
+        camera_streams=tuple(policy.camera_streams), resize_hw=policy.image_hw,
         normalize_actions=True, action_norm_range=(-1.0, 1.0),
     )
-    in_channels = ds.state_shape[0]
-    ebm = deploy.build_model(env, in_channels, device)
-    ckpt_path = resolve_checkpoint(seed_dir, args.ckpt_step)
-    ckpt_name = ckpt_path.name
-    deploy.load_weights(ebm, ckpt_path, device)
 
     n = len(ds)
     k = min(args.num_samples, n)
@@ -262,9 +173,8 @@ def diagnose_seed(seed: int, args, device) -> dict:
 
         runs = []
         for _ in range(max(1, args.dfo_repeats)):
-            pred_t, initial_scores = dfo_batch(
-                ebm, obs_u8, dfo_samples, dfo_iters, dfo_std, dfo_decay,
-                boundary_buffer, (float(a_lo), float(a_hi)),
+            pred_t, initial_scores = ibc_policy.dfo_select(
+                policy, obs_u8, return_initial_scores=True
             )
             runs.append(pred_t)
         if len(runs) > 1:
@@ -290,9 +200,7 @@ def diagnose_seed(seed: int, args, device) -> dict:
     corr = float(np.corrcoef(pred[:, 0], pred[:, 1])[0, 1]) if pred.std() > 0 else float("nan")
     result = {
         "seed": seed, "samples": int(k), "checkpoint": ckpt_name,
-        "dfo": {"samples": dfo_samples, "iterations": dfo_iters,
-                "iteration_std": dfo_std, "std_decay": dfo_decay,
-                "boundary_buffer": boundary_buffer},
+        "dfo": dict(policy.dfo),
         "zero_motion": bool(args.zero_motion),
         "act_min": np.asarray(ds.act_min).tolist(), "act_max": np.asarray(ds.act_max).tolist(),
         "pred": col_stats(pred), "gt": col_stats(gt),
