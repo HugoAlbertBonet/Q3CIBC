@@ -187,6 +187,20 @@ flags.DEFINE_float(
     "term_hold_sec", 0.4, "Dwell time in the termination area before stopping (s)."
 )
 flags.DEFINE_float(
+    "term_exit_margin",
+    1.5,
+    "The arm must first leave the termination area by this multiple of "
+    "--term_dist_thresh before returning to it can stop the rollout. The "
+    "rollout starts inside that area, so without the exit requirement it would "
+    "stop after --term_hold_sec having gone nowhere.",
+)
+flags.DEFINE_bool(
+    "disable_term_area",
+    False,
+    "Turn the return-to-start stop off entirely; end rollouts on 's' or "
+    "--max_duration only.",
+)
+flags.DEFINE_float(
     "timeout_recovery_lift_z", 0.1, "Post-timeout: lift the gripper to this z."
 )
 flags.DEFINE_float(
@@ -1060,6 +1074,16 @@ def main(_):
                 "[INFO] Reusing existing WidowX env on the server; skipping init() "
                 "to avoid the cached init->reset(itraj=None) path."
             )
+            print(
+                f"[WARN] Reusing the env means the settings below are NOT applied "
+                f"-- the server keeps whatever it was started with, including its "
+                f"action_mode. This policy emits 2-D planar deltas and needs "
+                f"action_mode={FLAGS.action_mode!r}; if the live env is in a mode "
+                f"whose last action element is the gripper, a 2-element command is "
+                f"read as a gripper command and the arm will actuate the claw "
+                f"instead of translating. Pass --widowx_force_fresh_init to apply "
+                f"them."
+            )
 
     if reuse_existing_env:
         _set_widowx_reqrep_timeout_ms(widowx_client, max(1, int(FLAGS.widowx_rpc_timeout_ms)))
@@ -1213,7 +1237,10 @@ def main(_):
                     f"(status={_status_name(move_status, WidowXStatus)}); continuing."
                 )
 
-        if term_pose_xy_override is not None:
+        if FLAGS.disable_term_area:
+            rollout_term_pose_xy = None
+            print("[INFO] Return-to-start stop disabled.")
+        elif term_pose_xy_override is not None:
             rollout_term_pose_xy = term_pose_xy_override.copy()
             print(f"[INFO] Fixed termination XY: {rollout_term_pose_xy.tolist()}")
         else:
@@ -1259,6 +1286,9 @@ def main(_):
         stop_reason: str | None = None
         rollout_t_start = time.monotonic()
         term_area_start_timestamp = float("inf")
+        # The rollout starts inside the termination area; it only counts as a
+        # stop condition after the arm has left it once.
+        has_left_term_area = False
         warned_missing_camera_stream = False
         stdin_fd, stdin_old_attrs = _enter_terminal_cbreak_mode()
         print(
@@ -1297,12 +1327,27 @@ def main(_):
                     stop_reason = "timeout"
                     break
 
+                # Termination area = "the arm came back to where it started",
+                # which only means anything once it has actually left. The
+                # rollout begins AT this pose (the demo start move above put it
+                # there), and one policy step moves at most 8mm against a 3cm
+                # radius, so arming this immediately would end the rollout after
+                # term_hold_sec without the arm having done anything.
                 if rollout_term_pose_xy is not None:
                     eef_xy = _extract_eef_xy(raw_obs)
                     if eef_xy is not None:
                         dist = float(np.linalg.norm(eef_xy - rollout_term_pose_xy))
                         now = time.monotonic()
-                        if dist < float(FLAGS.term_dist_thresh):
+                        if not has_left_term_area:
+                            if dist > float(FLAGS.term_dist_thresh) * float(
+                                FLAGS.term_exit_margin
+                            ):
+                                has_left_term_area = True
+                                print(
+                                    f"[INFO] Left the termination area (dist="
+                                    f"{dist:.3f}m); return-to-start stop is now armed."
+                                )
+                        elif dist < float(FLAGS.term_dist_thresh):
                             if term_area_start_timestamp > now:
                                 term_area_start_timestamp = now
                             elif (now - term_area_start_timestamp) > float(FLAGS.term_hold_sec):

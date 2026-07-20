@@ -276,9 +276,18 @@ python scripts/deploy_pusht_real_ibc.py \
     --step_duration 0.05 \
     --max_duration 120 \
     --num_rollouts 3 \
+    --widowx_force_fresh_init \
     --widowx_init_timeout_ms 180000 --widowx_init_retries 8 \
     --forensic_log_dir deploy_logs/ibc_seed0029
 ```
+
+**Use `--widowx_force_fresh_init` on the first launch after starting the
+server.** By default the client reuses a live server-side env and skips
+`init()`, which means the env params it wants — `action_mode=2trans` above
+all — are never applied and the server keeps whatever it was started with.
+In a mode whose last action element is the gripper, a 2-element `[dx, dy]`
+command is read as a gripper command: **the claw actuates and the arm never
+translates.** The client prints a warning whenever it takes the reuse path.
 
 The script waits for `[Enter]` before each rollout, resets with the rollout
 index, moves the EEF to the demo start pose, then runs closed loop. A rollout
@@ -296,6 +305,8 @@ Flags worth knowing:
 | `--safety_max_xy_delta` | Backstop clip, default 0.02 m against a trained range of ±0.008. |
 | `--robot_exec_hz` | Leave at 0 (one command per inference). Higher splits each delta across substeps rather than repeating it. |
 | `--policy_seed` | DFO is stochastic; fix this to make a rollout reproducible. |
+| `--widowx_force_fresh_init` | Applies the env params (notably `action_mode`) instead of reusing the server's existing env. |
+| `--disable_term_area` | Ends rollouts only on `s` or `--max_duration`, never on returning to the start pose. |
 | `--video_save_path` | Needs `imageio[ffmpeg]`. Writes cam0/cam1 mp4s plus a timing JSON. |
 
 ## 8. What to keep from a session
@@ -321,6 +332,8 @@ JSON alongside the videos when `--video_save_path` is set.
 | `Bad owner or permissions on ~/.ssh/config` | `chmod 600 ~/.ssh/config` |
 | ssh config edits appear to do nothing | An earlier `Host` block matched first — ssh takes the *first* value for each option, so put `Host discovery` above any `Host *` |
 | Multiplexed session refuses to reconnect | Stale socket: `ssh -O exit discovery`, or delete `~/.ssh/cm-*` |
+| Only the gripper opens/closes, the arm never translates | The server env is not in `action_mode=2trans`, so the 2-element `[dx, dy]` is read as a gripper command. Relaunch with `--widowx_force_fresh_init` |
+| Rollout ends after a fraction of a second | Older builds armed the return-to-start stop while the arm was still at the start pose. Fixed; `--disable_term_area` rules it out entirely |
 | `ModuleNotFoundError: absl` | `pip install absl-py` (step 4) |
 | `ModuleNotFoundError: utils` | Run from the repo root, or the pull did not bring `utils/ibc_policy.py` |
 | `no q_estimator.pt and no q_estimator_step*.pt` | Only `config.json`/`norm_stats.pt` copied — re-run the rsync |
