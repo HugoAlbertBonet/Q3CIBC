@@ -21,6 +21,12 @@ cd "${ROOT_DIR}"
 DATASET=${PUSHT_DATASET:-"${ROOT_DIR}/data/03-23-pusht-data.zip"}
 OUTPUT_ROOT=${PUSHT_OUTPUT_ROOT:-"${ROOT_DIR}/checkpoints/pusht_real_combinedv2"}
 PYTHON=${PYTHON:-"${ROOT_DIR}/.venv/bin/python"}
+# Result JSON named after the checkpoint root so v1/v2 (and EMA/raw) runs
+# never overwrite each other. PUSHT_DIAG_OUT overrides.
+DIAG_OUT=${PUSHT_DIAG_OUT:-"${ROOT_DIR}/results/pusht_action_diagnostic_$(basename "${OUTPUT_ROOT}")${PUSHT_DIAG_NO_EMA:+_raw}.json"}
+# PUSHT_DIAG_NO_EMA=1 evaluates the raw (non-EMA) weights — the exact
+# hyperparam-search recipe; default evaluates the EMA copy (deploy default).
+EMA_FLAG=${PUSHT_DIAG_NO_EMA:+--no-ema}
 
 export UV_NO_SYNC=1
 export UV_FROZEN=1
@@ -32,4 +38,6 @@ srun "${PYTHON}" scripts/diagnose_pusht_actions.py \
     --output-root "${OUTPUT_ROOT}" \
     --seeds 11 29 47 83 \
     --dataset "${DATASET}" \
-    --num-samples 3000
+    --num-samples 3000 \
+    --out "${DIAG_OUT}" \
+    ${EMA_FLAG}
