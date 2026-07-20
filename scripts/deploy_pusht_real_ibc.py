@@ -83,7 +83,6 @@ for p in [
 
 from absl import app, flags, logging
 import cv2
-import imageio
 import numpy as np
 import torch
 
@@ -819,6 +818,17 @@ def _save_rollout_video(
     images: List[np.ndarray], frame_timestamps_s: List[float], policy_name: str
 ) -> None:
     if FLAGS.video_save_path is None or len(images) == 0:
+        return
+    # Imported here, not at module scope: mp4 writing needs imageio[ffmpeg],
+    # which the minimal robot-client env has no reason to carry unless
+    # --video_save_path is actually used.
+    try:
+        import imageio
+    except ImportError:
+        print(
+            "[WARN] --video_save_path set but imageio is not installed; skipping "
+            "video. Install with: pip install 'imageio[ffmpeg]'"
+        )
         return
     os.makedirs(FLAGS.video_save_path, exist_ok=True)
     curr_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
