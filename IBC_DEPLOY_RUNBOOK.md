@@ -10,10 +10,84 @@ script and `utils/ibc_policy.py` but never the weights.
 
 ---
 
-## 1. On discovery: confirm what finished
+## 1. Connect from the Alienware to discovery
+
+Plain `ssh halbertb@discovery.usc.edu` from this machine picks an automatic
+method (an offered public key, or GSSAPI/Kerberos) and never gets round to
+prompting for the password. Force the interactive methods and turn the
+automatic ones off:
 
 ```bash
-ssh halbertb@discovery.usc.edu
+ssh -o PreferredAuthentications=keyboard-interactive,password \
+    -o PubkeyAuthentication=no \
+    -o GSSAPIAuthentication=no \
+    halbertb@discovery.usc.edu
+```
+
+If you want to see what it is choosing on its own, `ssh -v` prints each method
+as it is attempted — the useful lines are `Authentications that can continue:`
+and `Next authentication method: …`.
+
+### Make it permanent, and authenticate only once
+
+Rather than repeating those flags on every `ssh`, `scp` and `rsync`, put them
+in `~/.ssh/config` on the Alienware:
+
+```
+Host discovery
+    HostName discovery.usc.edu
+    User halbertb
+    PreferredAuthentications keyboard-interactive,password
+    PubkeyAuthentication no
+    GSSAPIAuthentication no
+
+    # Reuse one authenticated connection for every later ssh/scp/rsync to this
+    # host: you type the password (and clear any 2FA prompt) once, and the
+    # transfers below ride the same channel for 8 hours.
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 8h
+
+    # Long rsyncs otherwise get dropped by an idle timeout.
+    ServerAliveInterval 60
+    ServerAliveCountMax 10
+```
+
+```bash
+chmod 600 ~/.ssh/config          # ssh refuses a group/world-writable config
+ssh discovery                    # authenticate once; leave this session open
+```
+
+The `ControlMaster` block is the part that matters most here. The rest of this
+runbook runs several commands against discovery (a listing, an rsync, an
+md5sum), and without multiplexing each one re-authenticates from scratch.
+
+To drop the shared connection early:
+
+```bash
+ssh -O exit discovery
+```
+
+With that alias in place, `discovery` stands in for
+`halbertb@discovery.usc.edu` everywhere below.
+
+### Optional: key-based login
+
+If the cluster permits public keys, this removes the password prompt entirely
+(2FA, where enforced, may still apply on first connect):
+
+```bash
+ssh-keygen -t ed25519 -C "alienware-q3c"     # only if ~/.ssh/id_ed25519 is absent
+ssh-copy-id -o PubkeyAuthentication=no halbertb@discovery.usc.edu
+```
+
+Then drop `PubkeyAuthentication no` and the `PreferredAuthentications` line
+from the config block above, or the key you just installed will be ignored.
+
+## 2. On discovery: confirm what finished
+
+```bash
+ssh discovery
 cd ~/Q3CIBC
 ls -la checkpoints/pusht_real_ibc/*/
 ```
@@ -40,10 +114,11 @@ tail -3 slurm_jobs/pusht_ibc/pusht_ibc_*.out
 squeue -u halbertb
 ```
 
-## 2. Copy the checkpoints to the Alienware
+## 3. Copy the checkpoints to the Alienware
 
 Only three files per seed, ~9 MB each — skip the snapshots. Run **from the
-Alienware** (it can reach discovery; the reverse usually cannot):
+Alienware** (it can reach discovery; the reverse usually cannot), reusing the
+connection from step 1 so this does not re-prompt:
 
 ```bash
 cd ~/Q3CIBC
@@ -55,7 +130,7 @@ rsync -avP \
   --include='seed_*/norm_stats.pt' \
   --include='seed_*/q_estimator.pt' \
   --exclude='*' \
-  halbertb@discovery.usc.edu:~/Q3CIBC/checkpoints/pusht_real_ibc/ \
+  discovery:Q3CIBC/checkpoints/pusht_real_ibc/ \
   checkpoints/pusht_real_ibc/
 ```
 
@@ -63,7 +138,7 @@ Single seed, if you prefer scp:
 
 ```bash
 mkdir -p checkpoints/pusht_real_ibc/seed_0029
-scp halbertb@discovery.usc.edu:'~/Q3CIBC/checkpoints/pusht_real_ibc/seed_0029/{config.json,norm_stats.pt,q_estimator.pt}' \
+scp 'discovery:Q3CIBC/checkpoints/pusht_real_ibc/seed_0029/{config.json,norm_stats.pt,q_estimator.pt}' \
     checkpoints/pusht_real_ibc/seed_0029/
 ```
 
@@ -73,11 +148,11 @@ inside `load_state_dict`, with a confusing error:
 ```bash
 ls -la checkpoints/pusht_real_ibc/*/
 # compare against discovery:
-ssh halbertb@discovery.usc.edu 'md5sum ~/Q3CIBC/checkpoints/pusht_real_ibc/seed_0029/q_estimator.pt'
+ssh discovery 'md5sum ~/Q3CIBC/checkpoints/pusht_real_ibc/seed_0029/q_estimator.pt'
 md5sum checkpoints/pusht_real_ibc/seed_0029/q_estimator.pt
 ```
 
-## 3. On the Alienware: update the code
+## 4. On the Alienware: update the code
 
 ```bash
 cd ~/Q3CIBC
@@ -126,13 +201,13 @@ print(p.name, p.camera_streams, p.frame_stack, p.act_min, p.act_max, p.dfo)
 "
 ```
 
-## 4. Bring the robot up
+## 5. Bring the robot up
 
 Per `PUSHT_DEPLOY_HANDOFF.md`: docker up robonet (blue camera only), then the
 action server. The client's TCP preflight will warn if the server is not
 listening on `localhost:5556`.
 
-## 5. Dry run first — always
+## 6. Dry run first — always
 
 No motion. Captures what the model actually sees and what it would command:
 
@@ -171,7 +246,7 @@ effectively random and no amount of deploy tuning will help. Note this needs
 the training zip and TensorFlow for JPEG decode, so it is usually easier to
 run on discovery via `sbatch scripts/diagnose_pusht_actions_ibc.sbatch`.
 
-## 6. Live rollout
+## 7. Live rollout
 
 Hand on the E-stop. Stop any time with `s`.
 
@@ -204,7 +279,7 @@ Flags worth knowing:
 | `--policy_seed` | DFO is stochastic; fix this to make a rollout reproducible. |
 | `--video_save_path` | Needs `imageio[ffmpeg]`. Writes cam0/cam1 mp4s plus a timing JSON. |
 
-## 7. What to keep from a session
+## 8. What to keep from a session
 
 `--forensic_log_dir` writes per rollout: `raw/*.npy` (server frames as
 received), `fed/*.png` (what the model saw), and `steps.jsonl` with the
@@ -222,7 +297,12 @@ JSON alongside the videos when `--video_save_path` is set.
 
 | Symptom | Cause |
 |---|---|
-| `ModuleNotFoundError: absl` | `pip install absl-py` (step 3) |
+| ssh never prompts for a password | A key or GSSAPI is being tried automatically — force the methods as in step 1 |
+| `Too many authentication failures` | Several keys offered before the password; `PubkeyAuthentication no` or `IdentitiesOnly yes` stops it |
+| `Bad owner or permissions on ~/.ssh/config` | `chmod 600 ~/.ssh/config` |
+| ssh config edits appear to do nothing | An earlier `Host` block matched first — ssh takes the *first* value for each option, so put `Host discovery` above any `Host *` |
+| Multiplexed session refuses to reconnect | Stale socket: `ssh -O exit discovery`, or delete `~/.ssh/cm-*` |
+| `ModuleNotFoundError: absl` | `pip install absl-py` (step 4) |
 | `ModuleNotFoundError: utils` | Run from the repo root, or the pull did not bring `utils/ibc_policy.py` |
 | `no q_estimator.pt and no q_estimator_step*.pt` | Only `config.json`/`norm_stats.pt` copied — re-run the rsync |
 | Warning about using a snapshot | That seed has not finished training; expected mid-run |
