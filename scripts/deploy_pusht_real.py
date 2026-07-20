@@ -118,6 +118,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--reset-retries", type=int, default=3)
     p.add_argument("--reset-retry-sleep", type=float, default=1.0)
     p.add_argument("--rpc-timeout-ms", type=int, default=5_000)
+    p.add_argument("--force-fresh-init", action="store_true",
+                   help="always call init(), even if the server already has a live "
+                        "env. Only works if the server's cached env_params match "
+                        "ours; otherwise it fails the config-hash check and the "
+                        "server must be restarted.")
+    p.add_argument("--no-reuse-existing-env", dest="reuse_existing_env",
+                   action="store_false", default=True,
+                   help="disable reusing an already-initialized server env")
 
     # --- policy --------------------------------------------------------------
     p.add_argument("--cp-selection", choices=["argmax", "sample"], default=None,
@@ -203,6 +211,40 @@ def build_env_params(args, WidowXConfigs) -> Dict[str, Any]:
         "action_clipping": None,
     })
     return env_params
+
+
+def widowx_server_has_live_env(client, max_wait_sec: float = 1.0,
+                               poll_interval_sec: float = 0.1) -> bool:
+    """Best-effort probe for an already-initialized server-side env.
+
+    The server caches the env it was initialized with. Calling init() again with
+    DIFFERENT env_params is rejected with "Incompatible config with hash with
+    server" -- the stale config lives in the server, not the client, so no
+    client-side change can fix it. If an env is already live we skip init() and
+    just reset, exactly like data/eval_widowx_bfn.py does.
+    """
+    deadline = time.monotonic() + max(0.1, float(max_wait_sec))
+    poll_interval_sec = max(0.01, float(poll_interval_sec))
+    while time.monotonic() < deadline:
+        try:
+            raw_obs = client.get_observation()
+        except Exception:
+            raw_obs = None
+        if raw_obs is not None:
+            state = raw_obs.get("state", None)
+            if state is None:
+                time.sleep(poll_interval_sec)
+                continue
+            if isinstance(state, dict):
+                return len(state) > 0
+            try:
+                state_vec = np.asarray(state, dtype=np.float64).reshape(-1)
+            except Exception:
+                state_vec = np.array([], dtype=np.float64)
+            if state_vec.size > 0:
+                return True
+        time.sleep(poll_interval_sec)
+    return False
 
 
 def init_widowx_with_retry(client, env_params, image_size, WidowXStatus, args):
@@ -501,14 +543,34 @@ def main() -> int:
           f"fixed_z_height={args.fixed_z_height} move_duration={args.step_duration}")
 
     client = WidowXClient(host=args.ip, port=args.port)
-    init_status = init_widowx_with_retry(
-        client, env_params, args.im_size, WidowXStatus, args)
-    if init_status != WidowXStatus.SUCCESS:
-        raise RuntimeError(
-            f"WidowX init failed after {args.init_retries} attempts with "
-            f"status={status_name(init_status, WidowXStatus)}. "
-            f"Check server reachability at {args.ip}:{args.port}, and that "
-            f"--widowx-envs-path ({args.widowx_envs_path}) matches the server's.")
+
+    reuse_existing_env = False
+    if args.reuse_existing_env and not args.force_fresh_init:
+        reuse_existing_env = widowx_server_has_live_env(client, max_wait_sec=1.0)
+        if reuse_existing_env:
+            print("[INFO] Server already has a live env; skipping init() and "
+                  "reusing it. (Re-initializing with different env_params is what "
+                  "triggers 'Incompatible config with hash with server'.)")
+            print("[WARN] The live env keeps the env_params it was FIRST "
+                  "initialized with -- not the ones printed above. If the robot "
+                  "behaves as though action_mode/lock_z/etc. differ, restart "
+                  "`widowx_env_service --server` and re-run to apply ours.")
+
+    if reuse_existing_env:
+        set_reqrep_timeout_ms(client, max(1, args.rpc_timeout_ms))
+    else:
+        init_status = init_widowx_with_retry(
+            client, env_params, args.im_size, WidowXStatus, args)
+        if init_status != WidowXStatus.SUCCESS:
+            raise RuntimeError(
+                f"WidowX init failed after {args.init_retries} attempts with "
+                f"status={status_name(init_status, WidowXStatus)}.\n"
+                f"If this is a config-hash error, the server is holding a cached "
+                f"env from a previous run with different env_params: RESTART "
+                f"`widowx_env_service --server` (and the docker container) and "
+                f"re-run. Otherwise check reachability at {args.ip}:{args.port} "
+                f"and that --widowx-envs-path ({args.widowx_envs_path}) matches "
+                f"the server's widowx_envs.")
     print("WidowX connection established.")
 
     # Collect-style reset: this is what puts the arm at the data-collection
