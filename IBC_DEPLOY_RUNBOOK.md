@@ -134,6 +134,25 @@ rsync -avP \
   checkpoints/pusht_real_ibc/
 ```
 
+If you skipped the `~/.ssh/config` alias in step 1, `discovery:` will not
+resolve and nothing is forcing the password prompt. Pass the ssh options
+through with `-e` and spell out the host instead:
+
+```bash
+rsync -avP \
+  -e 'ssh -o PreferredAuthentications=keyboard-interactive,password -o PubkeyAuthentication=no -o GSSAPIAuthentication=no' \
+  --include='seed_*/' \
+  --include='seed_*/config.json' \
+  --include='seed_*/norm_stats.pt' \
+  --include='seed_*/q_estimator.pt' \
+  --exclude='*' \
+  halbertb@discovery.usc.edu:Q3CIBC/checkpoints/pusht_real_ibc/ \
+  checkpoints/pusht_real_ibc/
+```
+
+That prompts once for this transfer only — every later `ssh`/`scp` needs the
+same treatment, which is the argument for the config block.
+
 Single seed, if you prefer scp:
 
 ```bash
