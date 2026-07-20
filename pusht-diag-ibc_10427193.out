@@ -1,0 +1,39 @@
+job=10427193 node=d14-05
+checkpoints=/home1/halbertb/Q3CIBC/checkpoints/pusht_real_ibc  seeds=29 47
+out=/home1/halbertb/Q3CIBC/results/pusht_action_diagnostic_pusht_real_ibc.json
+device=cuda  dataset=/home1/halbertb/Q3CIBC/data/03-23-pusht-data.zip  samples=3000
+checkpoints=/home1/halbertb/Q3CIBC/checkpoints/pusht_real_ibc  seeds=[29, 47]
+
+===== seed 0029 =====
+PushTRealPixelsDataset: 110 trajectories, 49463 transitions, cameras=('images1',), frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  checkpoint     q_estimator.pt
+  samples        3000  (DFO 2048x3)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[-0.0115 -0.0816] std=[0.6598 0.7512] frac_neg=[0.504 0.526]
+  gt   mean/std  mean=[ 0.0238 -0.039 ] std=[0.4239 0.5096] frac_neg=[0.237 0.315]
+  corr(dx,dy)    -0.123   (≈1 => diagonal collapse)
+  MAE vs gt      [0.347  0.3706]
+  pred quadrants {'--': 762, '-+': 751, '+-': 817, '++': 670}
+  gt   quadrants {'--': 249, '-+': 461, '+-': 695, '++': 1595}
+  energy entropy 0.519   (≈1.0 => flat/random energy surface)
+  expert pctile  0.994   (≈0.5 => EBM can't rank the expert action)
+  DFO repeat std [0.1544 0.1284] over 3 runs
+  => looks responsive
+
+===== seed 0047 =====
+PushTRealPixelsDataset: 110 trajectories, 49463 transitions, cameras=('images1',), frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  checkpoint     q_estimator.pt
+  samples        3000  (DFO 2048x3)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0186 -0.0512] std=[0.6339 0.7229] frac_neg=[0.482 0.515]
+  gt   mean/std  mean=[ 0.0238 -0.039 ] std=[0.4239 0.5096] frac_neg=[0.237 0.315]
+  corr(dx,dy)    -0.151   (≈1 => diagonal collapse)
+  MAE vs gt      [0.3163 0.3301]
+  pred quadrants {'--': 696, '-+': 749, '+-': 850, '++': 705}
+  gt   quadrants {'--': 249, '-+': 461, '+-': 695, '++': 1595}
+  energy entropy 0.499   (≈1.0 => flat/random energy surface)
+  expert pctile  0.994   (≈0.5 => EBM can't rank the expert action)
+  DFO repeat std [0.1536 0.1302] over 3 runs
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/pusht_action_diagnostic_pusht_real_ibc.json
