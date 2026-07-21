@@ -72,8 +72,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset",
         type=Path,
-        default=ROOT / "data" / "03-23-pusht-data.zip",
-        help="BridgeData-style Push-T demonstration zip",
+        default=ROOT / "data" / "pusht_widowx_data.zip",
+        help="Push-T demonstration archive. Diffusion-Policy format "
+             "(replay_buffer.zarr + videos/<ep>/<cam>.mp4) by default; pass "
+             "--data-format bridge_zip for the older 03-23-pusht-data.zip.",
+    )
+    parser.add_argument(
+        "--data-format",
+        choices=["zarr_video", "bridge_zip"],
+        default="zarr_video",
+        help="On-disk layout of --dataset (default: zarr_video)",
     )
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--steps", type=int, default=IBC_BEST["training_steps"])
@@ -85,8 +93,59 @@ def parse_args() -> argparse.Namespace:
         "--cameras",
         nargs="+",
         default=["images1"],
-        help="Ordered RGB streams. Default images1 only: the deploy rig runs "
-             "a single fixed scene camera (blue), see PUSHT_DEPLOY_HANDOFF.md",
+        help="bridge_zip only: ordered RGB streams. Default images1: the deploy "
+             "rig runs a single fixed scene camera (blue), see "
+             "PUSHT_DEPLOY_HANDOFF.md",
+    )
+    parser.add_argument(
+        "--video-camera",
+        type=int,
+        default=1,
+        help="zarr_video only: which per-episode MP4 to train on. 1 is the "
+             "fixed blue scene camera (== the old images1 and the stream the "
+             "deploy client reads); camera 0 is a second viewpoint, discarded.",
+    )
+    parser.add_argument(
+        "--frame-cache-dir",
+        type=Path,
+        default=None,
+        help="zarr_video only: where to build the decoded uint8 frame memmap "
+             "(default: <dataset dir>/_frame_cache). ~17 GB for this collection "
+             "at 240x320; build it once up front with "
+             "scripts/prepare_pusht_video_cache.py, or array tasks will idle on "
+             "GPUs waiting for whichever one wins the build lock.",
+    )
+    # ── Idle-transition handling (the stalling fix) ───────────────────────
+    parser.add_argument(
+        "--idle-filter",
+        choices=["none", "drop_zero", "drop_static", "subsample"],
+        default="drop_zero",
+        help="How to treat transitions whose target action is ~0. 24%% of this "
+             "dataset is the teleoperator pausing: a delta spike holding a "
+             "quarter of the probability mass at a single point, while real "
+             "pushes spread over a 2-D continuum. IBC is exactly the kind of "
+             "policy this breaks — InfoNCE fits the density and DFO returns its "
+             "argmax, so the spike wins. Measured on the full archive: none -> "
+             "24.1%% zeros kept; drop_static -> 21.5%% (removes only 3.3%%, the "
+             "spike survives); drop_zero -> 0%% (removes 24.1%%). Default "
+             "'drop_zero' is the one that eliminates the stalling mode. Matches "
+             "scripts/train_pusht_real.py so IBC and Q3C stay comparable.",
+    )
+    parser.add_argument("--idle-eps", type=float, default=0.0,
+                        help="|action| <= this counts as idle (metres)")
+    parser.add_argument("--idle-move-eps", type=float, default=1e-4,
+                        help="drop_static: EEF displacement below this means "
+                             "the frame pair carries no visible motion")
+    parser.add_argument("--idle-keep-frac", type=float, default=0.25,
+                        help="subsample: fraction of idle transitions to keep")
+    parser.add_argument(
+        "--cond-eef-xy",
+        action="store_true",
+        help="zarr_video only: condition the EBM on the current end-effector "
+             "(x, y). NOTE this deviates from pixel_ebm_best.gin, which is "
+             "pixels-only — enable it only to match a Q3C run trained the same "
+             "way, and record that the baseline is no longer paper-faithful. "
+             "Requires a deploy client that feeds state[:2].",
     )
     parser.add_argument("--image-height", type=int, default=240)
     parser.add_argument("--image-width", type=int, default=320)
@@ -99,13 +158,19 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "checkpoints" / "pusht_real_ibc",
     )
     parser.add_argument(
-        "--no-aug",
+        "--aug",
         action="store_true",
-        help="Disable train-time appearance augmentation (photometric + small "
-             "view crop). Default ON for parity with the q3c v2 runs: deploy "
-             "forensics measured the robot's T ~33%% darker than training, so "
-             "lighting/color robustness must come from data. Pass --no-aug for "
-             "a strictly paper-faithful (no-augmentation) run.",
+        help="Enable train-time appearance augmentation (photometric + small "
+             "view crop). OFF by default, matching scripts/train_pusht_real.py: "
+             "it targets the deploy lighting shift, which is a SEPARATE problem "
+             "from the stalling, and leaving it on would confound the "
+             "idle-filter comparison. Also off is the paper-faithful setting.",
+    )
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Run-directory name under --output-root (default: seed_XXXX). Use "
+             "a distinct tag per config so batch runs don't overwrite each other.",
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -119,23 +184,39 @@ def parse_args() -> argparse.Namespace:
 def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
     """Immutable per-run config, shaped like the q3c seed dirs so the deploy
     client's load_run_config() pattern works unchanged."""
+    # zarr_video trains on ONE camera (the blue scene view); bridge_zip keeps
+    # the explicit stream list. Both end up as a 1-element channel group so the
+    # in_channels arithmetic is identical.
+    n_cams = 1 if args.data_format == "zarr_video" else len(args.cameras)
     env = {
         "data_archive": str(args.dataset.resolve()),
+        "data_format": args.data_format,
         "env_id": "PushTRealRobot-v0",
         "state_dim": [
-            3 * len(args.cameras) * args.frame_stack,
+            3 * n_cams * args.frame_stack,
             args.image_height,
             args.image_width,
         ],
         "action_dim": 2,
         "frame_stack": args.frame_stack,
-        "camera_streams": list(args.cameras),
+        "camera_streams": (
+            [f"video{args.video_camera}"]
+            if args.data_format == "zarr_video"
+            else list(args.cameras)
+        ),
+        "video_camera": args.video_camera,
         "image_height": args.image_height,
         "image_width": args.image_width,
         "action_bounds": [-1.0, 1.0],
         "encoder_target_height": IBC_BEST["encoder_target_height"],
         "encoder_target_width": IBC_BEST["encoder_target_width"],
-        "image_aug": not args.no_aug,
+        "image_aug": args.aug,
+        # Idle-transition handling — see PushTWidowXVideoDataset.
+        "idle_filter": args.idle_filter,
+        "idle_eps": args.idle_eps,
+        "idle_move_eps": args.idle_move_eps,
+        "idle_keep_frac": args.idle_keep_frac,
+        "cond_eef_xy": args.cond_eef_xy,
         "training": {
             "training_steps": args.steps,
             "batch_size": args.batch_size,
@@ -161,6 +242,8 @@ def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "uniform_boundary_buffer": IBC_BEST["uniform_boundary_buffer"],
         },
     }
+    if args.frame_cache_dir is not None:
+        env["frame_cache_dir"] = str(args.frame_cache_dir.resolve())
     return {
         "active_env": "pusht_real_pixels_ibc",
         "environments": {"pusht_real_pixels_ibc": env},
@@ -178,7 +261,16 @@ def main() -> int:
     if args.steps <= 0 or args.batch_size <= 0 or args.workers < 0:
         raise ValueError("steps/batch-size must be positive and workers non-negative")
 
-    run_dir = args.output_root.resolve() / f"seed_{args.seed:04d}"
+    run_name = args.tag if args.tag else f"seed_{args.seed:04d}"
+    run_dir = args.output_root.resolve() / run_name
+    # Refuse to silently overwrite a finished run: checkpoints are expensive and
+    # a repeated --tag in a batch file is an easy mistake to make.
+    existing = sorted(run_dir.glob("*.pt")) if run_dir.exists() else []
+    if existing and not args.dry_run:
+        raise FileExistsError(
+            f"{run_dir} already holds checkpoints ({[p.name for p in existing[:3]]}...). "
+            f"Pass a different --tag, or delete the directory to retrain."
+        )
     run_dir.mkdir(parents=True, exist_ok=True)
     config = build_run_config(args, run_dir)
     config_path = run_dir / "config.json"
@@ -186,8 +278,9 @@ def main() -> int:
         json.dump(config, handle, indent=2)
         handle.write("\n")
 
-    print(f"Dataset:    {args.dataset.resolve()}")
-    print(f"Seed:       {args.seed}")
+    print(f"Dataset:    {args.dataset.resolve()}  (format={args.data_format})")
+    print(f"Seed:       {args.seed}   tag={run_name}")
+    print(f"Idle filter:{args.idle_filter} (eps={args.idle_eps})")
     print(f"Config:     {config_path}")
     print(f"Checkpoints:{run_dir}")
     if args.dry_run:
@@ -203,18 +296,46 @@ def main() -> int:
     device = torch.device(args.device if torch.cuda.is_available()
                           or args.device == "cpu" else "cpu")
 
-    from utils.datasets import PushTRealPixelsDataset
     from utils.models import PixelQEstimator
 
-    dataset = PushTRealPixelsDataset(
-        archive_path=str(args.dataset),
-        frame_stack=args.frame_stack,
-        camera_streams=tuple(args.cameras),
-        resize_hw=(args.image_height, args.image_width),
-        normalize_actions=True,
-        action_norm_range=(-1.0, 1.0),
-        augment=not args.no_aug,
-    )
+    if args.data_format == "zarr_video":
+        from utils.datasets import PushTWidowXVideoDataset
+
+        dataset = PushTWidowXVideoDataset(
+            archive_path=str(args.dataset),
+            frame_stack=args.frame_stack,
+            camera=args.video_camera,
+            resize_hw=(args.image_height, args.image_width),
+            normalize_actions=True,
+            action_norm_range=(-1.0, 1.0),
+            augment=args.aug,
+            idle_filter=args.idle_filter,
+            idle_eps=args.idle_eps,
+            idle_move_eps=args.idle_move_eps,
+            idle_keep_frac=args.idle_keep_frac,
+            idle_seed=args.seed,
+            cache_dir=(
+                str(args.frame_cache_dir.resolve())
+                if args.frame_cache_dir is not None
+                else None
+            ),
+            cond_eef_xy=args.cond_eef_xy,
+        )
+    else:
+        from utils.datasets import PushTRealPixelsDataset
+
+        if args.cond_eef_xy:
+            raise ValueError("--cond-eef-xy requires --data-format zarr_video")
+        dataset = PushTRealPixelsDataset(
+            archive_path=str(args.dataset),
+            frame_stack=args.frame_stack,
+            camera_streams=tuple(args.cameras),
+            resize_hw=(args.image_height, args.image_width),
+            normalize_actions=True,
+            action_norm_range=(-1.0, 1.0),
+            augment=args.aug,
+        )
+    cond_dim = int(getattr(dataset, "cond_dim", 0))
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -232,10 +353,15 @@ def main() -> int:
         encoder_target_width=IBC_BEST["encoder_target_width"],
         value_width=IBC_BEST["value_width"],
         value_num_blocks=IBC_BEST["value_num_blocks"],
-        cond_dim=0,
+        cond_dim=cond_dim,
     ).to(device)
     n_params = sum(p.numel() for p in ebm.parameters())
     print(f"PixelEBM (ConvMaxpool + DenseResnetValue 1024x1): {n_params:,} params")
+    if cond_dim:
+        print(
+            f"  conditioned on {cond_dim}-D EEF (x, y) — this DEVIATES from "
+            f"pixel_ebm_best.gin, which is pixels-only"
+        )
 
     lr0 = IBC_BEST["learning_rate"]
     optimizer = torch.optim.Adam(ebm.parameters(), lr=lr0)
@@ -247,7 +373,9 @@ def main() -> int:
         "act_max": dataset.act_max,
         "action_norm_range": (-1.0, 1.0),
         "frame_stack": args.frame_stack,
-        "camera_streams": list(args.cameras),
+        # Take the stream names from the dataset so zarr_video records
+        # ("video1",) rather than the unused bridge_zip --cameras default.
+        "camera_streams": list(dataset.camera_streams),
         "in_channels": dataset.in_channels,
         "image_hw": [args.image_height, args.image_width],
         "encoder_target_height": IBC_BEST["encoder_target_height"],
@@ -255,6 +383,9 @@ def main() -> int:
         "value_width": IBC_BEST["value_width"],
         "value_num_blocks": IBC_BEST["value_num_blocks"],
         "encoder_kind": "conv_maxpool",
+        "cond_dim": cond_dim,
+        "data_format": args.data_format,
+        "idle_filter": args.idle_filter,
         "action_semantics": dataset.action_semantics,
     }
     torch.save(norm_stats, run_dir / "norm_stats.pt")
@@ -287,6 +418,9 @@ def main() -> int:
             states = batch["state"].to(device, non_blocking=True)
             expert = batch["action"].float().to(device, non_blocking=True)
             B = expert.shape[0]
+            # PixelQEstimator late-fuses this alongside the image features.
+            if cond_dim:
+                ebm._cond = batch["cond"].float().to(device, non_blocking=True)
 
             # 256 uniform counter-examples with the 5% boundary buffer, expert
             # appended last (official ibc_agent: negatives + expert -> softmax

@@ -153,6 +153,19 @@ def load_policy(
     image_hw = (int(env.get("image_height", 240)), int(env.get("image_width", 320)))
     a_lo, a_hi = env.get("action_bounds", [-1.0, 1.0])
 
+    # A cond-conditioned EBM expects a proprio vector alongside the image on
+    # every score() call. This client is pixels-only, so loading one would fail
+    # later with an opaque shape mismatch inside the value head.
+    cond_dim = int(norm_stats.get("cond_dim", 0))
+    if cond_dim:
+        raise NotImplementedError(
+            f"{seed_dir} was trained with cond_dim={cond_dim} (--cond-eef-xy). "
+            f"This client feeds images only and does not supply the "
+            f"end-effector conditioning vector, so the checkpoint cannot be "
+            f"driven here. Retrain without --cond-eef-xy, or extend the client "
+            f"to pass state[:2] as `ebm._cond`."
+        )
+
     m = env["model"]
     ebm = (
         PixelQEstimator(

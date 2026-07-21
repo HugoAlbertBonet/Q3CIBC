@@ -23,7 +23,12 @@ cd "${ROOT_DIR}"
 
 SEEDS=(11 29 47 83)
 SEED=${SEEDS[$SLURM_ARRAY_TASK_ID]}
-DATASET=${PUSHT_DATASET:-"${ROOT_DIR}/data/03-23-pusht-data.zip"}
+DATASET=${PUSHT_DATASET:-"${ROOT_DIR}/data/pusht_widowx_data.zip"}
+# Decoded-frame memmap shared by all array tasks. Build it BEFORE submitting
+# (scripts/prepare_pusht_video_cache.py) or N-1 tasks sit on GPUs waiting for
+# whichever one wins the build lock.
+FRAME_CACHE=${PUSHT_FRAME_CACHE:-""}
+IDLE_FILTER=${PUSHT_IDLE_FILTER:-"drop_zero"}
 OUTPUT_ROOT=${PUSHT_OUTPUT_ROOT:-"${ROOT_DIR}/checkpoints/pusht_real_ibc"}
 PYTHON=${PYTHON:-"${ROOT_DIR}/.venv/bin/python"}
 LOG_DIR=${PUSHT_LOG_DIR:-"${ROOT_DIR}/slurm_jobs/pusht_ibc"}
@@ -48,7 +53,7 @@ export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
 echo "job=${SLURM_JOB_ID} task=${SLURM_ARRAY_TASK_ID} seed=${SEED} node=${SLURM_JOB_NODELIST}"
-echo "dataset=${DATASET}"
+echo "dataset=${DATASET}  idle_filter=${IDLE_FILTER}  frame_cache=${FRAME_CACHE:-<default>}"
 echo "output=${OUTPUT_ROOT}/seed_$(printf '%04d' "${SEED}")"
 
 # IBC best-gin recipe (pixel_ebm_best.gin): 100k steps, batch 128, 256 uniform
@@ -56,8 +61,11 @@ echo "output=${OUTPUT_ROOT}/seed_$(printf '%04d' "${SEED}")"
 # machine-specific knobs are passed here.
 srun "${PYTHON}" scripts/train_pusht_real_ibc.py \
     --dataset "${DATASET}" \
+    --data-format zarr_video \
     --seed "${SEED}" \
     --workers "${SLURM_CPUS_PER_TASK}" \
     --frame-stack 2 \
-    --cameras images1 \
+    --video-camera 1 \
+    --idle-filter "${IDLE_FILTER}" \
+    ${FRAME_CACHE:+--frame-cache-dir "${FRAME_CACHE}"} \
     --output-root "${OUTPUT_ROOT}"
