@@ -1,0 +1,68 @@
+# Push-T WidowX (Diffusion-Policy archive, camera 1) — Diffusion Policy batch.
+#
+# One job per line via submit_experiments.sh. Baseline counterpart of
+# batches/pushtWidowX.txt (Q3C) and the IBC array: same archive, same camera,
+# same idle-filter handling, same encoder geometry — so the three methods stay
+# comparable on this dataset.
+#
+# DDPM vs DDIM is NOT a training axis. Both are inference-time schedules over
+# the same denoiser (utils.diffusion.GaussianDiffusion.ddpm_sample /
+# .ddim_sample), so each checkpoint below is evaluated under both samplers at
+# deploy time. The real training axis is the prediction target: epsilon (the
+# original Diffusion Policy, Ho et al. 2020) vs v (Salimans & Ho 2022).
+#
+# RECIPE: the best pushing_pixels DP configuration (batches/pushingPixelsDPD.txt
+# and DPE.txt), pixels being the closest environment to this rig —
+# ConvMaxpoolEncoder + DenseResnet 1024x1 head, t-emb 128, T=100 cosine betas,
+# AdamW lr 3e-4 cosine-annealed, batch 128, EMA 0.999, no augmentation.
+#
+# BUDGET: 750k steps. The DPD ladder showed DP still climbing at 300k (88%) and
+# 500k, flattening only near 750k — roughly 5x what Q3C needs (150k). That gap
+# is itself a reported result; training DP to 150k for "fairness" would just be
+# an undertrained baseline. 750k measured ~39h on pushing_pixels, inside
+# submit_experiments.sh's 48h cap, and the trainer checkpoints every 25k steps,
+# so a wall-clock timeout still leaves usable weights (see last_step.json).
+#
+# Why the idle filter matters less here than for Q3C/IBC, but still matters:
+# 24.1% of this archive's target actions are exactly (0,0) — the teleoperator
+# pausing. Q3C and IBC take the ARGMAX of a learned energy, so that delta spike
+# wins outright. DP SAMPLES the fitted distribution, so it should reproduce the
+# idle action at roughly its base rate rather than collapsing onto it — but a
+# quarter of the mass on an absorbing action is still a quarter, and
+# P(a_t=0 | a_{t-1}=0)=0.69 makes it self-reinforcing on the robot. d05/d06 are
+# the controls that measure exactly how much DP's sampling actually buys.
+#
+# Run scripts/prepare_pusht_video_cache.py FIRST — otherwise 5 of these sit on
+# GPUs waiting for the 6th to decode the 17 GB frame cache:
+#     sbatch scripts/prepare_pusht_video_cache.sbatch
+# then add --frame-cache-dir <same dir> to each line if you built it off the
+# default location (e.g. onto scratch).
+#
+# --workers 4 matches submit_experiments.sh's --cpus-per-task=4. Frames come
+# from a page-cached memmap, so the loader is not decode-bound.
+
+# 01 epsilon-prediction, seed 11 + drop_zero. The original Diffusion Policy
+#    target, on the fixed data.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type epsilon --tag d01_eps_s11_dropzero --workers 4 --idle-filter drop_zero
+
+# 02 epsilon-prediction, seed 29 + drop_zero. Seed repeat of 01 — DPD showed
+#    single-seed DP success bounces 83-95%, so one seed is not a number.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type epsilon --tag d02_eps_s29_dropzero --workers 4 --idle-filter drop_zero
+
+# 03 v-prediction, seed 11 + drop_zero. PRIMARY: v-pred was the stronger and
+#    faster-converging target on pushing_pixels.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag d03_vpred_s11_dropzero --workers 4 --idle-filter drop_zero
+
+# 04 v-prediction, seed 29 + drop_zero. Seed repeat of 03.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag d04_vpred_s29_dropzero --workers 4 --idle-filter drop_zero
+
+# 05 CONTROL: v-pred with the idle transitions KEPT. Pairs with 03. If DP's
+#    sampling really does defuse the idle spike, this should stall far less than
+#    the Q3C control (batches/pushtWidowX.txt c02) does — and that difference is
+#    the interesting result, not an incidental ablation.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag d05_vpred_s11_none --workers 4 --idle-filter none
+
+# 06 CONTROL: same, epsilon-prediction. Pairs with 01. Kept because the two
+#    targets weight the noise levels differently, so they need not degrade the
+#    same way under the same corrupted action distribution.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type epsilon --tag d06_eps_s11_none --workers 4 --idle-filter none

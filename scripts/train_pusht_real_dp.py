@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Train a Diffusion Policy denoiser on the real-robot Push-T zip.
+"""Train a Diffusion Policy denoiser on the real-robot Push-T archive.
 
 Diffusion-Policy counterpart of scripts/train_pusht_real.py (Q3C) and
-scripts/train_pusht_real_ibc.py (IBC): same dataset, preprocessing, and
-checkpoint layout, but the model is a conditional denoiser sampled at deploy
-time with DDPM or DDIM.
+scripts/train_pusht_real_ibc.py (IBC): same dataset, preprocessing, idle-filter
+handling, and checkpoint layout, but the model is a conditional denoiser
+sampled at deploy time with DDPM or DDIM.
 
-ONE checkpoint serves BOTH samplers. DDPM and DDIM are inference-time
-schedules over the same trained denoiser (see utils.diffusion.GaussianDiffusion
-.ddpm_sample / .ddim_sample), so there is no "DDPM run" and "DDIM run" to
-train separately — the sampler is chosen by the deploy client.
+ONE checkpoint serves BOTH samplers. DDPM and DDIM are inference-time schedules
+over the same trained denoiser (utils.diffusion.GaussianDiffusion.ddpm_sample /
+.ddim_sample), so there is no "DDPM run" and "DDIM run" to train separately —
+the sampler is chosen by the deploy client.
 
 Recipe = the best pushing_pixels DP configuration (batches/pushingPixelsDPD.txt
 and pushingPixelsDPE.txt), pixels being the closest environment to this rig:
 
     - PixelDiffusionDenoiser = ConvMaxpoolEncoder (target 180x240) ->
       256-D feature, conditioning a DenseResnet denoiser head (width 1024,
-      1 block, 128-D time embedding). Encoder trained jointly.
+      1 block, 128-D time embedding). Encoder trained jointly. The head is
+      the same DenseResnetValue architecture as the Q3C/IBC value net, so
+      the three baselines stay capacity-matched.
     - T = 100 train timesteps, cosine beta schedule.
     - AdamW lr 3e-4, cosine anneal to 1e-6, grad-norm clip 1.0, batch 128.
     - EMA 0.999 (deploy uses the EMA weights).
@@ -28,9 +30,15 @@ and pushingPixelsDPE.txt), pixels being the closest environment to this rig:
 original Diffusion Policy) or "v" (Salimans & Ho 2022). Both are capacity- and
 budget-matched; v-pred was the stronger of the two on pushing_pixels.
 
+Unlike Q3C and IBC, DP samples from the fitted distribution rather than taking
+its argmax, so the idle spike (24% of this archive's actions are exactly (0,0))
+does not automatically dominate — but it is still a quarter of the density and
+still absorbing on the robot. --idle-filter defaults to drop_zero to match the
+other two baselines; run --idle-filter none as the control.
+
 Each run writes an immutable per-run config + norm_stats.pt beside the
-checkpoints so Slurm array tasks can train concurrently without races, and so
-the deploy client can rebuild the exact model.
+checkpoints so concurrent jobs never race, and so the deploy client can rebuild
+the exact model.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -79,14 +88,73 @@ DP_BEST = {
 }
 
 
+class CondPixelDiffusionDenoiser(nn.Module):
+    """PixelDiffusionDenoiser + an extra conditioning vector on the feature.
+
+    utils.diffusion.PixelDiffusionDenoiser is pixels-only. --cond-eef-xy needs
+    the denoiser head to also see the end-effector (x, y), exactly as
+    PixelQEstimator's cond_dim does for IBC. Rather than change the shared
+    module (whose pushing_pixels results are already published), this local
+    subclass widens the head's state input by cond_dim and concatenates.
+
+    The per-batch conditioning vector is handed over via `self._cond`, mirroring
+    the `ebm._cond` convention in scripts/train_pusht_real_ibc.py.
+    """
+
+    def __init__(self, action_dim: int, *, in_channels: int, cond_dim: int,
+                 encoder_target_height: int, encoder_target_width: int,
+                 encoder_feature_dim: int, dp: dict) -> None:
+        super().__init__()
+        from utils.diffusion import DiffusionDenoiser
+        from utils.models import ConvMaxpoolEncoder
+
+        self.cond_dim = int(cond_dim)
+        self._cond: torch.Tensor | None = None
+        self.encoder = ConvMaxpoolEncoder(
+            in_channels=in_channels,
+            target_height=encoder_target_height,
+            target_width=encoder_target_width,
+            feature_dim=encoder_feature_dim,
+        )
+        self.denoiser = DiffusionDenoiser(
+            state_dim=encoder_feature_dim + self.cond_dim,
+            action_dim=action_dim,
+            time_emb_dim=dp["time_emb_dim"],
+            network_kind=dp["denoiser_network_kind"],
+            width=dp["denoiser_width"],
+            depth=dp["denoiser_depth"],
+            use_spectral_norm=dp["denoiser_use_spectral_norm"],
+        )
+
+    def encode(self, images: torch.Tensor) -> torch.Tensor:
+        feat = self.encoder(images)
+        if self.cond_dim:
+            if self._cond is None:
+                raise RuntimeError("cond_dim > 0 but no conditioning vector set")
+            feat = torch.cat([feat, self._cond], dim=-1)
+        return feat
+
+    def forward(self, images: torch.Tensor, noisy_action: torch.Tensor,
+                t: torch.Tensor) -> torch.Tensor:
+        return self.denoiser(self.encode(images), noisy_action, t)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--dataset",
         type=Path,
-        default=ROOT / "data" / "03-23-pusht-data.zip",
-        help="BridgeData-style Push-T demonstration zip",
+        default=ROOT / "data" / "pusht_widowx_data.zip",
+        help="Push-T demonstration archive. Diffusion-Policy format "
+             "(replay_buffer.zarr + videos/<ep>/<cam>.mp4) by default; pass "
+             "--data-format bridge_zip for the older 03-23-pusht-data.zip.",
+    )
+    parser.add_argument(
+        "--data-format",
+        choices=["zarr_video", "bridge_zip"],
+        default="zarr_video",
+        help="On-disk layout of --dataset (default: zarr_video)",
     )
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument(
@@ -105,8 +173,59 @@ def parse_args() -> argparse.Namespace:
         "--cameras",
         nargs="+",
         default=["images1"],
-        help="Ordered RGB streams. Default images1 only: the deploy rig runs "
-             "a single fixed scene camera (blue), see PUSHT_DEPLOY_HANDOFF.md",
+        help="bridge_zip only: ordered RGB streams. Default images1: the deploy "
+             "rig runs a single fixed scene camera (blue), see "
+             "PUSHT_DEPLOY_HANDOFF.md",
+    )
+    parser.add_argument(
+        "--video-camera",
+        type=int,
+        default=1,
+        help="zarr_video only: which per-episode MP4 to train on. 1 is the "
+             "fixed blue scene camera (== the old images1 and the stream the "
+             "deploy client reads); camera 0 is a second viewpoint, discarded.",
+    )
+    parser.add_argument(
+        "--frame-cache-dir",
+        type=Path,
+        default=None,
+        help="zarr_video only: where to build the decoded uint8 frame memmap "
+             "(default: <dataset dir>/_frame_cache). ~17 GB for this collection "
+             "at 240x320; build it once up front with "
+             "scripts/prepare_pusht_video_cache.py, or concurrent jobs will "
+             "idle on GPUs waiting for whichever one wins the build lock.",
+    )
+    # ── Idle-transition handling (the stalling fix) ───────────────────────
+    parser.add_argument(
+        "--idle-filter",
+        choices=["none", "drop_zero", "drop_static", "subsample"],
+        default="drop_zero",
+        help="How to treat transitions whose target action is ~0. 24%% of this "
+             "dataset is the teleoperator pausing. DP is less exposed to this "
+             "than Q3C/IBC — it SAMPLES the fitted distribution instead of "
+             "taking its argmax, so the spike does not automatically win — but "
+             "a quarter of the density still sits on an absorbing action. "
+             "Measured on the full archive: none -> 24.1%% zeros kept; "
+             "drop_static -> 21.5%% (removes only 3.3%%, the spike survives); "
+             "drop_zero -> 0%% (removes 24.1%%). Default 'drop_zero' matches "
+             "scripts/train_pusht_real.py and train_pusht_real_ibc.py so all "
+             "three baselines stay comparable.",
+    )
+    parser.add_argument("--idle-eps", type=float, default=0.0,
+                        help="|action| <= this counts as idle (metres)")
+    parser.add_argument("--idle-move-eps", type=float, default=1e-4,
+                        help="drop_static: EEF displacement below this means "
+                             "the frame pair carries no visible motion")
+    parser.add_argument("--idle-keep-frac", type=float, default=0.25,
+                        help="subsample: fraction of idle transitions to keep")
+    parser.add_argument(
+        "--cond-eef-xy",
+        action="store_true",
+        help="zarr_video only: condition the denoiser on the current "
+             "end-effector (x, y). NOTE this deviates from the pushing_pixels "
+             "DP recipe, which is pixels-only — enable it only to match a Q3C "
+             "or IBC run trained the same way. Requires a deploy client that "
+             "feeds state[:2].",
     )
     parser.add_argument("--image-height", type=int, default=240)
     parser.add_argument("--image-width", type=int, default=320)
@@ -117,12 +236,20 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "checkpoints" / "pusht_real_dp",
     )
     parser.add_argument(
-        "--no-aug",
+        "--aug",
         action="store_true",
-        help="Disable train-time appearance augmentation (photometric + small "
-             "view crop). Default ON for parity with the q3c v2 and IBC runs: "
-             "deploy forensics measured the robot's T ~33%% darker than "
-             "training, so lighting/color robustness must come from data.",
+        help="Enable train-time appearance augmentation (photometric + small "
+             "view crop). OFF by default, matching scripts/train_pusht_real.py "
+             "and train_pusht_real_ibc.py: it targets the deploy lighting "
+             "shift, which is a SEPARATE problem from the stalling, and "
+             "leaving it on would confound the idle-filter comparison.",
+    )
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Run-directory name under --output-root (default: "
+             "<pred>pred_seed_XXXX). Use a distinct tag per config so batch "
+             "runs don't overwrite each other.",
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
@@ -136,23 +263,39 @@ def parse_args() -> argparse.Namespace:
 def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
     """Immutable per-run config, shaped like the q3c/IBC seed dirs so the
     deploy client's load_run_config() pattern works unchanged."""
+    # zarr_video trains on ONE camera (the blue scene view); bridge_zip keeps
+    # the explicit stream list. Both end up as a 1-element channel group so the
+    # in_channels arithmetic is identical.
+    n_cams = 1 if args.data_format == "zarr_video" else len(args.cameras)
     env = {
         "data_archive": str(args.dataset.resolve()),
+        "data_format": args.data_format,
         "env_id": "PushTRealRobot-v0",
         "state_dim": [
-            3 * len(args.cameras) * args.frame_stack,
+            3 * n_cams * args.frame_stack,
             args.image_height,
             args.image_width,
         ],
         "action_dim": 2,
         "frame_stack": args.frame_stack,
-        "camera_streams": list(args.cameras),
+        "camera_streams": (
+            [f"video{args.video_camera}"]
+            if args.data_format == "zarr_video"
+            else list(args.cameras)
+        ),
+        "video_camera": args.video_camera,
         "image_height": args.image_height,
         "image_width": args.image_width,
         "action_bounds": [-1.0, 1.0],
         "encoder_target_height": DP_BEST["encoder_target_height"],
         "encoder_target_width": DP_BEST["encoder_target_width"],
-        "image_aug": not args.no_aug,
+        "image_aug": args.aug,
+        # Idle-transition handling — see PushTWidowXVideoDataset.
+        "idle_filter": args.idle_filter,
+        "idle_eps": args.idle_eps,
+        "idle_move_eps": args.idle_move_eps,
+        "idle_keep_frac": args.idle_keep_frac,
+        "cond_eef_xy": args.cond_eef_xy,
         "training": {
             "training_steps": args.steps,
             "batch_size": args.batch_size,
@@ -186,6 +329,8 @@ def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "num_train_timesteps": DP_BEST["num_train_timesteps"],
         },
     }
+    if args.frame_cache_dir is not None:
+        env["frame_cache_dir"] = str(args.frame_cache_dir.resolve())
     return {
         "active_env": "pusht_real_pixels_dp",
         "environments": {"pusht_real_pixels_dp": env},
@@ -203,8 +348,16 @@ def main() -> int:
     if args.steps <= 0 or args.batch_size <= 0 or args.workers < 0:
         raise ValueError("steps/batch-size must be positive and workers non-negative")
 
-    run_dir = (args.output_root.resolve()
-               / f"{args.prediction_type}pred_seed_{args.seed:04d}")
+    run_name = args.tag if args.tag else f"{args.prediction_type}pred_seed_{args.seed:04d}"
+    run_dir = args.output_root.resolve() / run_name
+    # Refuse to silently overwrite a finished run: checkpoints are expensive and
+    # a repeated --tag in a batch file is an easy mistake to make.
+    existing = sorted(run_dir.glob("*.pt")) if run_dir.exists() else []
+    if existing and not args.dry_run:
+        raise FileExistsError(
+            f"{run_dir} already holds checkpoints ({[p.name for p in existing[:3]]}...). "
+            f"Pass a different --tag, or delete the directory to retrain."
+        )
     run_dir.mkdir(parents=True, exist_ok=True)
     config = build_run_config(args, run_dir)
     config_path = run_dir / "config.json"
@@ -212,9 +365,10 @@ def main() -> int:
         json.dump(config, handle, indent=2)
         handle.write("\n")
 
-    print(f"Dataset:    {args.dataset.resolve()}")
-    print(f"Seed:       {args.seed}")
+    print(f"Dataset:    {args.dataset.resolve()}  (format={args.data_format})")
+    print(f"Seed:       {args.seed}   tag={run_name}")
     print(f"Pred type:  {args.prediction_type}")
+    print(f"Idle filter:{args.idle_filter} (eps={args.idle_eps})")
     print(f"Config:     {config_path}")
     print(f"Checkpoints:{run_dir}")
     if args.dry_run:
@@ -230,18 +384,46 @@ def main() -> int:
     device = torch.device(args.device if torch.cuda.is_available()
                           or args.device == "cpu" else "cpu")
 
-    from utils.datasets import PushTRealPixelsDataset
     from utils.diffusion import build_diffusion, build_pixel_denoiser
 
-    dataset = PushTRealPixelsDataset(
-        archive_path=str(args.dataset),
-        frame_stack=args.frame_stack,
-        camera_streams=tuple(args.cameras),
-        resize_hw=(args.image_height, args.image_width),
-        normalize_actions=True,
-        action_norm_range=(-1.0, 1.0),
-        augment=not args.no_aug,
-    )
+    if args.data_format == "zarr_video":
+        from utils.datasets import PushTWidowXVideoDataset
+
+        dataset = PushTWidowXVideoDataset(
+            archive_path=str(args.dataset),
+            frame_stack=args.frame_stack,
+            camera=args.video_camera,
+            resize_hw=(args.image_height, args.image_width),
+            normalize_actions=True,
+            action_norm_range=(-1.0, 1.0),
+            augment=args.aug,
+            idle_filter=args.idle_filter,
+            idle_eps=args.idle_eps,
+            idle_move_eps=args.idle_move_eps,
+            idle_keep_frac=args.idle_keep_frac,
+            idle_seed=args.seed,
+            cache_dir=(
+                str(args.frame_cache_dir.resolve())
+                if args.frame_cache_dir is not None
+                else None
+            ),
+            cond_eef_xy=args.cond_eef_xy,
+        )
+    else:
+        from utils.datasets import PushTRealPixelsDataset
+
+        if args.cond_eef_xy:
+            raise ValueError("--cond-eef-xy requires --data-format zarr_video")
+        dataset = PushTRealPixelsDataset(
+            archive_path=str(args.dataset),
+            frame_stack=args.frame_stack,
+            camera_streams=tuple(args.cameras),
+            resize_hw=(args.image_height, args.image_width),
+            normalize_actions=True,
+            action_norm_range=(-1.0, 1.0),
+            augment=args.aug,
+        )
+    cond_dim = int(getattr(dataset, "cond_dim", 0))
     loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -262,17 +444,32 @@ def main() -> int:
         "denoiser_depth": DP_BEST["denoiser_depth"],
         "denoiser_use_spectral_norm": DP_BEST["denoiser_use_spectral_norm"],
     }
-    denoiser = build_pixel_denoiser(
-        2, dataset.in_channels, dp,
-        encoder_target_height=DP_BEST["encoder_target_height"],
-        encoder_target_width=DP_BEST["encoder_target_width"],
-        device=device,
-    )
+    if cond_dim:
+        # Local subclass — the shared PixelDiffusionDenoiser is pixels-only.
+        denoiser = CondPixelDiffusionDenoiser(
+            2,
+            in_channels=dataset.in_channels,
+            cond_dim=cond_dim,
+            encoder_target_height=DP_BEST["encoder_target_height"],
+            encoder_target_width=DP_BEST["encoder_target_width"],
+            encoder_feature_dim=DP_BEST["encoder_feature_dim"],
+            dp=dp,
+        ).to(device)
+    else:
+        denoiser = build_pixel_denoiser(
+            2, dataset.in_channels, dp,
+            encoder_target_height=DP_BEST["encoder_target_height"],
+            encoder_target_width=DP_BEST["encoder_target_width"],
+            device=device,
+        )
     diffusion = build_diffusion(dp, device, (-1.0, 1.0))
     n_params = sum(p.numel() for p in denoiser.parameters())
     print(f"PixelDiffusionDenoiser (ConvMaxpool + DenseResnet "
           f"{DP_BEST['denoiser_width']}x{DP_BEST['denoiser_depth']}, "
           f"{args.prediction_type}-pred): {n_params:,} params")
+    if cond_dim:
+        print(f"  conditioned on {cond_dim}-D EEF (x, y) — this DEVIATES from "
+              f"the pixels-only pushing_pixels DP recipe")
 
     optimizer = torch.optim.AdamW(denoiser.parameters(),
                                   lr=DP_BEST["learning_rate"])
@@ -292,13 +489,18 @@ def main() -> int:
         "act_max": dataset.act_max,
         "action_norm_range": (-1.0, 1.0),
         "frame_stack": args.frame_stack,
-        "camera_streams": list(args.cameras),
+        # Take the stream names from the dataset so zarr_video records
+        # ("video1",) rather than the unused bridge_zip --cameras default.
+        "camera_streams": list(dataset.camera_streams),
         "in_channels": dataset.in_channels,
         "image_hw": [args.image_height, args.image_width],
         "encoder_target_height": DP_BEST["encoder_target_height"],
         "encoder_target_width": DP_BEST["encoder_target_width"],
         "encoder_feature_dim": DP_BEST["encoder_feature_dim"],
         "encoder_kind": "conv_maxpool",
+        "cond_dim": cond_dim,
+        "data_format": args.data_format,
+        "idle_filter": args.idle_filter,
         "action_semantics": dataset.action_semantics,
         # Sampler reconstruction — DDPM/DDIM both rebuild GaussianDiffusion
         # from these, so the deploy client never has to guess.
@@ -338,6 +540,8 @@ def main() -> int:
             # uint8 -> /255 -> resize internally (same as the q3c/IBC path).
             states = batch["state"].float().to(device, non_blocking=True)
             actions = batch["action"].float().to(device, non_blocking=True)
+            if cond_dim:
+                denoiser._cond = batch["cond"].float().to(device, non_blocking=True)
 
             loss = diffusion.training_loss(denoiser, states, actions)
 
@@ -352,7 +556,7 @@ def main() -> int:
                 for ep, p in zip(ema_denoiser.parameters(), denoiser.parameters()):
                     ep.mul_(ema_decay).add_(p, alpha=1.0 - ema_decay)
 
-            running_loss += float(loss.item())
+            running_loss += float(loss.detach())
             running_n += 1
             step += 1
 
