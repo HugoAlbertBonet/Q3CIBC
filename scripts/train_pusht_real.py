@@ -111,12 +111,18 @@ def parse_args() -> argparse.Namespace:
         default=ROOT / "checkpoints" / "pusht_real_combinedv2_v2",
     )
     parser.add_argument(
-        "--no-aug",
+        "--aug",
         action="store_true",
-        help="Disable train-time appearance augmentation (photometric + "
-             "small view crop). Default ON: deploy forensics measured the "
-             "robot's T ~33%% darker than training with identical mat "
-             "exposure, so lighting/color robustness must come from data.",
+        help="Enable train-time appearance augmentation (photometric + small "
+             "view crop). OFF by default: it targets the deploy lighting shift "
+             "(the robot's T measured ~33%% darker than training at identical "
+             "mat exposure), which is a SEPARATE problem from the stalling, and "
+             "it is unvalidated on real data — leaving it on would confound the "
+             "idle-filter comparison. Note the crop-zoom component is "
+             "questionable for this task specifically: the camera is fixed, so "
+             "pixel position maps to a fixed world position, and translating "
+             "the view breaks that. If you enable this later, consider "
+             "photometric-only (zoom_range = (1.0, 1.0)).",
     )
     parser.add_argument(
         "--tag",
@@ -194,7 +200,7 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "encoder_target_width": 240,
             # Train-time appearance augmentation (see PushTRealPixelsDataset).
             # Ranges cover the measured train->deploy shift (T at ~0.67x red).
-            "image_aug": not args.no_aug,
+            "image_aug": args.aug,
             # Idle-transition handling — see PushTWidowXVideoDataset docstring.
             "idle_filter": args.idle_filter,
             "idle_eps": args.idle_eps,

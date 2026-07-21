@@ -52,9 +52,13 @@ uv run python scripts/train_pusht_real.py --seed 11 --tag c06_hard_negatives --w
 #    the expert, and at weight 10 that dominates. Lower it and widen the cloud.
 uv run python scripts/train_pusht_real.py --seed 11 --tag c07_lowmse_cp100 --workers 4 --idle-filter drop_zero --mse-weight 1.0 --control-points 100 --top-k-cps 30
 
-# 08 Augmentation ablation: appearance aug is new and unvalidated on real data.
-#    Same as 01 with it off, so we can attribute any gain/loss to it.
-uv run python scripts/train_pusht_real.py --seed 11 --tag c08_dropzero_noaug --workers 4 --idle-filter drop_zero --no-aug
+# 08 Augmentation ablation: same as 01 but WITH appearance aug. Aug is off
+#    everywhere else — it targets the deploy lighting shift, not the stalling,
+#    and is unvalidated on real data, so it stays out of the main comparison.
+#    Caveat: its crop-zoom translates the view, and this camera is FIXED, so
+#    pixel position maps to a fixed world position. This config tests whether
+#    that hurts.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c08_dropzero_aug --workers 4 --idle-filter drop_zero --aug
 
 # 09 EEF (x,y) conditioning + drop_zero. The policy is otherwise pixels-only and
 #    cannot tell "at the demo start" from "stalled in a corner" — x/y are the
