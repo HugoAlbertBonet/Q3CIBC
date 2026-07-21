@@ -13,6 +13,15 @@ dependencies = [
     "tfrecord>=1.14.6",
     "torch>=2.9.1",
     "wandb>=0.18.0",
+    # Diffusion-Policy-format Push-T archive (PushTWidowXVideoDataset):
+    # zarr reads the low-dim replay buffer, imageio+imageio-ffmpeg decode the
+    # per-episode MP4s once into the frame cache. numcodecs is zarr's blosc/zstd
+    # codec backend and is pinned <0.16 because 0.16 renamed the blosc C symbols
+    # zarr 2.x imports (cbuffer_sizes -> _cbuffer_sizes).
+    "zarr>=2.17,<3",
+    "numcodecs<0.16",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
 ]
 
 # Pushing-env-only deps. Kept OUT of the main dependency list so SLURM nodes

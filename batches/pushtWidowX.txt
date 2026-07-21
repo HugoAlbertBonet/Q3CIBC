@@ -1,0 +1,69 @@
+# Push-T WidowX (Diffusion-Policy archive, camera 1) — Q3C combinedv2 batch.
+#
+# One job per line via submit_experiments.sh. These are DIFFERENT HYPOTHESES,
+# not seed repeats: the point is that at least one clears the stalling failure.
+#
+# Why these axes. Measured on data/pusht_widowx_data.zip:
+#   - 24.1% of target actions are EXACTLY (0,0) — the teleoperator pausing.
+#     That is a delta spike holding a quarter of the mass at a single point,
+#     while real pushes spread over a 2-D continuum, so an energy-argmax policy
+#     preferentially selects the spike.
+#   - P(a_t = 0 | a_{t-1} = 0) = 0.69 vs a 0.24 base rate, and
+#     P(a_t = 0 | visually static frame pair) = 0.60 vs 0.22 — i.e. "static
+#     stack -> hold" is a genuinely learnable rule, which on the robot is an
+#     absorbing state: it stalls, frames go static, it keeps holding.
+# So axis 1 is the data fix (idle_filter), axis 2 is the hyperparameter region
+# (the two recipes the search found: pushing_pixels vs libero_goal_pixels), and
+# axis 3 is the contrastive signal that teaches the Q net to push energy DOWN
+# at zero (uniform / Langevin negatives).
+#
+# Run scripts/prepare_pusht_video_cache.py FIRST — otherwise 7 of these sit on
+# GPUs waiting for the 8th to decode the 17 GB frame cache.
+#
+# --workers 4 matches submit_experiments.sh's --cpus-per-task=4. Frames come
+# from a page-cached memmap, so the loader is not decode-bound any more.
+
+# 01 PRIMARY: best pushing_pixels recipe (search trial 95, sr 0.99) + drop_zero.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c01_dropzero_base --workers 4 --idle-filter drop_zero
+
+# 02 CONTROL: identical, but keep the idle transitions. Expected to reproduce
+#    the stall — this is what confirms the diagnosis rather than assuming it.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c02_none_control --workers 4 --idle-filter none
+
+# 03 Surgical variant: drop only idle transitions whose frame pair is ALSO
+#    static (removes the absorbing-state rule, keeps deceleration behaviour).
+uv run python scripts/train_pusht_real.py --seed 11 --tag c03_dropstatic --workers 4 --idle-filter drop_static
+
+# 04 Middle ground: keep a quarter of the idles, so "slow down near the goal"
+#    survives without a quarter of the mass sitting on one point.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c04_subsample25 --workers 4 --idle-filter subsample --idle-keep-frac 0.25
+
+# 05 libero_goal_pixels recipe (best sr 0.96 on the other PIXEL manipulation
+#    task): many more control points, far weaker MSE pull, wide entropy kernel,
+#    lower LR, plus Langevin negatives.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c05_libero_recipe --workers 4 --idle-filter drop_zero --control-points 100 --top-k-cps 30 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --lr 2e-4 --est-lr 2e-4 --langevin-negatives 8 --langevin-iters 100
+
+# 06 Hard negatives on top of the primary: with 0 negatives the estimator only
+#    ever sees its own CPs, so nothing teaches it that zero is a BAD action
+#    when the expert moved. Uniform + Langevin negatives do exactly that.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c06_hard_negatives --workers 4 --idle-filter drop_zero --uniform-negatives 8 --langevin-negatives 8 --langevin-iters 100
+
+# 07 Weaken the mode-collapse pressure directly: lossMSE pulls the CP nearest
+#    the expert, and at weight 10 that dominates. Lower it and widen the cloud.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c07_lowmse_cp100 --workers 4 --idle-filter drop_zero --mse-weight 1.0 --control-points 100 --top-k-cps 30
+
+# 08 Augmentation ablation: appearance aug is new and unvalidated on real data.
+#    Same as 01 with it off, so we can attribute any gain/loss to it.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c08_dropzero_noaug --workers 4 --idle-filter drop_zero --no-aug
+
+# 09 EEF (x,y) conditioning + drop_zero. The policy is otherwise pixels-only and
+#    cannot tell "at the demo start" from "stalled in a corner" — x/y are the
+#    only proprio dims that match between archive and live server (rotations use
+#    a different convention, z has a ~1cm deploy droop). Deploying THIS needs a
+#    client that feeds state[:2]; deploy_pusht_real.py reads cond_dim from
+#    norm_stats and does it automatically.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c09_condxy_dropzero --workers 4 --idle-filter drop_zero --cond-eef-xy
+
+# 10 Conditioning WITHOUT the data fix — isolates whether knowing where the arm
+#    is, on its own, is enough to escape the stall.
+uv run python scripts/train_pusht_real.py --seed 11 --tag c10_condxy_nofilter --workers 4 --idle-filter none --cond-eef-xy

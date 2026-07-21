@@ -6,6 +6,7 @@ state vector to give the model temporal context.
 
 import os
 import glob
+import json
 import pickle
 import re
 import zipfile
@@ -1303,6 +1304,507 @@ class PushTRealPixelsDataset(Dataset):
             "state": stacked,
             "action": self._actions_by_traj[traj_slot][step],
         }
+
+    def __len__(self):
+        return len(self._samples)
+
+
+class PushTWidowXVideoDataset(Dataset):
+    """Real-robot Push-T demos in Diffusion-Policy format (Zarr + per-episode MP4).
+
+    Layout inside the archive (see the bundled ``pusht_real/README.md``)::
+
+        pusht_real/
+          replay_buffer.zarr/   # flat, all episodes concatenated
+            data/action           (N, 7) f8 — only dims 0:2 active (dx, dy metres)
+            data/robot_eef_pose   (N, 6) f8 — [x, y, z, rx, ry, rz]
+            meta/episode_ends     (E,) i8  — exclusive end index per episode
+          videos/<ep>/<cam>.mp4  # 640x480 @ 20 Hz, frame t <-> row t of that
+                                 # episode's slice
+
+    Camera choice mirrors the previous collection: camera **1** is the fixed
+    blue scene camera (the one every checkpoint was trained on and the one the
+    deploy client reads); camera 0 is a second viewpoint and is DISCARDED.
+
+    Action target is ``action[:, :2]`` — planar EEF delta (x, y) in metres,
+    min-max normalized to ``action_norm_range``, exactly as
+    ``PushTRealPixelsDataset`` did, so downstream denormalization is unchanged.
+
+    ── Idle transitions (``idle_filter``) ──────────────────────────────────
+    ~24% of recorded actions are EXACTLY (0, 0): the teleoperator pausing
+    mid-episode. Those frames are visually near-static, so the pair
+    "static frame stack -> zero action" is highly learnable, and measurements
+    on this data give P(a_t = 0 | a_{t-1} = 0) = 0.69 versus a 0.24 base rate.
+    A policy that fits it inherits a genuine absorbing state: it stalls, the
+    stack goes static, and the learned answer is "keep holding". Because the
+    zero action is a delta spike (a single point holding ~a quarter of the
+    mass) while real pushes spread over a 2-D continuum, an energy-argmax
+    policy preferentially lands on the spike. ``idle_filter`` removes or
+    thins those transitions:
+
+      ``none``          keep everything (reproduces the stalling behaviour)
+      ``drop_zero``     drop |action| <= idle_eps
+      ``drop_static``   drop |action| <= idle_eps only when the incoming frame
+                        pair is also visually static (EEF moved < idle_move_eps)
+                        — surgically removes the absorbing-state examples while
+                        keeping decelerations
+      ``subsample``     keep a random ``idle_keep_frac`` of the |action| <=
+                        idle_eps transitions
+
+    Filtering drops SAMPLES, never frames: the frame stack still reads real
+    consecutive video frames, so inter-frame motion stays physical.
+
+    ── Frame cache ────────────────────────────────────────────────────────
+    Random access into H.264 is seek-bound, so on first use the frames are
+    decoded once into a uint8 memmap at ``resize_hw`` (~17 GB for the 73k-frame
+    collection at 240x320). The build is atomic (temp dir + rename) and guarded
+    by a lock file, so concurrent Slurm tasks cooperate instead of racing.
+    """
+
+    def __init__(
+        self,
+        archive_path: str,
+        frame_stack: int = 2,
+        camera: int = 1,
+        resize_hw: tuple[int, int] = (240, 320),
+        normalize_actions: bool = True,
+        action_norm_range: tuple[float, float] = (-1.0, 1.0),
+        max_trajectories: Optional[int] = None,
+        augment: bool = False,
+        aug_params: Optional[dict] = None,
+        idle_filter: str = "none",
+        idle_eps: float = 0.0,
+        idle_move_eps: float = 1e-4,
+        idle_keep_frac: float = 0.25,
+        idle_seed: int = 0,
+        cache_dir: Optional[str] = None,
+        cond_eef_xy: bool = False,
+    ):
+        self.archive_path = os.path.abspath(os.path.expanduser(archive_path))
+        if not os.path.isfile(self.archive_path):
+            raise FileNotFoundError(f"Push-T archive not found: {self.archive_path}")
+        if frame_stack < 1:
+            raise ValueError(f"frame_stack must be >= 1, got {frame_stack}")
+        if resize_hw[0] < 1 or resize_hw[1] < 1:
+            raise ValueError(f"resize_hw must be positive, got {resize_hw}")
+        valid_filters = ("none", "drop_zero", "drop_static", "subsample")
+        if idle_filter not in valid_filters:
+            raise ValueError(
+                f"idle_filter must be one of {valid_filters}, got {idle_filter!r}"
+            )
+        if not 0.0 <= idle_keep_frac <= 1.0:
+            raise ValueError(f"idle_keep_frac must be in [0, 1], got {idle_keep_frac}")
+
+        self.frame_stack = int(frame_stack)
+        self.camera = int(camera)
+        self.resize_hw = (int(resize_hw[0]), int(resize_hw[1]))
+        self.normalize_actions = bool(normalize_actions)
+        self.action_norm_range = (
+            float(action_norm_range[0]),
+            float(action_norm_range[1]),
+        )
+        self.action_chunk = 1
+        self.action_dims = (0, 1)
+        self.action_semantics = (
+            "planar end-effector delta (x, y), metres per control step"
+        )
+        self.idle_filter = idle_filter
+        self.idle_eps = float(idle_eps)
+        self.idle_move_eps = float(idle_move_eps)
+        self.idle_keep_frac = float(idle_keep_frac)
+        # Camera streams is kept as a 1-tuple so norm_stats / in_channels
+        # arithmetic matches PushTRealPixelsDataset exactly.
+        self.camera_streams = (f"video{self.camera}",)
+        self.augment = bool(augment)
+        self.aug_params = dict(PushTRealPixelsDataset._AUG_DEFAULTS)
+        if aug_params:
+            unknown = set(aug_params) - set(self.aug_params)
+            if unknown:
+                raise ValueError(f"Unknown aug_params keys: {sorted(unknown)}")
+            self.aug_params.update(aug_params)
+
+        # ── Low-dim arrays (Zarr) ──────────────────────────────────────────
+        raw_actions, eef_pose, episode_ends = self._load_lowdim()
+        if max_trajectories is not None:
+            keep_eps = int(max_trajectories)
+            episode_ends = episode_ends[:keep_eps]
+            n_keep = int(episode_ends[-1])
+            raw_actions = raw_actions[:n_keep]
+            eef_pose = eef_pose[:n_keep]
+        self._episode_ends = np.asarray(episode_ends, dtype=np.int64)
+        self._episode_starts = np.concatenate(
+            [[0], self._episode_ends[:-1]]
+        ).astype(np.int64)
+        self.n_episodes = len(self._episode_ends)
+        n_frames = int(self._episode_ends[-1])
+
+        raw_actions = np.asarray(raw_actions[:, :2], dtype=np.float32)
+        if len(raw_actions) != n_frames:
+            raise ValueError(
+                f"action rows ({len(raw_actions)}) != episode_ends[-1] ({n_frames})"
+            )
+
+        # ── Frame cache (decode MP4 -> uint8 memmap once) ──────────────────
+        self._H, self._W = self.resize_hw
+        self._cache_path, self._cache_len = self._ensure_frame_cache(
+            cache_dir, n_frames
+        )
+        if self._cache_len != n_frames:
+            raise ValueError(
+                f"frame cache has {self._cache_len} frames but the replay buffer "
+                f"has {n_frames}. Delete {self._cache_path} and rebuild."
+            )
+        self._frames: np.memmap | None = None  # opened lazily per worker
+
+        # ── Normalization stats from the FULL action set ───────────────────
+        # Computed before filtering so act_min/act_max describe the physical
+        # command range of the robot, not of whatever subset we train on.
+        self.act_min = raw_actions.min(axis=0).astype(np.float32)
+        self.act_max = raw_actions.max(axis=0).astype(np.float32)
+        if self.normalize_actions:
+            lo, hi = self.action_norm_range
+            denom = np.where(
+                self.act_max == self.act_min,
+                np.ones_like(self.act_max),
+                self.act_max - self.act_min,
+            )
+            self.actions = (
+                lo + (raw_actions - self.act_min) * (hi - lo) / denom
+            ).astype(np.float32)
+        else:
+            self.actions = raw_actions
+        self._raw_actions = raw_actions
+
+        # ── Optional conditioning: end-effector (x, y) ─────────────────────
+        # The policy is otherwise pixels-only and cannot tell "at the demo
+        # start" from "stalled in a corner". x/y are the only proprio channels
+        # that are unambiguous across train and deploy: the live server's state
+        # vector is [x, y, z, r0, r1, r2, gripper] and its x/y match this
+        # archive's, whereas the rotation dims use a different convention
+        # (train r1 ~ +1.62, deploy d4 ~ +0.03) and z carries a known ~1 cm
+        # deploy droop. Only the CURRENT pose is used, never a stacked pair:
+        # a velocity-like feature would be strongly correlated with the idle
+        # mode this dataset is already being filtered to remove.
+        self.cond_eef_xy = bool(cond_eef_xy)
+        self.cond_dim = 2 if self.cond_eef_xy else 0
+        if self.cond_eef_xy:
+            eef_xy = np.asarray(eef_pose[:, :2], dtype=np.float32)
+            self.cond_min = eef_xy.min(axis=0).astype(np.float32)
+            self.cond_max = eef_xy.max(axis=0).astype(np.float32)
+            self.cond = self.normalize_cond(eef_xy)
+        else:
+            self.cond_min = self.cond_max = None
+            self.cond = None
+
+        # ── Sample list (+ idle filtering) ─────────────────────────────────
+        self._samples = self._build_samples(raw_actions, eef_pose, idle_seed)
+
+        self.in_channels = 3 * len(self.camera_streams) * self.frame_stack
+        self.state_shape = (self.in_channels, self._H, self._W)
+        self.action_shape = 2
+
+        kept = len(self._samples)
+        print(
+            "PushTWidowXVideoDataset: "
+            f"{self.n_episodes} episodes, {n_frames} frames, camera={self.camera}, "
+            f"frame_stack={self.frame_stack}, state_shape={self.state_shape}, "
+            f"raw action range={self.act_min} -> {self.act_max}"
+        )
+        print(
+            f"  idle_filter={self.idle_filter!r} -> {kept}/{n_frames} transitions "
+            f"kept ({kept / max(n_frames, 1):.1%}); "
+            f"zero-action share now {(np.linalg.norm(raw_actions[self._samples], axis=1) <= self.idle_eps).mean():.1%}"
+        )
+
+    # ── Loading helpers ────────────────────────────────────────────────────
+    def _load_lowdim(self):
+        """Extract + read the Zarr replay buffer. Returns (actions, eef, ends)."""
+        try:
+            import zarr
+        except ImportError as e:
+            raise ImportError(
+                "zarr is required to read the Diffusion-Policy replay buffer. "
+                "Build the project environment with `uv sync`."
+            ) from e
+        import shutil
+        import tempfile
+
+        prefix = self._zarr_prefix()
+        tmp = tempfile.mkdtemp(prefix="pusht_zarr_")
+        try:
+            with zipfile.ZipFile(self.archive_path, "r") as archive:
+                members = [n for n in archive.namelist() if n.startswith(prefix)]
+                if not members:
+                    raise ValueError(
+                        f"No replay_buffer.zarr entries in {self.archive_path}"
+                    )
+                archive.extractall(tmp, members=members)
+            root = zarr.open(os.path.join(tmp, prefix.rstrip("/")), mode="r")
+            actions = np.asarray(root["data/action"][:], dtype=np.float64)
+            eef = np.asarray(root["data/robot_eef_pose"][:], dtype=np.float64)
+            ends = np.asarray(root["meta/episode_ends"][:], dtype=np.int64)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return actions, eef, ends
+
+    def _zarr_prefix(self) -> str:
+        with zipfile.ZipFile(self.archive_path, "r") as archive:
+            for name in archive.namelist():
+                idx = name.find("replay_buffer.zarr/")
+                if idx != -1:
+                    return name[: idx + len("replay_buffer.zarr/")]
+        raise ValueError(f"replay_buffer.zarr not found in {self.archive_path}")
+
+    def _video_member(self, archive_names: set[str], episode: int) -> str:
+        root = self._zarr_prefix().split("replay_buffer.zarr/")[0]
+        member = f"{root}videos/{episode}/{self.camera}.mp4"
+        if member not in archive_names:
+            raise ValueError(f"Missing video for episode {episode}: {member}")
+        return member
+
+    def _ensure_frame_cache(self, cache_dir, n_frames: int) -> tuple[str, int]:
+        """Decode camera `self.camera` into a uint8 memmap once. Returns (path, N).
+
+        Concurrent trainers are expected (Slurm array / batch): the build writes
+        to a unique temp file and os.replace()s it into place, and waiters poll
+        for the finished file rather than duplicating the work.
+        """
+        import tempfile
+        import time as _time
+
+        base = cache_dir or os.path.join(
+            os.path.dirname(self.archive_path), "_frame_cache"
+        )
+        os.makedirs(base, exist_ok=True)
+        tag = (
+            f"{os.path.splitext(os.path.basename(self.archive_path))[0]}"
+            f"_cam{self.camera}_{self._H}x{self._W}"
+        )
+        path = os.path.join(base, f"{tag}.u8")
+        meta_path = path + ".json"
+
+        if os.path.exists(path) and os.path.exists(meta_path):
+            with open(meta_path) as fh:
+                meta = json.load(fh)
+            return path, int(meta["n_frames"])
+
+        lock_path = path + ".lock"
+        # Single builder: whoever creates the lock exclusively does the work.
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            # Another process is building. Wait for the finished artifact.
+            print(f"[frame-cache] another process is building {path}; waiting...")
+            for _ in range(7200):  # up to 2 h
+                if os.path.exists(path) and os.path.exists(meta_path):
+                    with open(meta_path) as fh:
+                        meta = json.load(fh)
+                    return path, int(meta["n_frames"])
+                _time.sleep(1.0)
+            raise TimeoutError(
+                f"Timed out waiting for the frame cache at {path}. If no build is "
+                f"running, delete {lock_path} and retry."
+            )
+
+        try:
+            os.write(lock_fd, str(os.getpid()).encode())
+            os.close(lock_fd)
+            n_written = self._build_frame_cache(path, meta_path, n_frames)
+            return path, n_written
+        except BaseException:
+            # Never leave a stale lock behind on failure.
+            for p in (path + ".tmp", path, meta_path):
+                if os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+            raise
+        finally:
+            if os.path.exists(lock_path):
+                try:
+                    os.remove(lock_path)
+                except OSError:
+                    pass
+
+    def _build_frame_cache(self, path: str, meta_path: str, n_frames: int) -> int:
+        """Decode every episode's camera video into `path` (uint8 memmap)."""
+        try:
+            import imageio.v3 as iio
+        except ImportError as e:
+            raise ImportError(
+                "imageio + imageio-ffmpeg are required to decode the Push-T MP4 "
+                "videos. Build the project environment with `uv sync`."
+            ) from e
+        if not TF_AVAILABLE:
+            raise ImportError(
+                "TensorFlow is required for the AREA resize used to match the "
+                "training/deploy preprocessing. Build with `uv sync`."
+            )
+        import shutil
+        import tempfile
+
+        H, W = self._H, self._W
+        tmp_path = path + ".tmp"
+        nbytes = n_frames * H * W * 3
+        print(
+            f"[frame-cache] building {path} "
+            f"({n_frames} frames @ {H}x{W} = {nbytes / 1e9:.1f} GB). One-time cost."
+        )
+        mm = np.memmap(tmp_path, dtype=np.uint8, mode="w+", shape=(n_frames, H, W, 3))
+        written = 0
+        scratch = tempfile.mkdtemp(prefix="pusht_vid_")
+        try:
+            with zipfile.ZipFile(self.archive_path, "r") as archive:
+                names = set(archive.namelist())
+                for ep in range(self.n_episodes):
+                    start = int(self._episode_starts[ep])
+                    end = int(self._episode_ends[ep])
+                    member = self._video_member(names, ep)
+                    archive.extract(member, scratch)
+                    video_path = os.path.join(scratch, member)
+                    # Default plugin == imageio-ffmpeg; do not pin "pyav" (it is
+                    # a separate optional dependency and is not installed here).
+                    frames = iio.imread(video_path)
+                    if len(frames) < (end - start):
+                        raise ValueError(
+                            f"episode {ep}: video has {len(frames)} frames but the "
+                            f"replay buffer expects {end - start}"
+                        )
+                    # Videos may carry a trailing frame; align to the buffer.
+                    frames = frames[: end - start]
+                    if frames.shape[1:3] != (H, W):
+                        resized = tf.image.resize(
+                            frames,
+                            (H, W),
+                            method=tf.image.ResizeMethod.AREA,
+                            antialias=True,
+                        )
+                        frames = tf.cast(
+                            tf.clip_by_value(tf.round(resized), 0, 255), tf.uint8
+                        ).numpy()
+                    mm[start:end] = frames
+                    written += end - start
+                    os.remove(video_path)
+                    if (ep + 1) % 25 == 0 or ep == self.n_episodes - 1:
+                        print(
+                            f"[frame-cache]   episode {ep + 1}/{self.n_episodes} "
+                            f"({written}/{n_frames} frames)"
+                        )
+            mm.flush()
+            del mm
+            os.replace(tmp_path, path)
+            with open(meta_path, "w") as fh:
+                json.dump(
+                    {
+                        "n_frames": int(written),
+                        "height": H,
+                        "width": W,
+                        "camera": self.camera,
+                        "archive": self.archive_path,
+                    },
+                    fh,
+                )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        print(f"[frame-cache] done: {written} frames -> {path}")
+        return written
+
+    def _build_samples(self, raw_actions, eef_pose, idle_seed: int) -> np.ndarray:
+        """Indices of the transitions to train on, after idle filtering."""
+        n = len(raw_actions)
+        mag = np.linalg.norm(raw_actions, axis=1)
+        idle = mag <= self.idle_eps
+        keep = np.ones(n, dtype=bool)
+
+        if self.idle_filter == "drop_zero":
+            keep &= ~idle
+        elif self.idle_filter == "drop_static":
+            # "Static" = the frame pair the model sees carries no visible motion.
+            # The stack at t is (t-1, t), so the motion it encodes is the EEF
+            # displacement from t-1 to t. First frame of each episode has no
+            # predecessor and is treated as static (it is padded with itself).
+            eef_xy = np.asarray(eef_pose[:, :2], dtype=np.float64)
+            move = np.zeros(n, dtype=np.float64)
+            move[1:] = np.linalg.norm(np.diff(eef_xy, axis=0), axis=1)
+            move[self._episode_starts] = 0.0
+            static = move <= self.idle_move_eps
+            keep &= ~(idle & static)
+        elif self.idle_filter == "subsample":
+            rng = np.random.default_rng(idle_seed)
+            idle_idx = np.nonzero(idle)[0]
+            drop_n = int(round(len(idle_idx) * (1.0 - self.idle_keep_frac)))
+            if drop_n > 0:
+                drop = rng.choice(idle_idx, size=drop_n, replace=False)
+                keep[drop] = False
+
+        return np.nonzero(keep)[0].astype(np.int64)
+
+    # ── Dataset protocol ───────────────────────────────────────────────────
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # memmap handles must not be inherited across DataLoader worker forks.
+        state["_frames"] = None
+        return state
+
+    def _frame_array(self) -> np.memmap:
+        if self._frames is None:
+            self._frames = np.memmap(
+                self._cache_path,
+                dtype=np.uint8,
+                mode="r",
+                shape=(self._cache_len, self._H, self._W, 3),
+            )
+        return self._frames
+
+    def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
+        if not self.normalize_actions:
+            return np.asarray(normalized_action, dtype=np.float32)
+        lo, hi = self.action_norm_range
+        scale = (self.act_max - self.act_min) / (hi - lo)
+        return (
+            self.act_min
+            + (np.asarray(normalized_action, dtype=np.float32) - lo) * scale
+        ).astype(np.float32)
+
+    def normalize_cond(self, eef_xy: np.ndarray) -> np.ndarray:
+        """Metric EEF (x, y) -> [-1, 1] using the training workspace bounds.
+
+        Deploy must call this with the SAME cond_min/cond_max (persisted in
+        norm_stats.pt). Clipped, because the arm can leave the demonstrated
+        workspace at deploy and an unbounded conditioning vector would be a
+        much larger distribution shift than a saturated one.
+        """
+        if self.cond_min is None:
+            raise RuntimeError("normalize_cond called but cond_eef_xy is off")
+        span = np.where(
+            self.cond_max == self.cond_min,
+            np.ones_like(self.cond_max),
+            self.cond_max - self.cond_min,
+        )
+        z = -1.0 + 2.0 * (np.asarray(eef_xy, np.float32) - self.cond_min) / span
+        return np.clip(z, -1.0, 1.0).astype(np.float32)
+
+    def __getitem__(self, index):
+        t = int(self._samples[index])
+        # Clamp the stack to this episode's start so frames never cross episodes.
+        ep = int(np.searchsorted(self._episode_ends, t, side="right"))
+        ep_start = int(self._episode_starts[ep])
+        frames_arr = self._frame_array()
+        frames = [
+            np.asarray(frames_arr[max(ep_start, t - offset)])
+            for offset in range(self.frame_stack - 1, -1, -1)
+        ]
+        if self.augment:
+            frames = PushTRealPixelsDataset._augment_stack(self, frames)
+        stacked = np.concatenate(frames, axis=-1)
+        stacked = np.transpose(stacked, (2, 0, 1))
+        sample = {"state": stacked, "action": self.actions[t]}
+        if self.cond_eef_xy:
+            sample["cond"] = self.cond[t]
+        return sample
 
     def __len__(self):
         return len(self._samples)

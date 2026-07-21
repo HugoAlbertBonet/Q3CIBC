@@ -310,15 +310,44 @@ def load_dataset():
             action_chunk=int(env_config.get("training", {}).get("action_chunk", 1)),
         )
     elif active_env == "pusht_real_pixels":
+        # Two on-disk formats share this env id (so every other `active_env`
+        # branch in this file — normalizer bypass, norm_stats, worker count,
+        # pixel model build — stays valid):
+        #   bridge_zip  (default): raw/traj_group0/traj*/images1/*.jpg + policy_out.pkl
+        #   zarr_video           : Diffusion-Policy replay_buffer.zarr + videos/<ep>/<cam>.mp4
+        data_format = str(env_config.get("data_format", "bridge_zip"))
+        resize_hw = (
+            int(env_config.get("image_height", 240)),
+            int(env_config.get("image_width", 320)),
+        )
+        if data_format == "zarr_video":
+            from utils.datasets import PushTWidowXVideoDataset
+            return PushTWidowXVideoDataset(
+                archive_path=env_config["data_archive"],
+                frame_stack=frame_stack,
+                camera=int(env_config.get("video_camera", 1)),
+                resize_hw=resize_hw,
+                max_trajectories=env_config.get("max_trajectories"),
+                augment=bool(env_config.get("image_aug", False)),
+                aug_params=env_config.get("image_aug_params"),
+                idle_filter=str(env_config.get("idle_filter", "none")),
+                idle_eps=float(env_config.get("idle_eps", 0.0)),
+                idle_move_eps=float(env_config.get("idle_move_eps", 1e-4)),
+                idle_keep_frac=float(env_config.get("idle_keep_frac", 0.25)),
+                idle_seed=int(env_training.get("trial_seed", 0)),
+                cache_dir=env_config.get("frame_cache_dir"),
+                cond_eef_xy=bool(env_config.get("cond_eef_xy", False)),
+            )
+        if data_format != "bridge_zip":
+            raise ValueError(
+                f"Unknown data_format {data_format!r} (bridge_zip|zarr_video)"
+            )
         from utils.datasets import PushTRealPixelsDataset
         return PushTRealPixelsDataset(
             archive_path=env_config["data_archive"],
             frame_stack=frame_stack,
             camera_streams=tuple(env_config.get("camera_streams", ["images0", "images1"])),
-            resize_hw=(
-                int(env_config.get("image_height", 240)),
-                int(env_config.get("image_width", 320)),
-            ),
+            resize_hw=resize_hw,
             max_trajectories=env_config.get("max_trajectories"),
             augment=bool(env_config.get("image_aug", False)),
             aug_params=env_config.get("image_aug_params"),
@@ -747,6 +776,14 @@ def main():
             norm_stats["action_semantics"] = dataset.action_semantics
             norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 180)
             norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 240)
+            # EEF (x, y) conditioning: deploy must rebuild the same cond_dim and
+            # reuse these exact bounds to normalize the live proprio, or the
+            # conditioning vector is silently on a different scale.
+            norm_stats["cond_dim"] = int(getattr(dataset, "cond_dim", 0))
+            if int(getattr(dataset, "cond_dim", 0)) > 0:
+                norm_stats["cond_kind"] = "eef_xy"
+                norm_stats["cond_min"] = dataset.cond_min
+                norm_stats["cond_max"] = dataset.cond_max
         # Pixel dataset doesn't expose obs_mean/obs_std (the conv encoder does
         # its own [0,1] scaling + bilinear resize on every forward, matching
         # IBC's image_prepro.preprocess). Only persist these when present.
@@ -842,7 +879,9 @@ def main():
             # every forward in this batch (CP gen, Q est, Langevin negatives,
             # gradient penalty) sees the same (B, cond_dim) vector without
             # threading it through each call site.
-            if active_env == "libero_goal_pixels":
+            # Gated on the BATCH, not the env name, so any conditioned pixel
+            # dataset works (libero_goal_pixels proprio+goal, pusht EEF x/y).
+            if 'cond' in batch:
                 cond = batch['cond'].float().to(device)
                 control_point_generator._cond = cond
                 estimator._cond = cond

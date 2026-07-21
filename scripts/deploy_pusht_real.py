@@ -380,12 +380,14 @@ def load_run_config(seed_dir: Path) -> dict:
     return config["environments"][config["active_env"]]
 
 
-def build_models(env: dict, in_channels: int, device):
+def build_models(env: dict, in_channels: int, device, cond_dim: int = 0):
     """Reconstruct CP generator + Q estimator exactly as the trainer did.
 
     Reads the model block from the per-run config so any hyperparameter change
-    is picked up rather than hardcoded. pusht_real_pixels is unconditioned
-    (cond_dim = goal_dim = 0).
+    is picked up rather than hardcoded. `cond_dim` comes from norm_stats: 0 for
+    the pixels-only checkpoints, 2 when the run was trained with EEF (x, y)
+    conditioning (--cond-eef-xy). It MUST match what training used or the head's
+    input width is wrong and load_state_dict fails.
     """
     from utils.models import PixelControlPointGenerator, PixelQEstimator
 
@@ -416,7 +418,7 @@ def build_models(env: dict, in_channels: int, device):
         in_channels=in_channels,
         encoder_target_height=enc_h,
         encoder_target_width=enc_w,
-        cond_dim=0,
+        cond_dim=cond_dim,
         encoder_kind=encoder_kind,
         goal_dim=0,
     ).to(device).eval()
@@ -428,7 +430,7 @@ def build_models(env: dict, in_channels: int, device):
         encoder_target_width=enc_w,
         value_width=value_width,
         value_num_blocks=value_num_blocks,
-        cond_dim=0,
+        cond_dim=cond_dim,
         encoder_kind=encoder_kind,
         goal_dim=0,
     ).to(device).eval()
@@ -446,8 +448,16 @@ def load_weights(model, path: Path, device):
 
 
 @torch.no_grad()
-def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float):
-    """Pure CP-cloud ranking (langevin/DFO disabled for this hardware)."""
+def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
+                  cond: "torch.Tensor | None" = None):
+    """Pure CP-cloud ranking (langevin/DFO disabled for this hardware).
+
+    `cond` is the (1, cond_dim) conditioning vector for checkpoints trained with
+    --cond-eef-xy (normalized EEF x/y). Both nets read it off their `_cond`
+    attribute, exactly as the trainer sets it per batch.
+    """
+    cp_gen._cond = cond
+    q_net._cond = cond
     features = q_net.encode(obs_u8)                   # (1, feat)
     cps = cp_gen(obs_u8)                              # (1, P, action_dim)
     logits = q_net.score(features, cps).squeeze(-1)   # (1, P)
@@ -527,9 +537,23 @@ def main() -> int:
     image_w = int(env_cfg.get("image_width", 320))
     in_channels = 3 * len(cams) * frame_stack
 
+    # EEF (x, y) conditioning: present only for runs trained with --cond-eef-xy.
+    # cond_min/cond_max are the TRAINING workspace bounds; the live proprio must
+    # be normalized with these exact numbers or the conditioning is off-scale.
+    cond_dim = int(norm_stats.get("cond_dim", 0))
+    cond_min = cond_max = None
+    if cond_dim:
+        if str(norm_stats.get("cond_kind", "")) != "eef_xy":
+            raise ValueError(
+                f"checkpoint has cond_dim={cond_dim} but cond_kind="
+                f"{norm_stats.get('cond_kind')!r}; this client only knows eef_xy"
+            )
+        cond_min = np.asarray(norm_stats["cond_min"], np.float32)
+        cond_max = np.asarray(norm_stats["cond_max"], np.float32)
+
     device = torch.device(args.device if (torch.cuda.is_available() or args.device == "cpu")
                           else "cpu")
-    cp_gen, q_net = build_models(env_cfg, in_channels, device)
+    cp_gen, q_net = build_models(env_cfg, in_channels, device, cond_dim=cond_dim)
     suffix = "" if args.no_ema else "_ema"
     load_weights(cp_gen, seed_dir / f"control_point_generator{suffix}.pt", device)
     load_weights(q_net, seed_dir / f"q_estimator{suffix}.pt", device)
@@ -538,6 +562,30 @@ def main() -> int:
           f"in_channels={in_channels}")
     print(f"  cp_selection={cp_selection} (temp={cp_temp})  device={device}")
     print(f"  act_min={act_min} act_max={act_max} norm_range={norm_range}")
+    print(f"  cond_dim={cond_dim}"
+          + (f" (eef_xy, min={cond_min} max={cond_max})" if cond_dim else " (pixels only)"))
+
+    def make_cond(raw_obs):
+        """Live observation -> (1, cond_dim) normalized EEF x/y, or None.
+
+        Mirrors PushTWidowXVideoDataset.normalize_cond: min-max to [-1,1] over
+        the training workspace, CLIPPED, because the arm can leave the
+        demonstrated region and an unbounded vector would be a far larger shift
+        than a saturated one. The server's state is
+        [x, y, z, r0, r1, r2, gripper] -- x/y are dims 0:2.
+        """
+        if not cond_dim:
+            return None
+        st = None if raw_obs is None else raw_obs.get("state")
+        if st is None:
+            raise RuntimeError(
+                "checkpoint needs EEF conditioning but the observation has no "
+                "'state' field"
+            )
+        xy = np.asarray(st, np.float32).reshape(-1)[:2]
+        span = np.where(cond_max == cond_min, np.ones_like(cond_max), cond_max - cond_min)
+        z = np.clip(-1.0 + 2.0 * (xy - cond_min) / span, -1.0, 1.0)
+        return torch.from_numpy(z.astype(np.float32)).unsqueeze(0).to(device)
 
     # --- connect -------------------------------------------------------------
     WidowXClient, WidowXConfigs, WidowXStatus = load_widowx_dependencies(
@@ -626,11 +674,13 @@ def main() -> int:
         print(f"DRY RUN: dumping {args.dry_run_steps} frames to {args.dump_dir} "
               f"(no step_action). Confirm the T renders RED.")
         for i in range(args.dry_run_steps):
-            raw = grab_frame()
+            raw_obs = grab_obs()
+            raw = extract_blue_frame(raw_obs)
             np.save(args.dump_dir / f"raw_{i:03d}.npy", np.ascontiguousarray(raw))
             frame_buf.append(preprocess(raw, (image_h, image_w)))
             obs_u8 = stack_to_tensor(frame_buf, device)
-            na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp)
+            na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
+                               cond=make_cond(raw_obs))
             act = unnormalize(na, act_min, act_max, norm_range)
             cv2.imwrite(str(args.dump_dir / f"fed_{i:03d}.png"),
                         cv2.cvtColor(list(frame_buf)[-1], cv2.COLOR_RGB2BGR))
@@ -663,7 +713,8 @@ def main() -> int:
             frame_buf.append(preprocess(raw, (image_h, image_w)))
             obs_u8 = stack_to_tensor(frame_buf, device)
 
-            na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp)
+            na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
+                               cond=make_cond(raw_obs))
             act_xy = unnormalize(na, act_min, act_max, norm_range)
 
             action_7d = to_action_7d(act_xy, args.fixed_gripper)
