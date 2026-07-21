@@ -1,25 +1,37 @@
 #!/usr/bin/env python3
-"""Evaluate IBC (EBM + DFO) Push-T checkpoints on the real WidowX arm.
+"""Evaluate IBC or Q3C Push-T checkpoints on the real WidowX arm.
 
 Control flow, WidowX handling, rollout termination, video capture and latency
 reporting are adapted from data/eval_widowx_bfn.py, which is the harness known
 to work on this rig. What changed is the policy: instead of a hydra/dill
-workspace checkpoint with an action-chunk sampler, this loads the per-run IBC
-seed directory written by scripts/train_pusht_real_ibc.py and selects actions
-with DFO.
+workspace checkpoint with an action-chunk sampler, this loads a per-run seed
+directory produced by this repository's trainers.
 
-Policy
-------
-    seed_dir/
-        config.json      immutable per-run config (model + inference params)
-        norm_stats.pt    act_min/act_max, frame_stack, camera streams
-        q_estimator.pt   PixelEBM weights (ConvMaxpoolEncoder + DenseResnetValue)
+Both policy families run through the same client. **Only action selection
+differs** -- observation handling, the robot loop, the duplicate-frame guard,
+the safety clip and every stopping condition are shared, which is what makes a
+head-to-head comparison on this rig meaningful. `--policy` picks the family, or
+infers it from the seed directory contents.
 
-Action selection follows google-research/ibc's optimal Pushing-Pixels policy
-(configs/pushing_pixels/pixel_ebm_best.gin + mcmc.iterative_dfo defaults):
-encode the frame stack once (late fusion), draw 2048 uniform action samples in
-[-1-buf, 1+buf], then 3 rounds of score -> softmax resample -> shrinking
-Gaussian jitter, and take the argmax of the final scores.
+IBC (--policy ibc), from scripts/train_pusht_real_ibc.py
+    seed_dir/config.json, norm_stats.pt, q_estimator.pt
+
+    A single energy model (PixelEBM: ConvMaxpoolEncoder + DenseResnetValue).
+    Selection follows google-research/ibc's optimal Pushing-Pixels policy
+    (configs/pushing_pixels/pixel_ebm_best.gin + mcmc.iterative_dfo defaults):
+    encode the frame stack once (late fusion), draw 2048 uniform action samples
+    in [-1-buf, 1+buf], then 3 rounds of score -> softmax resample -> shrinking
+    Gaussian jitter, and take the argmax of the final scores.
+
+Q3C (--policy q3c), from combinedv2_cpascounter_training.py
+    seed_dir/config.json, norm_stats.pt,
+             control_point_generator{,_ema}.pt, q_estimator{,_ema}.pt
+
+    A control-point generator proposes ~20 candidate actions from the image and
+    the Q estimator ranks them; selection is an argmax (or a softmax sample) over
+    that small cloud, optionally refined by CP-DFO. EMA weights by default.
+    Roughly two orders of magnitude fewer value-head evaluations per step than
+    IBC -- the reported NFE makes the comparison explicit.
 
 Differences from the BFN harness that are specific to this policy
 -----------------------------------------------------------------
@@ -44,12 +56,19 @@ Usage (Alienware, WidowX server already running):
     python scripts/deploy_pusht_real_ibc.py \
         --seed_dir checkpoints/pusht_real_ibc/seed_0029 --dry_run
 
+    # IBC (detected automatically from the seed directory).
     python scripts/deploy_pusht_real_ibc.py \
         --seed_dir checkpoints/pusht_real_ibc/seed_0029 \
-        --action_mode 2trans \
+        --widowx_force_fresh_init \
         --step_duration 0.05 \
-        --widowx_init_timeout_ms 180000 --widowx_init_retries 8 \
         --video_save_path /data/ibc_results
+
+    # Q3C, same rig, same loop, same flags.
+    python scripts/deploy_pusht_real_ibc.py \
+        --seed_dir checkpoints/pusht_real_combinedv2_v2/seed_0029 \
+        --widowx_force_fresh_init \
+        --step_duration 0.05 \
+        --video_save_path /data/q3c_results
 """
 
 from __future__ import annotations
@@ -86,7 +105,7 @@ import cv2
 import numpy as np
 import torch
 
-from utils import ibc_policy
+from utils import ibc_policy, q3c_policy
 
 
 FLAGS = flags.FLAGS
@@ -95,8 +114,38 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string(
     "seed_dir",
     None,
-    "IBC seed directory containing config.json, norm_stats.pt, q_estimator.pt.",
+    "Seed directory containing config.json, norm_stats.pt and the weights. "
+    "IBC seeds hold q_estimator.pt; Q3C seeds additionally hold "
+    "control_point_generator*.pt.",
     required=True,
+)
+flags.DEFINE_enum(
+    "policy",
+    "auto",
+    ["auto", "ibc", "q3c"],
+    "Which policy the seed directory holds. 'auto' infers it from the files "
+    "present: a control_point_generator*.pt means Q3C, otherwise IBC. Only the "
+    "action-selection step differs -- observation handling, the robot loop and "
+    "all safety behaviour are shared.",
+)
+flags.DEFINE_bool(
+    "no_ema",
+    False,
+    "Q3C only: load the raw weights instead of the EMA copy (the default, and "
+    "how the seeds were evaluated). IBC checkpoints have no EMA copy.",
+)
+flags.DEFINE_enum(
+    "cp_selection",
+    None,
+    ["argmax", "sample"],
+    "Q3C only: override how a control point is picked. Default comes from "
+    "norm_stats.pt (normally argmax).",
+)
+flags.DEFINE_integer(
+    "cp_dfo_iterations",
+    -1,
+    "Q3C only: override CP-DFO refinement iterations. The deployed seeds use 0 "
+    "(pure CP-cloud argmax).",
 )
 flags.DEFINE_integer(
     "ckpt_step",
@@ -692,8 +741,61 @@ def _get_current_eef_xy_with_retry(
 # IBC policy: load + DFO inference
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _load_ibc_policy(seed_dir: Path, device: torch.device) -> ibc_policy.IBCPolicy:
-    """Load the seed dir, applying any CLI overrides to the DFO settings."""
+def _detect_policy_kind(seed_dir: Path) -> str:
+    """Infer the policy family from what the seed directory contains.
+
+    Q3C trains a control-point generator alongside the Q estimator; IBC has the
+    energy model only. Nothing else in the directory distinguishes them, since
+    both share config.json / norm_stats.pt / q_estimator*.pt.
+    """
+    if list(seed_dir.glob("control_point_generator*.pt")):
+        return "q3c"
+    if list(seed_dir.glob("q_estimator*.pt")):
+        return "ibc"
+    raise FileNotFoundError(
+        f"{seed_dir} holds neither control_point_generator*.pt (Q3C) nor "
+        f"q_estimator*.pt (IBC) — is this a seed directory?"
+    )
+
+
+def _load_policy(seed_dir: Path, device: torch.device):
+    """Load whichever policy the seed dir holds, applying CLI overrides.
+
+    Both return objects with the same interface (`.select()`, `.describe()`,
+    `.nfe_info()`, camera/frame-stack/action metadata), so everything
+    downstream is policy-agnostic.
+    """
+    kind = FLAGS.policy
+    if kind == "auto":
+        kind = _detect_policy_kind(seed_dir)
+        print(f"[INFO] Detected a {kind.upper()} checkpoint in {seed_dir}")
+
+    if kind == "q3c":
+        for flag, name in ((FLAGS.dfo_samples, "--dfo_samples"),
+                           (FLAGS.dfo_iterations, "--dfo_iterations")):
+            if flag > 0:
+                print(f"[WARN] {name} applies to IBC only; ignored for Q3C. "
+                      f"Use --cp_dfo_iterations instead.")
+        if FLAGS.ckpt_step > 0:
+            print("[WARN] --ckpt_step applies to IBC only; ignored for Q3C.")
+        return q3c_policy.load_policy(
+            seed_dir,
+            device,
+            no_ema=bool(FLAGS.no_ema),
+            cp_selection=FLAGS.cp_selection,
+            dfo_overrides={
+                "iterations": (
+                    int(FLAGS.cp_dfo_iterations)
+                    if FLAGS.cp_dfo_iterations >= 0
+                    else None
+                ),
+            },
+        )
+
+    if FLAGS.no_ema:
+        print("[WARN] --no_ema applies to Q3C only; IBC saves no EMA copy.")
+    if FLAGS.cp_selection is not None or FLAGS.cp_dfo_iterations >= 0:
+        print("[WARN] --cp_selection/--cp_dfo_iterations apply to Q3C only; ignored.")
     return ibc_policy.load_policy(
         seed_dir,
         device,
@@ -707,16 +809,14 @@ def _load_ibc_policy(seed_dir: Path, device: torch.device) -> ibc_policy.IBCPoli
     )
 
 
-def _select_action_dfo(
-    loaded: ibc_policy.IBCPolicy, obs_u8: torch.Tensor
-) -> Tuple[np.ndarray, float]:
-    """DFO action selection, timed. Returns (normalized action, latency ms)."""
+def _select_action(loaded, obs_u8: torch.Tensor) -> Tuple[np.ndarray, float]:
+    """Policy-agnostic action selection, timed. Returns (action, latency ms)."""
     device = obs_u8.device
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     t_start = time.perf_counter()
 
-    action = ibc_policy.dfo_select(loaded, obs_u8)   # (1, A)
+    action = loaded.select(obs_u8)   # (1, A) normalized
 
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -724,8 +824,12 @@ def _select_action_dfo(
     return action[0].cpu().numpy(), inference_time_ms
 
 
-def _unnormalize(norm_action: np.ndarray, loaded: ibc_policy.IBCPolicy) -> np.ndarray:
-    return ibc_policy.unnormalize(norm_action, loaded)
+def _unnormalize(norm_action: np.ndarray, loaded) -> np.ndarray:
+    lo, hi = loaded.norm_range
+    scale = (loaded.act_max - loaded.act_min) / (hi - lo)
+    return (
+        loaded.act_min + (np.asarray(norm_action, np.float32) - lo) * scale
+    ).astype(np.float32)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1003,18 +1107,14 @@ def main(_):
 
     # ── policy ─────────────────────────────────────────────────────────────
     seed_dir = Path(FLAGS.seed_dir).expanduser().resolve()
-    loaded = _load_ibc_policy(seed_dir, device)
-    print(f"Loaded policy: {loaded.name}")
+    loaded = _load_policy(seed_dir, device)
+    print(f"Loaded {loaded.kind.upper()} policy: {loaded.name}")
     print(
         f"  cameras={loaded.camera_streams}  frame_stack={loaded.frame_stack}  "
         f"input={loaded.image_hw[0]}x{loaded.image_hw[1]}  device={device}"
     )
     print(f"  action range {loaded.act_min} -> {loaded.act_max}  norm={loaded.norm_range}")
-    print(
-        f"  DFO {loaded.dfo['samples']} samples x {loaded.dfo['iterations']} iters, "
-        f"std={loaded.dfo['iteration_std']} (x{loaded.dfo['std_decay']}/iter), "
-        f"buffer={loaded.dfo['boundary_buffer']}"
-    )
+    print(f"  {loaded.describe()}")
     nfe_info = loaded.nfe_info()
     print(f"[NFE] {nfe_info['details']}")
 
@@ -1173,7 +1273,7 @@ def main(_):
                 _build_stack_frame(o, loaded.camera_streams, loaded.image_hw)
             )
             obs_u8 = _stack_to_tensor(frame_buf, device)
-            na, ms = _select_action_dfo(loaded, obs_u8)
+            na, ms = _select_action(loaded, obs_u8)
             act = _unnormalize(na, loaded)
             newest = list(frame_buf)[-1][:, :, :3]
             cv2.imwrite(
@@ -1360,7 +1460,7 @@ def main(_):
 
                 t_step_start = time.time()
                 obs_u8 = _stack_to_tensor(frame_buf, device)
-                na, infer_ms = _select_action_dfo(loaded, obs_u8)
+                na, infer_ms = _select_action(loaded, obs_u8)
                 inference_times_ms.append(infer_ms)
                 act = _unnormalize(na, loaded)
 

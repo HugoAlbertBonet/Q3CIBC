@@ -50,9 +50,27 @@ class IBCPolicy:
     action_bounds: Tuple[float, float]
     dfo: Dict[str, Any] = field(default_factory=dict)
 
+    kind = "ibc"
+
     @property
     def in_channels(self) -> int:
         return 3 * len(self.camera_streams) * self.frame_stack
+
+    def describe(self) -> str:
+        return (
+            f"IBC EBM + DFO: {self.dfo['samples']} samples x "
+            f"{self.dfo['iterations']} iters, std={self.dfo['iteration_std']} "
+            f"(x{self.dfo['std_decay']}/iter), "
+            f"buffer={self.dfo['boundary_buffer']}"
+        )
+
+    @torch.no_grad()
+    def select(self, obs_u8: torch.Tensor) -> torch.Tensor:
+        """(B, C, H, W) uint8 -> (B, A) normalized actions.
+
+        Mirrors `Q3CPolicy.select` so one robot client can drive either policy.
+        """
+        return dfo_select(self, obs_u8)
 
     def nfe_info(self) -> Dict[str, Any]:
         """Function evaluations per action selection.

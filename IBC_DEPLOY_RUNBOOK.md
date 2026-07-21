@@ -309,6 +309,44 @@ Flags worth knowing:
 | `--policy_seed` | DFO is stochastic; fix this to make a rollout reproducible. |
 | `--widowx_force_fresh_init` | Applies the env params (notably `action_mode`) instead of reusing the server's existing env. |
 | `--disable_term_area` | Ends rollouts only on `s` or `--max_duration`, never on returning to the start pose. |
+| `--policy` | `auto` (default), `ibc` or `q3c`. See below. |
+
+### Running Q3C through the same client
+
+The client drives both policy families; **only action selection differs**, so
+the observation pipeline, robot loop, duplicate-frame guard, safety clip and
+every stopping condition are identical. That is what makes a head-to-head
+comparison on this rig meaningful — any difference in behaviour is the policy,
+not the harness.
+
+Point it at a Q3C seed directory and it detects the family from the files
+present (a `control_point_generator*.pt` means Q3C):
+
+```bash
+python scripts/deploy_pusht_real_ibc.py \
+    --seed_dir checkpoints/pusht_real_combinedv2_v2/seed_0029 \
+    --device cpu \
+    --step_duration 0.05 \
+    --widowx_force_fresh_init \
+    --forensic_log_dir deploy_logs/q3c_seed0029
+```
+
+Pass `--policy ibc` or `--policy q3c` to assert it explicitly. Q3C-only flags:
+`--no_ema` (raw instead of the default EMA weights), `--cp_selection
+argmax|sample`, and `--cp_dfo_iterations` (the deployed seeds use 0, i.e. pure
+CP-cloud argmax). Flags belonging to the other family are ignored with a
+warning rather than silently.
+
+The startup banner reports the cost difference directly, and it is large — on
+CPU, Q3C ranks ~20 control points where IBC scores 2048 samples three times
+over:
+
+```
+Loaded Q3C policy: ...   Q3C CP-cloud: 20 control points, selection=argmax
+[NFE] Q3C: 1 scoring pass x 20 candidates = 20 value-head evaluations
+Loaded IBC policy: ...   IBC EBM + DFO: 2048 samples x 3 iters, ...
+[NFE] IBC EBM + DFO: 3 iterations x 2048 action samples = 6144 value-head evaluations
+```
 | `--video_save_path` | Needs `imageio[ffmpeg]`. Writes cam0/cam1 mp4s plus a timing JSON. |
 
 ## 8. What to keep from a session
