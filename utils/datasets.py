@@ -1627,8 +1627,13 @@ class PushTWidowXVideoDataset(Dataset):
                 except OSError:
                     pass
 
-    def _build_frame_cache(self, path: str, meta_path: str, n_frames: int) -> int:
-        """Decode every episode's camera video into `path` (uint8 memmap)."""
+    def _build_frame_cache(self, path: str, meta_path: str, n_frames: int,
+                           resize_chunk: int = 64) -> int:
+        """Decode every episode's camera video into `path` (uint8 memmap).
+
+        `resize_chunk` bounds the peak memory of the AREA resize (see below);
+        64 frames at 480x640 is ~240 MB of float32 intermediate.
+        """
         try:
             import imageio.v3 as iio
         except ImportError as e:
@@ -1674,16 +1679,22 @@ class PushTWidowXVideoDataset(Dataset):
                     # Videos may carry a trailing frame; align to the buffer.
                     frames = frames[: end - start]
                     if frames.shape[1:3] != (H, W):
-                        resized = tf.image.resize(
-                            frames,
-                            (H, W),
-                            method=tf.image.ResizeMethod.AREA,
-                            antialias=True,
-                        )
-                        frames = tf.cast(
-                            tf.clip_by_value(tf.round(resized), 0, 255), tf.uint8
-                        ).numpy()
-                    mm[start:end] = frames
+                        # Resize in chunks: tf.image.resize promotes to float32
+                        # internally, so a whole 985-frame episode would spike
+                        # ~3.6 GB (985*480*640*3*4 B) before we cast back down.
+                        for c0 in range(0, len(frames), resize_chunk):
+                            chunk = frames[c0:c0 + resize_chunk]
+                            resized = tf.image.resize(
+                                chunk,
+                                (H, W),
+                                method=tf.image.ResizeMethod.AREA,
+                                antialias=True,
+                            )
+                            mm[start + c0:start + c0 + len(chunk)] = tf.cast(
+                                tf.clip_by_value(tf.round(resized), 0, 255), tf.uint8
+                            ).numpy()
+                    else:
+                        mm[start:end] = frames
                     written += end - start
                     os.remove(video_path)
                     if (ep + 1) % 25 == 0 or ep == self.n_episodes - 1:
