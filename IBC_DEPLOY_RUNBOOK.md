@@ -125,13 +125,15 @@ cd ~/Q3CIBC
 mkdir -p checkpoints/pusht_real_ibc
 
 rsync -avP \
+  -e 'ssh -o PreferredAuthentications=keyboard-interactive,password -o PubkeyAuthentication=no -o GSSAPIAuthentication=no' \
   --include='seed_*/' \
   --include='seed_*/config.json' \
   --include='seed_*/norm_stats.pt' \
   --include='seed_*/q_estimator.pt' \
   --exclude='*' \
-  discovery:Q3CIBC/checkpoints/pusht_real_ibc/ \
+  halbertb@discovery.usc.edu:Q3CIBC/checkpoints/pusht_real_ibc/ \
   checkpoints/pusht_real_ibc/
+
 ```
 
 If you skipped the `~/.ssh/config` alias in step 1, `discovery:` will not
