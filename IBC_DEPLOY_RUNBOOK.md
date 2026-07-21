@@ -84,11 +84,28 @@ ssh-copy-id -o PubkeyAuthentication=no halbertb@discovery.usc.edu
 Then drop `PubkeyAuthentication no` and the `PreferredAuthentications` line
 from the config block above, or the key you just installed will be ignored.
 
-## 2. On discovery: confirm what finished
+## 2. On discovery: launch training (or confirm what finished)
 
 ```bash
 ssh discovery
 cd ~/Q3CIBC
+bash scripts/submit_pusht_real_ibc.sh
+```
+
+That submits a CPU-only frame-cache job and makes the GPU array depend on it
+(`afterok`). The zarr_video dataset decodes its MP4s into a ~17 GB uint8 memmap
+on first use; the build is concurrency-safe, but starting the array cold leaves
+N-1 tasks holding GPUs while one of them builds. When the cache already exists
+the prep job is skipped. `PUSHT_DRY_RUN=1` prints the `sbatch` commands without
+submitting.
+
+Useful overrides: `PUSHT_FRAME_CACHE` (point at scratch if home cannot take
+17 GB), `PUSHT_IDLE_FILTER`, `PUSHT_ARRAY`, `PUSHT_OUTPUT_ROOT`,
+`PUSHT_CACHE_PARTITION` (the CPU partition for the prep job, default `main`).
+
+Then check what landed:
+
+```bash
 ls -la checkpoints/pusht_real_ibc/*/
 ```
 
