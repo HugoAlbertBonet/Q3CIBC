@@ -34,7 +34,12 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_REF = ROOT / "scripts" / "assets" / "pusht_images1_ref.jpg"
+# Reference = frame from the trained/deployed view (camera 1, blue scene cam)
+# of pusht_widowx_data.zip: episode 26, first frame (T at start position,
+# drawn target outline and table corner marker clearly visible for alignment).
+# Regenerate with the same camera=1 stream the dataset/policy uses so the live
+# /blue/image_raw view matches.
+DEFAULT_REF = ROOT / "scripts" / "assets" / "pusht_widowx_cam1_ref.jpg"
 
 # Same env init the deploy client uses. Single camera on the current rig:
 # blue (Logitech) == full_image[0] == external_img.
