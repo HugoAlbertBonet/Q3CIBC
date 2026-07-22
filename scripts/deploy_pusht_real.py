@@ -108,7 +108,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-lock-z", dest="lock_z", action="store_false")
     p.add_argument("--fixed-z-height", type=float, default=FIXED_Z_HEIGHT)
     p.add_argument("--neutral-z-height", type=float, default=NEUTRAL_Z_HEIGHT)
-    p.add_argument("--fixed-gripper", type=float, default=FIXED_GRIPPER)
+    p.add_argument("--fixed-gripper", type=float, default=FIXED_GRIPPER,
+                   help="gripper target for the 2trans env (0.0 = CLOSED, 1.0 = "
+                        "OPEN, per the WidowX SDK convention).")
+    p.add_argument("--gripper-command", type=float, default=0.0,
+                   help="explicitly actuate the gripper to this value after reset "
+                        "(0.0 = closed to hold the pusher). The env's fixed_gripper "
+                        "only sets the target; reset can leave the gripper open, so "
+                        "this move_gripper() call is what physically closes the "
+                        "clamp. Set to a negative number to skip the command.")
     p.add_argument("--skip-move-to-neutral", action="store_true")
     p.add_argument("--i-traj", type=int, default=0,
                    help="trajectory index passed to reset(itraj=N). This is what "
@@ -638,6 +646,23 @@ def main() -> int:
             f"WidowX reset failed with "
             f"status={status_name(reset_status, WidowXStatus)}")
     print(f"Reset done (itraj={args.i_traj}).")
+
+    # Physically actuate the clamp. In 2trans mode the gripper dim is never sent
+    # (step_action gets action[:2]), and reset can leave the clamp open, so we
+    # command it explicitly here. 0.0 = closed to grip the pusher.
+    if args.gripper_command >= 0.0:
+        if hasattr(client, "move_gripper"):
+            try:
+                gstatus = client.move_gripper(float(args.gripper_command))
+                print(f"Gripper commanded to {args.gripper_command} "
+                      f"(0=closed,1=open); status={status_name(gstatus, WidowXStatus)}")
+                time.sleep(1.0)
+            except Exception as exc:
+                print(f"[WARN] move_gripper({args.gripper_command}) failed: {exc}")
+        else:
+            print("[WARN] WidowXClient has no move_gripper(); cannot actuate the "
+                  "clamp explicitly. The env fixed_gripper target is "
+                  f"{args.fixed_gripper}.")
 
     # --- warm up the frame buffer -------------------------------------------
     frame_buf = collections.deque(maxlen=frame_stack)
