@@ -72,6 +72,10 @@ def parse_args() -> argparse.Namespace:
                         "static/near-static stacks rather than image content.")
     p.add_argument("--device", default="cuda")
     p.add_argument("--out", type=Path, default=ROOT / "results" / "pusht_action_diagnostic.json")
+    p.add_argument("--dump-arrays", type=Path, default=None,
+                   help="if set, save raw per-sample pred/gt arrays as "
+                        "<dir>/<tag>_seed<seed>.npz (keys: pred, gt) for "
+                        "offline histogramming. Uses the same seed-0 sample.")
     return p.parse_args()
 
 
@@ -190,6 +194,11 @@ def diagnose_seed(seed: int, args, device) -> dict:
                 "frac_neg": (a < 0).mean(axis=0).tolist()}
 
     corr = float(np.corrcoef(pred[:, 0], pred[:, 1])[0, 1]) if pred.std() > 0 else float("nan")
+    if args.dump_arrays is not None:
+        args.dump_arrays.mkdir(parents=True, exist_ok=True)
+        # seed_dir may be a symlink to the real tag dir; name the dump after it.
+        tag = seed_dir.resolve().name
+        np.savez(args.dump_arrays / f"{tag}_seed{seed:04d}.npz", pred=pred, gt=gt)
     return {
         "seed": seed, "samples": int(k),
         "act_min": np.asarray(ds.act_min).tolist(), "act_max": np.asarray(ds.act_max).tolist(),

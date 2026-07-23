@@ -39,10 +39,10 @@ TAGS=(
     c01_dropzero_base
     c02_none_control
     c03_dropstatic
-    c04_subsample
+    c04_subsample25
     c05_libero_recipe
     c06_hard_negatives
-    c07_lowmse_cp
+    c07_lowmse_cp100
     c08_dropzero_aug
     c09_condxy_dropzero
     c10_condxy_nofilter
@@ -62,6 +62,7 @@ for tag in "${TAGS[@]}"; do
         --seeds 1 \
         --num-samples 3000 \
         --out "${ROOT_DIR}/results/diag_${tag}${EMA_SUFFIX}.json" \
+        --dump-arrays "${ROOT_DIR}/results/diag_arrays${EMA_SUFFIX}" \
         ${EMA_FLAG}
 done
 
