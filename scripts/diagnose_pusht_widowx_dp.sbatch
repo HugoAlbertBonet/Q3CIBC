@@ -64,6 +64,7 @@ for tag in "${TAGS[@]}"; do
             --num-samples 3000 \
             --sampler "${sampler}" \
             --out "${ROOT_DIR}/results/diag_${tag}_${sampler}${EMA_SUFFIX}.json" \
+            --dump-arrays "${ROOT_DIR}/results/diag_arrays${EMA_SUFFIX}" \
             ${EMA_FLAG}
     done
 done
