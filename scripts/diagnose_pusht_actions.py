@@ -49,7 +49,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-root", type=Path,
                    default=ROOT / "checkpoints" / "pusht_real_combinedv2")
     p.add_argument("--seeds", type=int, nargs="+", default=[11, 29, 47, 83])
-    p.add_argument("--dataset", type=Path, default=ROOT / "data" / "03-23-pusht-data.zip")
+    p.add_argument("--dataset", type=Path, default=None,
+                   help="override the demo archive. Default: the exact archive "
+                        "the checkpoint trained on (data_archive in its "
+                        "config.json), so bridge_zip vs zarr_video is picked "
+                        "automatically per checkpoint.")
+    p.add_argument("--idle-filter", default="none",
+                   choices=["none", "drop_zero", "drop_static", "subsample"],
+                   help="zarr_video only: how to treat idle (~0) transitions "
+                        "when scoring. Default 'none' evaluates the FULL action "
+                        "distribution so you can see whether the policy still "
+                        "emits the zero spike, regardless of how it was trained.")
     p.add_argument("--num-samples", type=int, default=3000,
                    help="random transitions sampled from the dataset")
     p.add_argument("--batch-size", type=int, default=128)
@@ -72,8 +82,14 @@ def load_run_config(seed_dir: Path) -> dict:
 
 
 @torch.no_grad()
-def predict_batch(cp_gen, q_net, obs_u8):
-    """CP-cloud argmax over a batch. obs_u8: (B, C, H, W) uint8 -> (B, 2)."""
+def predict_batch(cp_gen, q_net, obs_u8, cond=None):
+    """CP-cloud argmax over a batch. obs_u8: (B, C, H, W) uint8 -> (B, 2).
+
+    `cond` is the (B, cond_dim) conditioning batch for EEF-conditioned
+    checkpoints; both nets read it off `_cond` exactly as the trainer sets it.
+    """
+    cp_gen._cond = cond
+    q_net._cond = cond
     feats = q_net.encode(obs_u8)
     cps = cp_gen(obs_u8)                                  # (B, P, 2)
     logits = q_net.score(feats, cps).squeeze(-1)         # (B, P)
@@ -92,21 +108,48 @@ def quadrant_hist(a: np.ndarray) -> dict:
 
 
 def diagnose_seed(seed: int, args, device) -> dict:
-    from utils.datasets import PushTRealPixelsDataset
-
     seed_dir = (args.output_root / f"seed_{seed:04d}").resolve()
     env = load_run_config(seed_dir)
-    cams = tuple(env.get("camera_streams", ["images1"]))
     fs = int(env.get("frame_stack", 2))
     hw = (int(env.get("image_height", 240)), int(env.get("image_width", 320)))
 
-    ds = PushTRealPixelsDataset(
-        archive_path=str(args.dataset), frame_stack=fs,
-        camera_streams=cams, resize_hw=hw,
-        normalize_actions=True, action_norm_range=(-1.0, 1.0),
-    )
+    # norm_stats carries the conditioning schema (cond_dim) — needed to rebuild
+    # the nets with the right head width and to know whether to feed `cond`.
+    norm_stats = torch.load(seed_dir / "norm_stats.pt", map_location="cpu",
+                            weights_only=False)
+    cond_dim = int(norm_stats.get("cond_dim", 0))
+
+    # Use the archive the checkpoint TRAINED on (per its config), unless the
+    # caller overrode it. This is what makes bridge_zip vs zarr_video automatic.
+    archive = str(args.dataset) if args.dataset is not None else env["data_archive"]
+    data_format = str(env.get("data_format", "bridge_zip"))
+
+    if data_format == "zarr_video":
+        from utils.datasets import PushTWidowXVideoDataset
+        ds = PushTWidowXVideoDataset(
+            archive_path=archive, frame_stack=fs,
+            camera=int(env.get("video_camera", 1)), resize_hw=hw,
+            normalize_actions=True, action_norm_range=(-1.0, 1.0),
+            idle_filter=args.idle_filter,
+            idle_eps=float(env.get("idle_eps", 0.0)),
+            idle_move_eps=float(env.get("idle_move_eps", 1e-4)),
+            idle_keep_frac=float(env.get("idle_keep_frac", 0.25)),
+            cache_dir=env.get("frame_cache_dir"),
+            cond_eef_xy=bool(env.get("cond_eef_xy", False)),
+        )
+    elif data_format == "bridge_zip":
+        from utils.datasets import PushTRealPixelsDataset
+        cams = tuple(env.get("camera_streams", ["images1"]))
+        ds = PushTRealPixelsDataset(
+            archive_path=archive, frame_stack=fs,
+            camera_streams=cams, resize_hw=hw,
+            normalize_actions=True, action_norm_range=(-1.0, 1.0),
+        )
+    else:
+        raise ValueError(f"Unknown data_format {data_format!r} (bridge_zip|zarr_video)")
+
     in_channels = ds.state_shape[0]
-    cp_gen, q_net = deploy.build_models(env, in_channels, device)
+    cp_gen, q_net = deploy.build_models(env, in_channels, device, cond_dim=cond_dim)
     suffix = "" if args.no_ema else "_ema"
     deploy.load_weights(cp_gen, seed_dir / f"control_point_generator{suffix}.pt", device)
     deploy.load_weights(q_net, seed_dir / f"q_estimator{suffix}.pt", device)
@@ -119,7 +162,8 @@ def diagnose_seed(seed: int, args, device) -> dict:
     preds, gts = [], []
     for start in range(0, k, args.batch_size):
         chunk = idxs[start:start + args.batch_size]
-        states = np.stack([ds[int(i)]["state"] for i in chunk])          # (b,C,H,W) uint8
+        items = [ds[int(i)] for i in chunk]
+        states = np.stack([it["state"] for it in items])                 # (b,C,H,W) uint8
         if args.zero_motion:
             # Channels are oldest->newest (datasets.py __getitem__); the newest
             # frame is the last per_frame channels. Duplicate it across every
@@ -128,9 +172,14 @@ def diagnose_seed(seed: int, args, device) -> dict:
             per_frame = states.shape[1] // fs
             newest = states[:, -per_frame:, :, :]
             states = np.tile(newest, (1, fs, 1, 1))
-        gt = np.stack([ds[int(i)]["action"] for i in chunk])             # (b,2) normalized
+        gt = np.stack([it["action"] for it in items])                    # (b,2) normalized
         obs_u8 = torch.from_numpy(np.ascontiguousarray(states)).to(device)
-        pred = predict_batch(cp_gen, q_net, obs_u8).cpu().numpy()
+        cond = None
+        if cond_dim:
+            cond = torch.from_numpy(
+                np.stack([it["cond"] for it in items]).astype(np.float32)
+            ).to(device)
+        pred = predict_batch(cp_gen, q_net, obs_u8, cond=cond).cpu().numpy()
         preds.append(pred)
         gts.append(gt)
     pred = np.concatenate(preds).astype(np.float64)

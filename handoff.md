@@ -1,344 +1,461 @@
-# Door-Human Handoff (Q3CIBC, D4RL `door-human`)
+# Push-T WidowX — Failure-Mode Handoff
 
-You are inheriting the D4RL `door-human` work on Q3CIBC. Pen-human was the lead environment; door is the second. Pen is in a stable headline-ready state; door is mid-investigation with critical caveats. Read this end-to-end before doing anything.
+Diagnostic reference for the Q3C(IBC) Push-T policy that **does not work on the
+real WidowX** after retraining on the new Diffusion-Policy dataset
+(`data/pusht_widowx_data.zip`). None of the batch checkpoints
+(`batches/pushtWidowX.txt`, tags `c01`–`c10`) produce a working push.
 
----
-
-## Repo orientation (door-relevant only)
-
-| File | What it does |
-|---|---|
-| `config_json/config.json` | `environments.door` block. `max_episode_steps=200`, `action_dim=28`, `state_dim=39`, `num_eval_seeds=100`. Don't edit casually. |
-| `combinedv2_cpascounter_training.py` | Q3CIBC training script. Door already routed through D4RLDataset + standardize observations + per-dim action normalization. |
-| `hyperparam_search.py` | Trial runner for Q3CIBC. Door supported at all four dispatch sites. Results land in `results/hyperparam_search/combinedv2_cpascounter_training/d4rl/door/trials.jsonl`. |
-| `hyperparam_search_dfo.py` | Pure-IBC paper recipe runner (no CP cloud). Door supported alongside pen/particle. Results land in `results/hyperparam_search/ibc_dfo_door/trials.jsonl`. |
-| `simulations/door_human_v2_simulation.py` | Door eval simulation class. Built on `AdroitHandDoor-v1` via gymnasium-robotics. Sticky any-step `info["success"]` aggregation. |
-| `utils/datasets.py` | `D4RLDataset` is env-agnostic. Handles both pen and door via `dataset_name` from config. Computes `obs_mean`, `obs_std`, `act_min`, `act_max` from the dataset. Action normalization to `[-1, 1]` per-dim. |
-| `utils/normalizations.py` | `ObservationNormalizer` runs in standardize mode for door (mean/std from dataset, not JSON bounds). |
-| `config_json/observation_bounds.json` | Hand-authored minmax bounds. Door has a stub entry. Standardize routing means this is never actually called at runtime — it exists only to keep `ObservationNormalizer` constructor from crashing. |
-| `batches/doorA.txt`, `doorB.txt`, `doorC.txt` | Q3CIBC door batches in chronological order. |
-| `batches/doorAibc.txt` | IBC paper-exact recipe batch via `hyperparam_search_dfo.py`. Written but NOT yet submitted as of this handoff. |
+This document enumerates every plausible point of failure across the
+data → training → checkpoint → deploy → robot → physical pipeline: what it is,
+why it can break things, what kind of failure it produces, which files are
+involved and how, and a concrete test to confirm or rule it out.
 
 ---
 
-## Critical finding: reward formula mismatch on door
+## How to use this document
 
-The IBC paper reports door-human EBM = 361 ± 67 raw return. That number is **not reproducible in our setup** for reasons unrelated to algorithm quality.
+### Two priors that shrink the search
 
-### What was measured
+**Prior 1 — the master bisection.** The offline diagnostic runs the *exact*
+deploy model-build + inference over the training data, no robot involved. Its
+verdict splits the whole space in half:
 
-Replay episode 0's expert actions in our env:
+- **Healthy offline** (low MAE vs GT, actions spread across quadrants, pred std
+  ≈ GT std) **but fails on the robot** → the bug is **deploy-side or physical**
+  (sections **D–G**). The weights are fine.
+- **Collapsed offline** (predicts ~constant, ignores the image, high MAE) → the
+  bug is in **data or training** (sections **A–C**). Do not spend robot time.
 
-```python
-env = gym.make('AdroitHandDoor-v1', reward_type='dense', max_episode_steps=300)
-obs, _ = env.reset(seed=0)
-env_cumulative = sum(env.step(ep.actions[t])[1] for t in range(300))
-# env_cumulative = -67.1
-# dataset.rewards[:300].sum() = +525.0
-```
+**Prior 2 — "none of them work".** The 10 configs differ in idle-filter,
+hyperparameters, control-point count, and conditioning. If they **all fail the
+same way**, the cause is almost certainly **common to every config** — the
+dataset loader, the frame cache, deploy preprocessing, or the physical rig — and
+almost certainly **not** the hyperparameters or the idle filter. Weight
+**A, D, F** above **B, C, E**.
 
-A ~600-point cumulative gap over 300 steps between dataset-recorded reward and env-emitted reward, using the same actions.
+### The master test now supports the new checkpoints (FIXED)
 
-### Caveat: I did NOT disentangle the cause
+`scripts/diagnose_pusht_actions.py` was previously hardcoded to the old bridge
+dataset. It has been updated and can now evaluate the new checkpoints:
 
-The 600-point gap could be:
-1. **Initial state drift** — `env.reset(seed=0)` doesn't necessarily match the dataset recording's initial state (minari doesn't expose the recording seed).
-2. **Physics drift** — gymnasium-robotics' mujoco-python bindings vs legacy d4rl's mujoco_py + different XML model could produce different state evolution under identical actions.
-3. **Reward formula difference** — legacy d4rl `door-human-v0` (Rajeswaran 2017) may compute reward differently than gymnasium-robotics' `AdroitHandDoor-v1`.
+- **Switches on `env["data_format"]`** (`zarr_video` → `PushTWidowXVideoDataset`,
+  `bridge_zip` → `PushTRealPixelsDataset`), mirroring the trainer's
+  `load_dataset()`.
+- **Auto-picks the archive** from each checkpoint's own `config.json`
+  (`data_archive`), so a zarr checkpoint is scored against the zarr zip and a
+  bridge checkpoint against the bridge zip — no more silent wrong-dataset
+  scoring. `--dataset` still overrides.
+- **Conditioning aware**: reads `cond_dim` from `norm_stats.pt`, rebuilds the
+  nets with it, gathers the `cond` batch and feeds it through `predict_batch`
+  (`_cond`). Handles c09/c10; unconditioned checkpoints skip it.
+- **`--idle-filter` (default `none`)**: scores the FULL action distribution
+  regardless of how the checkpoint was trained, so you can see whether the
+  policy still emits the zero spike. Reuses the training `frame_cache_dir`.
 
-To isolate, you'd compare obs trajectories step-by-step:
-```python
-for t in range(300):
-    obs_env, r, _, _, _ = env.step(ep.actions[t])
-    obs_ds = ep.observations[t+1]
-    print(t, np.abs(obs_env - obs_ds).max())  # if these track, the gap is pure reward formula
-```
-I did not run this. **Do this before claiming "reward formula differs"** with certainty.
+Verified end-to-end on a fabricated conditioned zarr checkpoint (dataset load,
+model build/load, cond feed, stats all run clean).
 
-### Implications regardless of cause
-
-Our env produces a different reward signal than the paper's setup. Therefore:
-- Raw-reward comparison to paper's +361 is invalid (whatever the precise mechanism).
-- `D4RL normalized score` is broken on our env: dataset-replay expert (`-67`) is BELOW random (`-46`) when averaged per-step their numbers are comparable (~-0.23/step), but the anchors don't make sense.
-- `success_rate` (env emits `info["success"]`) is the only cross-env-fair metric, but the paper does NOT report SR — so no direct head-to-head against paper.
-
-### The fix: option A — IBC baseline in our env
-
-Train IBC paper recipe in OUR env via `hyperparam_search_dfo.py --active-env door`. The result is whatever IBC achieves on our reward formula. Q3C's number is on the same scale. Comparison is then internal to our env. Paper's +361 becomes irrelevant — replaced by an internal head-to-head between Q3C and IBC under identical conditions.
-
-`batches/doorAibc.txt` was written for this and is queued (not yet submitted). **Submit this batch first.**
-
----
-
-## Q3C door results so far
-
-### doorA (IDs 1-8, horizon=100, ABANDONED)
-
-Initial doorA used `max_episode_steps=100`. **Wrong.** Door demos reach success around steps 196-276 (mean ep length=269). Truncating at 100 cuts off the entire success phase. All trials hit R=-21 to -22 (= dataset's first-100-step expert return).
-
-Diagnosis confirmed by reading dataset directly:
-
-```python
-ds = minari.load_dataset('D4RL/door/human-v2')
-ep_lens = [len(ep.actions) for ep in ds.iterate_episodes()]
-# min=223, mean=269, max=300
-ep_first_success = [int(np.argmax(ep.rewards > 5)) for ep in ds.iterate_episodes()]
-# mean=196, min=156, max=276
-```
-
-`config_json/config.json` was patched to `max_episode_steps=200`.
-
-### doorB (IDs 9-16, horizon=200)
-
-| # | recipe | R | SR |
-|---|---|---|---|
-| 15 | cp=100/top_k=30, inf_lit=0 (B4 pattern) | **+37.9** | 7% |
-| 13 | cp=50/top_k=20, inf_lit=25 | -12.4 | 2% |
-| 9 | cp=20/top_k=8, no Langevin, inf_lit=0 | -14.1 | 3% |
-| 16 | cp=50/top_k=20, inf_lit=0 | -22.4 | 3% |
-| 10,11,12,14 | all inf_lit=100 | **-42 to -43** | 0% |
-
-**Confirmed: `inference_langevin_iterations=100` (paper recipe) catastrophic** on Q3C with door's narrow-trained Q. Same finding as pen. **Drop inf_lit > 0 from future batches.**
-
-### doorC (IDs 17-33, 17/20 ran)
-
-| # | recipe | R | SR |
-|---|---|---|---|
-| 27 | **cp=300/top_k=80** | **+51.1** | 16% |
-| 20 | cp=100 seed=3 (B4) | +49.4 | 14% |
-| 33 | cp=100 + 16 Langevin negs | +44.2 | 11% |
-| 29 | cp=100 + GP=10 | +37.9 | 7% |
-| 25 | cp=200/top_k=50 | +30.8 | 11% |
-| ... | (many trials between +30 and -30) | | |
-| 21 | cp=100 seed=4 (B4) | **-30.3** | 2% |
-
-**Multi-seed B4 (cp=100, 5 seeds {0,1,2,3,4}):**
-- Mean R = 14.6
-- Cross-seed std = 31.1
-- SEM = 13.9
-- Brutal seed sensitivity (seed 4 = -30, seed 3 = +49)
-
-Three trials timed out (didn't fit 25h SLURM wall):
-- cp=100 + Q=1024×8 (bigger Q)
-- cp=100 + 200k training steps
-- cp=100 + 32 Langevin training negatives
-
-If you re-attempt them, bump wall to `--time=35:00:00`.
-
-### Single-seed promising but unvalidated
-
-- **cp=300/top_k=80 (#27): +51.1** — best single-seed result. Capacity push works.
-- **cp=100 + 16 Langevin negs (#33): +44.2** — broader Q coverage at training time.
-- **cp=100 + GP=10 (#29): +37.9** — stronger gradient penalty.
-
-All seed=0. Multi-seed validation needed before claiming any of these.
+**One caveat:** the sbatch default `--seeds 11 29 47 83` expects `seed_00NN`
+directories. The batch checkpoints are `--tag`-named (`c01_...`), so point
+`--output-root`/`--seeds` at a seed-named run, or diagnose the tag dirs directly
+(see quick commands). This is the only remaining rough edge — the master test
+itself is unblocked.
 
 ---
 
-## Architecture/protocol audit (verified)
+## A. Data / dataset loader  *(new code, common to all configs → HIGH suspicion)*
 
-| Component | Paper App. D.1 | Ours | Match |
-|---|---|---|---|
-| Q net width × depth | 512 × 8 | q_width=512, q_depth=8 | ✓ |
-| Dense layer | spectral norm | q_use_spectral_norm=true | ✓ |
-| Activation | ReLU | ReLU | ✓ |
-| LR | 5e-4 | 5e-4 | ✓ |
-| Batch | 512 | 512 | ✓ |
-| Training steps | 100k | 100k | ✓ |
-| Counter examples | 8 | num_langevin_negatives=8 | ✓ |
-| Train Langevin: iters/lr_init/lr_final/noise/clip | 100/0.5/1e-5/0.5/0.5 | identical | ✓ |
-| Gradient penalty | margin=1, hinge | margin=1, hinge | ✓ |
-| Eval episodes/seed | 100 | num_eval_seeds=100 | ✓ |
-| Horizon | 200 (legacy d4rl door-human-v0) | max_episode_steps=200 | ✓ |
-| Action dim | 28 | 28 | ✓ |
-| Obs dim | 39 | 39 | ✓ |
+All of section A lives in `utils/datasets.py` →
+`class PushTWidowXVideoDataset`, plus the frame cache it writes.
 
-Q estimator architecture matches paper. Q3CIBC ADDS a CP generator (not in paper) — that's our addition.
+### A1. Frame ↔ action misalignment
+- **What / why.** The zarr arrays are one flat block of all 150 episodes
+  concatenated (`data/action` is `(72988, 7)`); the videos are one MP4 per
+  episode. Video frame `t` must be paired with action row `t` **within that
+  episode's slice** `[episode_ends[i-1], episode_ends[i])`. Any off-by-one, a
+  wrong episode boundary, or pairing the flat index against the wrong video
+  desynchronizes image and label for a whole episode.
+- **Failure type.** The image→action map is corrupted at the source. The model
+  fits noise; **collapses or is inaccurate offline**. This is the single most
+  damaging data bug and it is invisible without an explicit check.
+- **Files.** `PushTWidowXVideoDataset._load_lowdim` (reads action/eef/ends),
+  `._build_frame_cache` (extracts `videos/<ep>/<cam>.mp4`, writes frames into
+  the per-episode slice `mm[start:end]`), `.__getitem__` (maps sample index →
+  episode via `np.searchsorted(self._episode_ends, t)` and reads the stack).
+- **Test.** The command action at step `t` should move the arm between frame `t`
+  and `t+1`. On the raw zarr, per episode, compute
+  `corr(action[t, :2], eef_pose[t+1, :2] − eef_pose[t, :2])`; it must be
+  strongly **positive** (≈ +0.9, as measured on the old data). A near-zero or
+  negative correlation for a whole episode = misalignment. Needs no training or
+  robot — a standalone `check_frame_action_alignment.py` reading the zarr does
+  it. Also visually: cached frame 0 of episode 0 should show the T in its known
+  start pose.
 
-**The env is NOT the same as paper's env** (gymnasium-robotics port, different reward formula). This is the unfixable confound on raw reward; see the section above.
+### A2. Wrong camera
+- **What / why.** Each episode has `0.mp4` and `1.mp4`. **Camera 1 is the fixed
+  blue scene camera** the deploy client reads and every prior checkpoint used;
+  camera 0 is a different viewpoint. Training on camera 0 makes the whole
+  deployment out-of-distribution.
+- **Failure type.** Can look fine offline (self-consistent) yet fail completely
+  on the robot, since deploy feeds a different view than training.
+- **Files.** `train_pusht_real.py --video-camera` → config `video_camera` →
+  `combinedv2_cpascounter_training.py` load_dataset passes `camera=...` →
+  `PushTWidowXVideoDataset.camera` / `.camera_streams = (f"video{camera}",)`.
+- **Test.** Confirm `video_camera: 1` in the seed's `config.json`. Eyeball a
+  cached frame against `scripts/assets/pusht_images1_ref.jpg` (T top-left,
+  target outline center-left, small square bottom-left).
+
+### A3. Frame-cache build error
+- **What / why.** MP4 random access is seek-bound, so frames are decoded once
+  into a uint8 memmap (`data/_frame_cache/*.u8`, ~17 GB). A wrong `H×W`, a
+  dropped/duplicated frame, or a truncated build silently pairs wrong pixels
+  with labels.
+- **Failure type.** Same class as A1 (corrupted supervision), but originating in
+  the cache rather than the indexing.
+- **Files.** `PushTWidowXVideoDataset._ensure_frame_cache` (lock + meta),
+  `._build_frame_cache` (decode + resize + `mm[start:end] = frames`), the
+  sidecar `*.u8.json` (`n_frames`).
+- **Test.** Cache meta `n_frames` must equal `episode_ends[-1]` (= 72988). The
+  loader already asserts this and raises `frame cache has N frames but the
+  replay buffer has M`. Spot-check: decode episode `k` fresh with imageio and
+  compare frame 0 to `memmap[episode_starts[k]]` (after the same resize).
+
+### A4. Resize algorithm mismatch (train vs deploy)
+- **What / why.** The cache resizes 640×480 → 320×240 with **TensorFlow**
+  `tf.image.resize(method=AREA, antialias=True)`. The deploy client resizes the
+  live frame with **OpenCV** `cv2.resize(..., INTER_AREA)`. These are both
+  "area" resamplers but are **not bit-identical**; the systematic pixel
+  difference is a small train/deploy distribution shift on every frame.
+- **Failure type.** Subtle, uniform OOD — plausibly enough to degrade a policy
+  that is otherwise correct. Would show as "healthy offline, weak on robot".
+- **Files.** Train: `PushTWidowXVideoDataset._build_frame_cache` (tf resize).
+  Deploy: `scripts/deploy_pusht_real.py::preprocess` (line ~417,
+  `cv2.resize(..., interpolation=cv2.INTER_AREA)`).
+- **Test.** Take one raw 640×480 frame; resize with both paths; report max/mean
+  abs difference. If large, make deploy use the tf path (or make the cache use
+  cv2) so both sides match. Chunk-resize was already verified byte-identical
+  *within* the tf path, so this is specifically a tf-vs-cv2 question.
+
+### A5. Idle filter over/under-removing
+- **What / why.** 24% of target actions are exactly (0,0) (teleop pauses); the
+  filter thins them (`drop_zero` removes all, `drop_static` only the ones whose
+  frame pair is also static, `subsample` keeps a fraction). A misconfigured
+  filter either leaves the absorbing "hold" spike in (stall persists) or strips
+  legitimate decelerations (jerky policy).
+- **Failure type.** Behavioral — either the original stall (too little removed)
+  or over-aggressive pushes with no slow-down (too much removed).
+- **Files.** `PushTWidowXVideoDataset._build_samples` (the mask logic),
+  `train_pusht_real.py --idle-filter/--idle-eps/--idle-move-eps/--idle-keep-frac`.
+- **Test.** The loader prints `idle_filter=... -> kept X%, zero-share now Y%`
+  on startup. Grep the job stdout. Expected: `drop_zero` → 0% zeros, ~76% kept.
 
 ---
 
-## Conventions to follow
+## B. Training
 
-1. **Always set `inference_langevin_iterations=0`** in door batches. Aggressive Langevin (paper hypers: lr=0.5, delta_clip=0.5, noise=0.5, 100 iters) is catastrophic on Q3C's narrow-trained Q. Gentle Langevin (lr=0.01 etc.) works on pen but never beat pure CP-argmax there either. Skip both for door unless explicitly debugging the inference path.
-2. **Always multi-seed validate single-seed wins.** On pen, several single-seed configs that hit R>2700 dropped below B4 base when re-run at 4 more seeds. Same will happen on door.
-3. **Use `--active-env door`** for all door trials. Do NOT mutate `config_json/config.json`'s `active_env` field for SLURM batches — race condition between submit and record.
-4. **Trial IDs are global per env.** doorA = 1-8, doorB = 9-16, doorC = 17-33, etc. `--analyze --min-trial-id N` to scope a recent batch.
-5. **Q3C results path:** `results/hyperparam_search/combinedv2_cpascounter_training/d4rl/door/trials.jsonl`.
-6. **IBC results path:** `results/hyperparam_search/ibc_dfo_door/trials.jsonl` (separate file, populated when `doorAibc.txt` runs).
+Lives in `combinedv2_cpascounter_training.py`.
+
+### B1. Mode collapse onto the zero spike
+- **What / why.** The zero action is a delta spike holding ~24% of the mass at
+  one point; real pushes spread over a 2-D continuum. `lossMSE`
+  (`utils/loss.py`) pulls the nearest control point to the expert, and the Q
+  estimator's argmax over the CP cloud preferentially selects the dense spike.
+  This is the failure mode the idle filter and the negatives were added to
+  break.
+- **Failure type.** Offline: predicted std ≈ 0, actions cluster at ~0, high MAE
+  in the moving regime. On robot: stall.
+- **Files.** `combinedv2_cpascounter_training.py` loss assembly (loss_mse /
+  loss_sep / InfoNCE), `utils/loss.py::lossMSE`,
+  `utils/datasets.py` idle filter (mitigation), the `--uniform-negatives` /
+  `--langevin-negatives` path (mitigation, teaches the Q net to lower energy at
+  zero when the expert moved).
+- **Test.** `diagnose_pusht_actions.py` (once zarr-enabled): quadrant histogram
+  and pred std. Compare a `drop_zero` config (c01) against the `none` control
+  (c02) — c02 is in the batch **precisely** to confirm this by reproducing the
+  stall.
+
+### B2. Non-convergence / wrong optimization
+- **What / why.** LR, schedule, clamp, or batch size wrong for this data → the
+  model never fits.
+- **Failure type.** Offline high MAE across all regimes; wandb loss flat or
+  diverging.
+- **Files.** `train_pusht_real.py` hyperparameter group → per-run
+  `config.json` training block → trainer reads via `env_training.get(...)`.
+- **Test.** wandb loss curves; `diagnose` MAE. Defaults are the best
+  pushing_pixels search recipe (trial 95, sr 0.99), so a total non-convergence
+  would more likely indicate a data bug (A) feeding garbage.
+
+### B3. EMA vs raw divergence
+- **What / why.** The trainer keeps an EMA shadow (`ema_decay=0.999`) and saves
+  both `*.pt` (raw) and `*_ema.pt`. Deploy/diagnose default to EMA. If one is
+  bad (e.g. EMA lagging a late collapse, or raw noisier), picking the wrong one
+  looks like "the checkpoint doesn't work".
+- **Failure type.** Behavioral; one weight set works and the other doesn't.
+- **Files.** `combinedv2_cpascounter_training.py::update_ema` / `save_checkpoints`;
+  deploy `--no-ema`; diagnose `--no-ema`.
+- **Test.** Run diagnose both ways (default and `--no-ema`); deploy the better
+  one.
+
+### B4. Wrong action normalization stats
+- **What / why.** `norm_stats.pt` carries `act_min`/`act_max`; deploy
+  denormalizes the policy's [-1,1] output back to metres with them. If they are
+  wrong, every command is mis-scaled.
+- **Failure type.** Actions systematically too large (unsafe) or too small
+  (no motion) on the robot, even with a perfect policy.
+- **Files.** `PushTWidowXVideoDataset` (computes act_min/max from the full
+  action set), `persist_norm_stats()` in the trainer,
+  `deploy_pusht_real.py::unnormalize`.
+- **Test.** `python -c "import torch; print(torch.load('.../norm_stats.pt',
+  weights_only=False))"`; act_min/max must be ≈ ±0.008.
 
 ---
 
-## Standard commands
+## C. Checkpoint ↔ config consistency
 
-### Submit a batch
+### C1. Architecture / cond_dim mismatch
+- **What / why.** Deploy and diagnose rebuild the nets from the seed's
+  `config.json` model block + `norm_stats` `cond_dim`, then `load_state_dict`.
+  If cp_width / value_num_blocks / **cond_dim** differ from what was trained,
+  the load fails or (worse) loads a wrongly-shaped head.
+- **Failure type.** Hard crash at load, or subtly wrong network. The conditioned
+  runs (c09/c10) have `cond_dim=2`; the rest have 0 — deploying one as the other
+  breaks.
+- **Files.** `deploy_pusht_real.py::build_models(cond_dim=...)` and its
+  `norm_stats["cond_dim"]` read; `train_pusht_real.py` model block;
+  `combinedv2_cpascounter_training.py` model construction + `persist_norm_stats`
+  (`cond_dim`, `cond_min`, `cond_max`, `cond_kind`).
+- **Test.** If it loads without a shape error, this is mostly ruled out. Confirm
+  `norm_stats["cond_dim"]` matches the intended config.
+
+### C2. Stale / overwritten config.json
+- **What / why.** The launcher writes `config.json` into the run dir at job
+  start. A repeated `--tag` or a re-run can leave a `config.json` that does not
+  describe the weights beside it. (The launcher now refuses to overwrite a dir
+  that already holds `*.pt`, which mitigates this.)
+- **Failure type.** Deploy rebuilds the wrong architecture → crash or silent
+  wrongness.
+- **Files.** `train_pusht_real.py::main` (run-dir guard + config write).
+- **Test.** Diff the model block in the seed's `config.json` against the batch
+  line that produced it (`batches/pushtWidowX.txt`).
+
+---
+
+## D. Deploy preprocessing  *(common to all configs → HIGH suspicion)*
+
+Lives in `scripts/deploy_pusht_real.py`.
+
+### D1. Channel order (RGB vs BGR)
+- **What / why.** Training frames are tf-decoded RGB with the red T in channel
+  0. The deploy client feeds the server frame as-is (no swap), assuming the same
+  order. If this rig's server delivers BGR, the T's color channel is scrambled
+  and every spatial feature the encoder learned is wrong.
+- **Failure type.** Severe OOD; policy effectively blind. Can look like random
+  or frozen behavior.
+- **Files.** `extract_blue_frame` / `to_uint8_rgb` (line ~345),
+  `preprocess` (line ~417, no channel swap), PNG dump uses
+  `cv2.cvtColor(..., COLOR_RGB2BGR)` implying the buffer is treated as RGB.
+- **Test.** `--dry-run` → open `deploy_dryrun/fed_000.png`; the T must render
+  **red** and upright (imshow/imwrite assume BGR, so a correct RGB buffer saved
+  via `RGB2BGR` shows red correctly). If the T is blue, channels are swapped.
+
+### D2. Resize mismatch (deploy side)
+- Same underlying issue as **A4**, viewed from the deploy end. `preprocess`
+  uses `cv2.INTER_AREA`; the cache used tf AREA. Test as in A4.
+
+### D3. Wrong target resolution
+- **What / why.** Training cache is 240×320; deploy must resize to the same
+  `(image_height, image_width)` before the encoder (which then bilinearly
+  resizes to 180×240 internally). A mismatch changes aspect/scale.
+- **Failure type.** Geometric OOD.
+- **Files.** deploy reads `image_height`/`image_width` from `config.json`;
+  `preprocess(out_hw=(image_h, image_w))`.
+- **Test.** Confirm `image_height=240`, `image_width=320` in `config.json`;
+  `fed_*.png` should be 320×240.
+
+### D4. Stale / duplicate / zero-motion frame
+- **What / why.** The original `(-,-)` runaway was caused by a 2-frame stack
+  with no inter-frame motion (server repeated an image, or the frame was grabbed
+  before the commanded move landed). The stack is the *only* motion signal the
+  pixels-only policy has; a static stack maps to the learned "hold".
+- **Failure type.** Freeze or runaway; self-locking once the arm stalls.
+- **Files.** `extract_blue_frame` / the control loop grab logic;
+  `stack_to_tensor` (line ~431).
+- **Test.** From a `--log-dir` run, diff consecutive `raw/*.npy`; they must
+  differ by more than sensor noise. If identical frames appear in a stack, the
+  freshness guard is failing.
+
+---
+
+## E. Conditioning  *(new; only c09 / c10)*
+
+### E1. Deploy state layout — is `state[:2]` really (x, y)?
+- **What / why.** The conditioned policy expects the current EEF (x, y),
+  normalized to the training workspace. Deploy pulls it from the server
+  observation's `state` field as dims 0:2. This layout was **inferred from old
+  `run02` logs, not confirmed on the current rig/server**. If the live `state`
+  is ordered differently, the conditioning vector is plausible-but-wrong and the
+  failure is silent.
+- **Failure type.** Silent mis-conditioning; the policy is fed a wrong "where am
+  I", degrading or destabilizing behavior with no error.
+- **Files.** `deploy_pusht_real.py::make_cond` (reads `raw_obs["state"][:2]`),
+  `eef_x_from_obs` (uses `state[0]` as x), the normalization mirror of
+  `PushTWidowXVideoDataset.normalize_cond`.
+- **Test.** `--dry-run` and print the raw `state`. Dim 0 (x) should sit in
+  ≈ [0.10, 0.45] and dim 1 (y) in ≈ [−0.38, 0.34] (the training workspace,
+  = `cond_min`/`cond_max` in norm_stats). If the values don't land there, the
+  layout or units differ.
+
+### E2. cond normalization mismatch (train vs deploy)
+- **What / why.** Deploy must min-max the live x/y with the **exact**
+  `cond_min`/`cond_max` computed at training time, or the conditioning is on a
+  different scale than the network was trained for.
+- **Failure type.** Off-scale conditioning; silent degradation.
+- **Files.** `PushTWidowXVideoDataset.normalize_cond` (+ persisted cond bounds),
+  `persist_norm_stats` (`cond_min`/`cond_max`/`cond_kind`),
+  `deploy_pusht_real.py::make_cond`.
+- **Test.** Already verified in-repo that `make_cond` reproduces
+  `normalize_cond` to atol 1e-7. Just confirm `norm_stats` actually contains
+  `cond_min`/`cond_max` for the conditioned checkpoints.
+
+### E3. Live pose outside the training workspace
+- **What / why.** If the arm leaves the demonstrated region, the normalized cond
+  saturates to ±1 (intentional clip). Persistent saturation makes the
+  conditioning uninformative exactly when the arm is most OOD.
+- **Failure type.** Conditioning stops helping in the corner where recovery is
+  needed.
+- **Files.** the `np.clip(..., -1, 1)` in `normalize_cond` / `make_cond`.
+- **Test.** Log cond values during a rollout; watch for stretches pinned at ±1.
+
+---
+
+## F. Robot mapping / action execution
+
+### F1. Sign / axis flip (command → motion)
+- **What / why.** If the server maps +dx to −x (or swaps x/y), the policy fights
+  itself: correct intentions produce wrong motion.
+- **Failure type.** Runs the wrong way / oscillates.
+- **Files.** `to_action_7d` (line ~547), `safety_clip_action` (line ~559), the
+  server's `2trans` handling; forensic `state` logged per step.
+- **Test.** From `--log-dir` `steps.jsonl`: `corr(commanded dx, actual EEF Δx)`
+  and same for y. Both must be strongly positive (was +0.89 / +0.96 previously).
+
+### F2. Safety clip / approach-floor masking real motion
+- **What / why.** The rewritten deploy client adds an **approach floor**
+  (`--approach-floor`, default ON): x is not allowed below `floor_x` (default =
+  demo start x ≈ 0.117). It is a floor, not a ban — a step toward the base is
+  allowed until x reaches the floor; at/below it, dx is forced ≥ 0. Plus
+  `--safety-max-xy-delta` magnitude clipping.
+  **Measured on the demo data, the floor should rarely fire:** the start x
+  (0.117) is essentially the workspace minimum; demos push *outward* (x up to
+  0.491, mean 0.275), only 1.3% of timesteps sit below the floor, and x dips a
+  mean of 4.6 mm below its own start per episode. So in normal operation this is
+  a benign ~1%-of-steps safety limit, **not** a likely "all fail" cause — UNLESS
+  the policy is already misbehaving and driving the arm toward the base (then
+  the floor pins it and masks the real symptom), or `--approach-floor-x` was set
+  too high.
+- **Failure type.** Only masks motion if the policy is *already* pushing toward
+  the base against the demos' outward direction. Secondary suspect, not primary.
+- **Files.** `apply_approach_floor` (line ~399), `safety_clip_action`
+  (line ~559), the loop at line ~848 (`apply_approach_floor(act_xy, cur_x,
+  approach_floor_x)`), floor init at lines ~746–766.
+- **Test.** Log **commanded** action vs **post-clip** action each step (the loop
+  already prints when it floors). If they diverge on most steps, the guard, not
+  the policy, is the problem. Re-run once with `--no-approach-floor` and a large
+  `--safety-max-xy-delta` to see the unmasked policy.
+
+### F3. Denormalization magnitude
+- Covered by **B4** from the deploy end: `unnormalize` maps [-1,1] → metres via
+  act_min/max. Test: printed metric actions should be ≤ ~0.008 m.
+
+---
+
+## G. Physical / environment
+
+These are setup-match issues, all testable without retraining.
+
+### G1. Camera view differs from training
+- **Why.** A moved/re-aimed Logitech changes the mapping from world to pixels;
+  the fixed-camera assumption breaks.
+- **Files.** `scripts/align_pusht_camera.py` (live overlay vs
+  `scripts/assets/pusht_images1_ref.jpg`).
+- **Test.** Run the alignment overlay; nudge until the live view matches the
+  reference.
+
+### G2. Lighting / T darkness
+- **Why.** Previously measured: the deploy T rendered ~33% darker than training
+  (peak redness 120 → 83) while the mat matched — an object-local lighting/
+  saturation shift, i.e. real OOD on the one salient object.
+- **Files.** `scripts/check_brightness_parity.py` (peak-redness vs target ≈120),
+  `deploy_pusht_real.py --dry-run` (captures `raw_*.npy`).
+- **Test.** Dry-run capture → brightness parity; tune light-on-T / camera
+  saturation until peak ≈ 120.
+
+### G3. Start pose OOD
+- **Why.** Demos all start at x≈0.117; starting elsewhere is OOD from step 0.
+- **Files.** deploy `--move-to-demo-start` (default ON) + `--start-eep-npy`
+  (`scripts/assets/pusht_start_eep.npy`); logged `state`.
+- **Test.** `steps.jsonl` step 0 EEF vs the asset (x≈0.117, y≈−0.019).
+
+### G4. z droop
+- **Why.** `lock_z` commands z=0.02 but the arm was measured drooping to ~0.009
+  at extended poses; demos held ~0.0197. Wrong contact height with the T.
+- **Files.** deploy `--fixed-z-height` / `--lock-z`; logged `state[2]`.
+- **Test.** Log z through a rollout; compare to 0.0197. Raise `--fixed-z-height`
+  to compensate if it sags.
+
+---
+
+## Recommended order
+
+1. **Run the master test.** `diagnose_pusht_actions.py` now supports the zarr
+   checkpoints (see above) — run it on the batch checkpoints.
+2. **Bisect.** Collapsed offline → **A** then **B/C**. Healthy offline → **D/E/F/G**.
+3. **Given "all fail identically", front-load the common-mode causes:**
+   **A1** (frame/action alignment), **A4/D2** (resize mismatch),
+   **D1** (channel order). These break *every* config regardless of
+   hyperparameters. (**F2** approach-floor is only a masker when the policy is
+   already misbehaving toward the base — measured to fire on ~1% of demo steps,
+   so it is a secondary check, not a primary cause.)
+4. Only after the above, look at per-config causes (**B1** collapse, **E**
+   conditioning) and physical setup (**G**).
+
+## Quick commands
+
 ```bash
-./submit_experiments.sh batches/doorAibc.txt doorAibc
-# Each line becomes one SLURM job. 25h wall per job by default. Pass a higher
-# --time= in the script template if you need heavier configs.
+# Offline master test. Zarr + conditioning supported; archive auto-picked from
+# each checkpoint's config. Raw weights (PUSHT_DIAG_NO_EMA=1) = the faithful
+# recipe; also try default (EMA). NOTE: the sbatch --seeds default expects
+# seed_00NN dirs; for the --tag-named batch dirs, call the .py directly:
+PUSHT_OUTPUT_ROOT=$PWD/checkpoints/<seed_named_root> PUSHT_DIAG_NO_EMA=1 \
+    sbatch scripts/diagnose_pusht_actions.sbatch
+
+# Batch (cNN tag) checkpoints: diagnose resolves seed_dir as
+# <output-root>/seed_<NN:04d>, so it CANNOT target a --tag dir (c01_...) as-is.
+# Either (a) symlink, e.g.  ln -s c01_dropzero_base <root>/seed_0001  and run
+# with --output-root <root> --seeds 1, or (b) add a --seed-dirs mode to
+# diagnose that takes explicit directory names (small change, ~10 lines).
+# The loader itself reads data_format + data_archive from each checkpoint config.
+
+# Deploy, no motion — confirms obs sanity (D1 color, E1 state layout, D3 size)
+python scripts/deploy_pusht_real.py --seed-dir <ckpt> --device cpu \
+    --dry-run --dry-run-steps 20 --dump-dir results/dry_<tag>
+
+# Deploy, capped logged rollout — F1 mapping, F2 clip-masking, D4 freshness, G3/G4
+python scripts/deploy_pusht_real.py --seed-dir <ckpt> --device cpu \
+    --steps 120 --log-dir results/roll_<tag>
+
+# Unmask the policy from the safety guards (F2)
+python scripts/deploy_pusht_real.py --seed-dir <ckpt> --device cpu \
+    --steps 120 --no-approach-floor --safety-max-xy-delta 0.02 \
+    --log-dir results/roll_<tag>_noguard
 ```
 
-### Analyze results (cross-seed aggregator built-in)
-```bash
-# Q3C results
-uv run python hyperparam_search.py combinedv2_cpascounter_training.py \
-    --analyze --active-env door --min-trial-id 17
+## Key artifacts to analyze
 
-# IBC paper-recipe results
-uv run python hyperparam_search_dfo.py --analyze --active-env door
-```
-
-Both analyzers print:
-- Sorted trial table
-- Cross-seed aggregates (groups of trials with identical config except `trial_seed`)
-- Per group: mean_R, cross_std, SEM, σ_ep(avg), SR(avg)
-
-### Inspect dataset / env quickly
-```bash
-uv run --managed-python python -c "
-import minari, numpy as np
-ds = minari.load_dataset('D4RL/door/human-v2')
-ep = next(iter(ds.iterate_episodes()))
-print('obs', ep.observations.shape, 'act', ep.actions.shape)
-print('reward range:', ep.rewards.min(), ep.rewards.max(), 'sum:', ep.rewards.sum())
-"
-
-uv run --managed-python python -c "
-import gymnasium as gym, gymnasium_robotics
-gym.register_envs(gymnasium_robotics)
-env = gym.make('AdroitHandDoor-v1', reward_type='dense', max_episode_steps=200)
-print(env.observation_space, env.action_space, env.spec.max_episode_steps)
-"
-```
-
----
-
-## Immediate next steps for the new agent
-
-In recommended order:
-
-### 1. Submit `batches/doorAibc.txt`
-
-10 trials, IBC paper-exact recipe in our env. Result is the IBC baseline measured under our reward formula. This is the comparison anchor for Q3C — replaces paper's +361 (unreachable in our env).
-
-After it completes, run:
-```bash
-uv run python hyperparam_search_dfo.py --analyze --active-env door
-```
-
-You'll get a triseed mean ± std/SEM. That's the IBC baseline number.
-
-### 2. Diagnose the env/reward gap definitively
-
-Before drawing conclusions about Q3C's door performance, run the obs-drift test I skipped:
-
-```python
-# In a uv run --managed-python python session
-import minari, numpy as np
-import gymnasium as gym, gymnasium_robotics
-
-gym.register_envs(gymnasium_robotics)
-ds = minari.load_dataset('D4RL/door/human-v2')
-ep = next(iter(ds.iterate_episodes()))
-
-env = gym.make('AdroitHandDoor-v1', reward_type='dense', max_episode_steps=300)
-obs, _ = env.reset(seed=0)
-drift = []
-reward_diffs = []
-for t in range(300):
-    obs_t, r_t, _, _, _ = env.step(ep.actions[t])
-    drift.append(float(np.abs(obs_t - ep.observations[t+1]).max()))
-    reward_diffs.append(r_t - float(ep.rewards[t]))
-print(f'max obs drift: {max(drift):.4f}')
-print(f'final cumulative obs drift over 300 steps: monotonic? {drift[-1] > drift[0]}')
-print(f'per-step reward diff: mean={np.mean(reward_diffs):.4f} std={np.std(reward_diffs):.4f}')
-print(f'cumulative reward diff (env - dataset): {sum(reward_diffs):+.1f}')
-```
-
-If `max obs drift` is tiny (< 0.01) → state trajectories track, the 600-point gap IS the reward formula difference. If drift grows large → mixed confound, can't pin down.
-
-Either way, **document the result** somewhere (this handoff or a fresh `door_env_audit.md`).
-
-### 3. Continue Q3CIBC exploration: doorD
-
-Promising directions identified from doorC results:
-- **cp=300/top_k=80 multi-seed** (penD #27 hit +51 single-seed)
-- **cp=400 / cp=500** (extend capacity sweep further)
-- **cp=100 + 16/32 Langevin negs multi-seed** (#33 hit +44 single-seed)
-- **75k or 200k training steps revisit** (both hurt single-seed but multi-seed may differ)
-- **Larger Q (1024×8) retry** with `--time=35:00:00` (timed out before)
-
-Suggested doorD layout (20 trials):
-- 5 trials: cp=300 multi-seed (seeds 0-4) — validate single-seed winner
-- 3 trials: cp=400, cp=500, cp=600 — push capacity further
-- 4 trials: cp=100 + 16 Langevin negs multi-seed (seeds 0-3)
-- 4 trials: cp=100 + 32 Langevin negs multi-seed (seeds 0-3) — re-attempt timed-out config with extra wall
-- 4 trials: best capacity-validated config + GP=2/5/10 sweep
-
-Always `inference_langevin_iterations=0`. Mirror `batches/doorC.txt` JSON structure exactly — just change relevant param keys.
-
-### 4. Once everything's in: build the comparison table
-
-After doorAibc and doorD complete, you'll have:
-
-| metric | Q3C-best (door) | IBC paper-recipe (door) |
-|---|---|---|
-| n_seeds | TBD | 3 |
-| avg_reward (on OUR env reward formula) | TBD | TBD |
-| cross_seed_std | TBD | TBD |
-| success_rate | TBD | TBD |
-| inference time (ms/env-step) | TBD | TBD |
-
-Run the inference-timing bench equivalent to `bench_inference_pen.py` but for door (you'll have to write `bench_inference_door.py`; the pen one is the template — just change `OBS_DIM=39`, `ACTION_DIM=28`, dataset path, etc).
-
-Update `README.md` with a door section under `### D4RL` (the pen section is the template; mirror its structure). Footnote the env-port confound openly — don't try to compare to paper's +361.
-
----
-
-## Tripwires you might step on
-
-1. **`max_episode_steps` is at env config level, not training params.** If you want to test horizon=300, edit `config_json/config.json`'s `environments.door.max_episode_steps` directly — `--fixed-params` won't override it.
-2. **Single trials use `--reduced-steps N` for smoke tests.** Don't accidentally submit a 500-step trial to SLURM. Test wiring with `--reduced-steps 500` locally first.
-3. **Aggregator filter strictness matters.** The cross-seed aggregator groups trials with identical params dict (sans `trial_seed`). Tiny param differences (e.g. `entropy_bandwidth=0.05` vs `0.2`) create separate groups. If you change a param mid-batch the aggregation will miss seed pairings.
-4. **Spectral-norm checkpoint reload bug** was fixed in `hyperparam_search_dfo.py`. The fix infers layer indices from `.bias` keys (unchanged under SN) and detects SN via `weight_orig` OR `parametrizations.weight`. If you see a `Missing key(s): network.0.weight, Unexpected key(s): network.0.weight_orig` error, check that the fix is still in place.
-5. **Penalty if you forget `inf_lit=0`** — you'll waste 10+ hours of GPU time per trial on the dead Langevin inference path.
-
----
-
-## Reference: pen-human numbers (for sanity-checking proportions)
-
-| metric | Pen Q3C B4 (10 seeds) | Pen IBC paper-recipe in our env (3 seeds) | Pen paper IBC EBM (paper env, 3 seeds) |
-|---|---|---|---|
-| avg_reward | 2522 | 403 | 2586 |
-| cross_seed_std | 126 | 123 | 65 |
-| SEM | 40 | 71 | (likely SEM-mislabeled in paper) |
-| success_rate | ~67% | ~15% | (not reported) |
-| inference time | 2.13 ms | 276.8 ms | — |
-| reward gap to paper | -64 (within noise) | -2183 (broken IBC port) | — |
-
-Pen Q3C is the publishable headline. Pen IBC reproduction in our env is broken (403 vs paper 2586). Door is harder than pen and the env confound is worse — expect proportionally weaker Q3C numbers and don't conflate "lower raw reward" with "worse algorithm."
-
----
-
-## What's already updated in the codebase (DO NOT redo)
-
-- `config_json/config.json` has `door` block fully populated.
-- `combinedv2_cpascounter_training.py` routes door through `D4RLDataset` + standardize obs + per-dim action norm + `norm_stats.pt` save.
-- `hyperparam_search.py` dispatches door at sim selection, sim_kwargs, metrics return, and `_ENV_PATH_MAP` (results land at `d4rl/door/`).
-- `hyperparam_search_dfo.py` dispatches door at all sites: `_RESULTS_SLUG["door"] = "ibc_dfo_door"`, `_DEFAULT_NUM_EVAL_SEEDS["door"] = 100`, train branch, eval branch, env factory, success tracking, metrics return, analyze sort.
-- `simulations/door_human_v2_simulation.py` exists.
-
-**Door is wired end-to-end.** You shouldn't need to add any env support — just write batches and analyze.
-
----
-
-## Quick decision tree
-
-- "What should I submit first?" → `batches/doorAibc.txt` (gets the IBC baseline).
-- "What's Q3C's best result on door?" → cp=300/top_k=80 hit +51.1 single-seed (#27 in trials.jsonl). Multi-seed unvalidated.
-- "Should I run pure CP-argmax or refinement?" → Always CP-argmax (`inference_langevin_iterations=0`, `inference_dfo_iterations=0`). Refinement paths confirmed dead on Q3C across pen and door.
-- "Why is my reward so far below paper's 361?" → Different env reward formula. Compare to doorAibc results (Q3C vs IBC in same env), NOT to paper's 361.
-- "Should I switch to a different env?" → No. Run option A first (IBC in our env).
-
-Good luck.
+- `results/roll_*/steps.jsonl` — per step: norm action, metric action, 7-DoF
+  EEF `state`. Source for quadrant/collapse checks, corr(command, EEF-Δ), stall
+  detection, commanded-vs-clipped comparison, z/start-pose checks.
+- `results/dry_*/fed_*.png` + `raw_*.npy` — what the model sees with no motion;
+  feeds the color/brightness/resize parity checks.
+- The dataset loader's startup line (`idle_filter=... kept X%`) in the training
+  job stdout — A5.

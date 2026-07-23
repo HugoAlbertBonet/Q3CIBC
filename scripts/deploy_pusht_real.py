@@ -119,8 +119,33 @@ def parse_args() -> argparse.Namespace:
                         "clamp. Set to a negative number to skip the command.")
     p.add_argument("--skip-move-to-neutral", action="store_true")
     p.add_argument("--i-traj", type=int, default=0,
-                   help="trajectory index passed to reset(itraj=N). This is what "
-                        "puts the arm at the collect-time start pose.")
+                   help="trajectory index passed to reset(itraj=N).")
+
+    # --- initial pose (matches deploy_pusht_real_ibc.py) --------------------
+    p.add_argument("--move-to-demo-start", dest="move_to_demo_start",
+                   action="store_true", default=True,
+                   help="after reset, move the EEF to the demo start pose in "
+                        "--start-eep-npy (same as the ibc deploy).")
+    p.add_argument("--no-move-to-demo-start", dest="move_to_demo_start",
+                   action="store_false")
+    p.add_argument("--start-eep-npy", type=Path,
+                   default=ROOT / "scripts" / "assets" / "pusht_start_eep.npy",
+                   help="4x4 EEF start transform (mean of demo starts, x~0.117).")
+    p.add_argument("--start-move-duration", type=float, default=1.5)
+    p.add_argument("--max-initial-move-retries", type=int, default=5)
+
+    # --- HARD approach guard: never move CLOSER to the robot than the start -
+    p.add_argument("--approach-floor", dest="approach_floor",
+                   action="store_true", default=True,
+                   help="HARD SAFETY: never let the EEF move closer to the robot "
+                        "base than the start pose. Any commanded step that would "
+                        "take x below the floor is clipped so x stops AT the floor.")
+    p.add_argument("--no-approach-floor", dest="approach_floor",
+                   action="store_false",
+                   help="disable the approach guard (NOT recommended).")
+    p.add_argument("--approach-floor-x", type=float, default=None,
+                   help="override the x floor (metres). Default: the start pose's "
+                        "x (from --start-eep-npy, or the post-reset EEF x).")
 
     # --- init / reset robustness (confirmed-working values) -----------------
     p.add_argument("--init-timeout-ms", type=int, default=180_000)
@@ -355,6 +380,38 @@ def extract_blue_frame(raw_obs: Dict[str, Any]) -> np.ndarray:
         "WidowX observation has no usable camera frame "
         f"(keys={sorted(raw_obs.keys())})"
     )
+
+
+def eef_x_from_obs(raw_obs: Dict[str, Any]) -> float | None:
+    """Current end-effector x (metres). state[0] is x on this rig."""
+    if raw_obs is None:
+        return None
+    for key in ("eef_pos", "ee_pos", "state", "proprio", "agent_pos"):
+        v = raw_obs.get(key)
+        if v is None:
+            continue
+        arr = np.asarray(v, dtype=np.float64).reshape(-1)
+        if arr.size >= 1:
+            return float(arr[0])
+    return None
+
+
+def apply_approach_floor(act_xy: np.ndarray, cur_x: float | None,
+                         floor_x: float | None) -> tuple[np.ndarray, bool]:
+    """Clip dx so the EEF never moves closer to the robot than floor_x.
+
+    Smaller x == closer to the robot base. If the commanded dx would take
+    (cur_x + dx) below floor_x, reduce dx so the arm stops AT the floor (never
+    past it). Returns (possibly-clipped action, was_clipped).
+    """
+    if floor_x is None or cur_x is None:
+        return act_xy, False
+    act = np.asarray(act_xy, np.float64).copy()
+    max_neg_dx = floor_x - cur_x        # most negative dx allowed this step
+    if act[0] < max_neg_dx:
+        act[0] = max_neg_dx             # >=0 if already at/below the floor
+        return act, True
+    return act, False
 
 
 def preprocess(frame: np.ndarray, out_hw) -> np.ndarray:
@@ -664,6 +721,50 @@ def main() -> int:
                   "clamp explicitly. The env fixed_gripper target is "
                   f"{args.fixed_gripper}.")
 
+    # --- move to the demo start pose (same as the ibc deploy) ---------------
+    start_T = None
+    if args.move_to_demo_start:
+        start_path = Path(args.start_eep_npy).expanduser()
+        if not start_path.is_file():
+            raise FileNotFoundError(
+                f"--start-eep-npy not found: {start_path}. Pass "
+                "--no-move-to-demo-start to skip (not recommended: the arm then "
+                "starts ~17cm out of distribution).")
+        start_T = np.load(start_path).astype(np.float32)
+        print(f"[INFO] Moving EEF to demo start pose (x={start_T[0,3]:.3f}, "
+              f"y={start_T[1,3]:.3f}, z={start_T[2,3]:.3f})...")
+        move_status, tries = None, 0
+        while move_status != WidowXStatus.SUCCESS and tries < args.max_initial_move_retries:
+            move_status = client.move(start_T, duration=args.start_move_duration)
+            tries += 1
+        if move_status != WidowXStatus.SUCCESS:
+            print(f"[WARN] initial move did not report SUCCESS after {tries} tries "
+                  f"(status={status_name(move_status, WidowXStatus)}); continuing.")
+
+    # --- resolve the HARD approach floor (x closest-to-robot the arm may go) -
+    # Priority: explicit override, else the start pose's x, else post-reset EEF x.
+    approach_floor_x = None
+    if args.approach_floor:
+        if args.approach_floor_x is not None:
+            approach_floor_x = float(args.approach_floor_x)
+        elif start_T is not None:
+            approach_floor_x = float(start_T[0, 3])
+        else:
+            eef0 = None
+            try:
+                st = client.get_observation()
+                eef0 = eef_x_from_obs(st)
+            except Exception:
+                eef0 = None
+            approach_floor_x = eef0
+        if approach_floor_x is None:
+            raise RuntimeError(
+                "Approach guard is ON but the x floor could not be determined "
+                "(no --start-eep-npy and no readable EEF x). Pass "
+                "--approach-floor-x <metres> or --no-approach-floor.")
+        print(f"[SAFETY] Approach floor ARMED: EEF x will never go below "
+              f"{approach_floor_x:.4f} m (closer to the robot than the start).")
+
     # --- warm up the frame buffer -------------------------------------------
     frame_buf = collections.deque(maxlen=frame_stack)
 
@@ -741,6 +842,13 @@ def main() -> int:
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
                                cond=make_cond(raw_obs))
             act_xy = unnormalize(na, act_min, act_max, norm_range)
+
+            # HARD SAFETY: never move closer to the robot than the start pose.
+            cur_x = eef_x_from_obs(raw_obs)
+            act_xy, floored = apply_approach_floor(act_xy, cur_x, approach_floor_x)
+            if floored:
+                print(f"[SAFETY] approach floor: clipped dx at x={cur_x:.4f} "
+                      f"(floor={approach_floor_x:.4f})")
 
             action_7d = to_action_7d(act_xy, args.fixed_gripper)
             action_7d = safety_clip_action(action_7d, args.action_mode,
