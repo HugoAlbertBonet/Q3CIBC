@@ -55,11 +55,143 @@ dataset. It has been updated and can now evaluate the new checkpoints:
 Verified end-to-end on a fabricated conditioned zarr checkpoint (dataset load,
 model build/load, cond feed, stats all run clean).
 
-**One caveat:** the sbatch default `--seeds 11 29 47 83` expects `seed_00NN`
-directories. The batch checkpoints are `--tag`-named (`c01_...`), so point
-`--output-root`/`--seeds` at a seed-named run, or diagnose the tag dirs directly
-(see quick commands). This is the only remaining rough edge — the master test
-itself is unblocked.
+**One caveat (handled):** the base sbatch default `--seeds 11 29 47 83` expects
+`seed_00NN` directories, but the batch checkpoints are `--tag`-named (`c01_...`,
+all `--seed 11`, so a shared `seed_0011` slot would collide). Use
+`scripts/diagnose_pusht_widowx.sbatch`, which loops the 10 tag dirs, symlinks a
+`seed_0001` slot per tag, and omits `--dataset` so each run scores against its
+own `data_archive` (zarr). It also passes `--dump-arrays` for the histograms.
+
+---
+
+## RESULTS — bisect complete (2026-07, all 10 configs)
+
+**Verdict: HEALTHY OFFLINE → the bug is deploy-side or physical (sections
+D–G). The weights are fine. Do not spend more time on A / B / C.**
+
+### How it was run
+`scripts/diagnose_pusht_widowx.sbatch` (raw weights, `PUSHT_DIAG_NO_EMA=1`),
+3000 seed-0 samples per checkpoint, `--idle-filter none` (full action
+distribution). Per-sample `pred`/`gt` arrays dumped via the new
+`--dump-arrays results/diag_arrays_raw`; JSON summaries in
+`results/diag_<tag>_raw.json`. Histograms: `scripts/plot_pusht_action_hist.py`
+→ `results/pusht_action_hist_raw.png` (GT vs pred, dx & dy, per checkpoint).
+
+### Numbers (raw weights, MAE on normalized [-1,1] actions)
+
+| tag | MAE dx / dy | note |
+|-----|-------------|------|
+| c03_dropstatic     | **0.038 / 0.044** | best |
+| c10_condxy_nofilter| **0.038 / 0.042** | best |
+| c02_none_control   | 0.046 / 0.049 | stall control — healthy offline |
+| c04_subsample25    | 0.065 / 0.069 | |
+| c09_condxy_dropzero| 0.067 / 0.075 | |
+| c06_hard_negatives | 0.067 / 0.076 | |
+| c07_lowmse_cp100   | 0.069 / 0.076 | |
+| c05_libero_recipe  | 0.074 / 0.079 | |
+| c01_dropzero_base  | 0.082 / 0.085 | |
+| c08_dropzero_aug   | 0.154 / 0.165 | outlier — augmentation over-spread; drop |
+
+For every config except c08: `pred std ≈ GT std`, actions spread across all four
+quadrants, low per-sample MAE. By the bisection rule this is **healthy offline**.
+
+### What the histograms confirm
+- **Not mode-collapse.** Pred is a *broad* bump around 0, not a delta spike at 0.
+  A collapsed policy would show a tall narrow pred spike matching/exceeding the
+  GT zero-spike; the opposite is seen. B1 is ruled out.
+- **±1 pileup is real expert behavior, not a clip artifact.** GT sits *exactly*
+  on ±1 for 6.7% of dx and 12.8% of dy steps (atol 1e-6) — a hard teleop
+  velocity cap at the true data extremes (`act_min/max = ±0.008` = the data
+  min/max, so nothing is clipped beyond). Pred matches the near-edge fraction
+  (dx 5.6% vs 7.1%, dy 12.1% vs 13.5%) without emitting exact ±1 — well
+  calibrated to the tails. **dy rides the cap ~2× more than dx** (12.8% vs 6.7%):
+  the vertical axis is the one at max step, worth watching in the F1/B4 deploy
+  sign/scale checks.
+- **Policy never emits exact (0,0).** GT has a huge 0-spike; pred is smooth
+  through 0. The model never commands a true "hold", so the robot stall cannot
+  originate in the weights — it is a deploy-side effect (prime suspect **D4**,
+  stale/duplicate stacked frame → learned "static stack ⇒ hold").
+- **c02 (the stall control) is healthy offline too.** Offline does not reproduce
+  the stall, which independently confirms the stall is deploy/robot, not the idle
+  filter and not the weights.
+
+### What the offline result does and does NOT clear
+The diagnostic trains and tests through the **same loader**, so "healthy
+offline" only proves the learned map is self-consistent with whatever that
+loader serves. It cannot see a bug that corrupts frames and labels *together*,
+or one that only appears at deploy.
+
+- **Cleared by offline:** **B1** (mode-collapse — pred is spread, not a spike),
+  **B2** (non-convergence — MAE ≈ 0.04 means it fit), **C1** (arch/cond load ran
+  without shape error), **B4** scale sanity (`act_min/max = ±0.008` as expected).
+- **NOT cleared by offline** (self-consistent or deploy-only, need loader-external
+  checks): **A1** frame↔action, **A2** wrong camera, **A3** frame-cache,
+  **A4/D2** tf-vs-cv2 resize.
+
+### A1 — CLOSED separately (loader-external, local, no cluster)
+Two direct checks on the raw zarr + source mp4s (both in the 292 MB zip):
+- `scripts/check_frame_action_alignment.py`: per-episode
+  `corr(action[t,:2], eef[t+1]-eef[t])` = **+0.81 dx / +0.84 dy, all 150
+  episodes ≥ +0.61, residual |Δeef-action| ≈ 1.4 mm** (cap 8 mm). Lowdim
+  action/eef/episode_ends are coherent; correct sign; benign lag0→+1 rise
+  (actuation latency, not off-by-one).
+- `scripts/check_frame_count_parity.py`: every video has **exactly** `L =
+  end-start` frames (delta +0 for all 150). `_build_frame_cache` writes
+  `frames[:L]` sequentially into `mm[start:end]`, so with zero truncation this is
+  an **exact 1:1 frame↔flat-index** map — no leading/trailing shift possible.
+  ep0 frame0 dumped to `results/a1_ep0_f0.png` shows the red T top-left in the
+  expected cam-1 layout.
+
+**A1 is not the bug.**
+
+### A2 — CHECKED, consistent (software); only G1 (physical) remains
+Train/deploy use the **same** camera, verified through the whole chain:
+- `train_pusht_real.py --video-camera` default = **1**; the batch has **zero**
+  overrides, so every c01–c10 trained on camera 1. All three diagnostic runs log
+  `PushTWidowXVideoDataset: ... camera=1`. Config writes
+  `camera_streams=["video1"]`, `video_camera=1`.
+- mp4 camera 1 **is** the fixed blue scene camera: `results/a1_ep0_f0.png`
+  (from `videos/0/1.mp4`) shows the red T top-left in the reference layout.
+- Deploy reads that same blue camera — `images1 == /blue/image_raw`, the only
+  camera left after the D435 was removed (`deploy_pusht_real.py` header +
+  `extract_blue_frame`). So **train cam 1 == deploy blue frame**, no view swap.
+
+Remaining camera risk is purely **physical mounting/aim** (→ **G1**, needs the
+live rig), not a software mismatch.
+
+### A3 — CLOSED (cache integrity)
+- **Length/truncation**: loader asserts `_cache_len == n_frames` (72988)
+  (`datasets.py:1452`); all three diagnostic runs loaded clean at
+  `state_shape=(6,240,320)`, so a short/truncated cache is impossible.
+- **H×W = 240×320 correct**: confirmed by the logged `state_shape` and by a local
+  reproduction of the build's tf AREA resize.
+- **No drop/dup**: frame-count parity (every video == L) + the sequential
+  per-episode write leave no room.
+- **Content correct**: reproduced `_build_frame_cache` on ep0 locally
+  (`results/a3_ep0_f0_resized.png`) — 240×320 uint8, red T preserved top-left.
+  Only unchecked bit is byte-identity of the on-cluster `.u8` vs this
+  reproduction, which the deterministic build + the length assert make
+  near-certain.
+
+### A4/D2 — CLOSED (resize parity, negligible)
+`scripts/check_resize_parity.py` (16 frames across ep 0/40/80/120, 640x480 ->
+240x320): tf AREA(antialias) vs cv2 INTER_AREA agree to **mean abs diff
+0.095/255, max 1, 0% of pixels off by >1** — pure rounding, signed bias
+-0.095. No systematic train/deploy shift. Deploy native is 640x480 (its header),
+same ratio as the cache, so this transfers. Visual: `results/a4_resize_diff.png`
+(tf | cv2 | 10x|diff|).
+
+### Section A — FULLY CLEARED
+A1 (frame↔action) CLOSED, A2 (camera) consistent in software (physical → G1),
+A3 (cache) CLOSED, A4/D2 (resize) CLOSED. The data → training supervision is
+intact end-to-end; **the failure is deploy-runtime or physical (D/E/F/G)**,
+which need the live rig. c08 aside (augmentation hurt), any of c03 / c10 / c02
+is fine to deploy for the later tests.
+
+### Loose ends
+- **c08_dropzero_aug**: drop it, augmentation flattened the distribution.
+- **EMA vs raw (B3)**: results above are raw. Re-run without `PUSHT_DIAG_NO_EMA`
+  for the EMA copy if a deployed EMA checkpoint misbehaves.
 
 ---
 
@@ -407,15 +539,23 @@ These are setup-match issues, all testable without retraining.
 
 ## Recommended order
 
-1. **Run the master test.** `diagnose_pusht_actions.py` now supports the zarr
-   checkpoints (see above) — run it on the batch checkpoints.
-2. **Bisect.** Collapsed offline → **A** then **B/C**. Healthy offline → **D/E/F/G**.
-3. **Given "all fail identically", front-load the common-mode causes:**
-   **A1** (frame/action alignment), **A4/D2** (resize mismatch),
-   **D1** (channel order). These break *every* config regardless of
-   hyperparameters. (**F2** approach-floor is only a masker when the policy is
-   already misbehaving toward the base — measured to fire on ~1% of demo steps,
-   so it is a secondary check, not a primary cause.)
+**Steps 1–2 DONE (see RESULTS): master test run, bisect = healthy offline.
+Offline clears B1/B2/C1; **section A FULLY CLEARED** (A1/A3/A4 closed, A2
+software-consistent → physical G1). Data+training exonerated. Remaining: D–G
+(deploy-runtime + physical), which need the live rig. Start at step 3.**
+
+1. ~~Run the master test.~~ Done — `scripts/diagnose_pusht_widowx.sbatch`.
+2. ~~Bisect.~~ Done — **healthy offline → clears B1/B2/C1, not A2/A3/A4.**
+   ~~A1~~ CLOSED via `check_frame_action_alignment.py` +
+   `check_frame_count_parity.py`.
+3. **Front-load the common-mode DEPLOY causes** (these break *every* config
+   regardless of hyperparameters, matching "all fail identically"):
+   **D4** (stale/duplicate stacked frame → learned "static ⇒ hold"; prime
+   stall suspect since the policy never emits exact (0,0) itself),
+   **D1** (channel order RGB/BGR), **A4/D2** (tf-vs-cv2 resize mismatch),
+   **F1** (command→motion sign/axis). (**F2** approach-floor is only a masker
+   when the policy is already driving toward the base — ~1% of demo steps — so
+   it is a secondary check, not a primary cause.)
 4. Only after the above, look at per-config causes (**B1** collapse, **E**
    conditioning) and physical setup (**G**).
 
