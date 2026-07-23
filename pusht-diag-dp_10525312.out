@@ -1,0 +1,6 @@
+SKIP d01_eps_s11_dropzero: /path/to/pusht_real_dp/d01_eps_s11_dropzero missing
+SKIP d02_eps_s29_dropzero: /path/to/pusht_real_dp/d02_eps_s29_dropzero missing
+SKIP d03_vpred_s11_dropzero: /path/to/pusht_real_dp/d03_vpred_s11_dropzero missing
+SKIP d04_vpred_s29_dropzero: /path/to/pusht_real_dp/d04_vpred_s29_dropzero missing
+SKIP d05_vpred_s11_none: /path/to/pusht_real_dp/d05_vpred_s11_none missing
+SKIP d06_eps_s11_none: /path/to/pusht_real_dp/d06_eps_s11_none missing

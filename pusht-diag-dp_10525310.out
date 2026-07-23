@@ -1,0 +1,216 @@
+===== diagnose d01_eps_s11_dropzero (ddpm) =====
+device=cuda  dataset=None  samples=3000  sampler=ddpm
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddpm, epsilon-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0121 -0.0358] std=[0.4351 0.5218] frac_neg=[0.478 0.532]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.046   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0528 0.0638]
+  sampling spread 0.0195   (≈0 => no diversity)
+  zero-share     pred=0.002  gt=0.257
+  pred quadrants {'--': 747, '-+': 688, '+-': 849, '++': 716}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d01_eps_s11_dropzero_ddpm_raw.json
+===== diagnose d01_eps_s11_dropzero (ddim) =====
+device=cuda  dataset=None  samples=3000  sampler=ddim
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddim 5step eta=0.0, epsilon-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0133 -0.0351] std=[0.4288 0.5183] frac_neg=[0.452 0.546]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.048   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0501 0.0625]
+  sampling spread 0.0138   (≈0 => no diversity)
+  zero-share     pred=0.003  gt=0.257
+  pred quadrants {'--': 714, '-+': 643, '+-': 925, '++': 718}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d01_eps_s11_dropzero_ddim_raw.json
+===== diagnose d02_eps_s29_dropzero (ddpm) =====
+device=cuda  dataset=None  samples=3000  sampler=ddpm
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddpm, epsilon-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0125 -0.0362] std=[0.4338 0.5221] frac_neg=[0.445 0.536]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.046   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0513 0.0628]
+  sampling spread 0.0184   (≈0 => no diversity)
+  zero-share     pred=0.003  gt=0.257
+  pred quadrants {'--': 697, '-+': 638, '+-': 912, '++': 753}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d02_eps_s29_dropzero_ddpm_raw.json
+===== diagnose d02_eps_s29_dropzero (ddim) =====
+device=cuda  dataset=None  samples=3000  sampler=ddim
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddim 5step eta=0.0, v-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0116 -0.0354] std=[0.4335 0.52  ] frac_neg=[0.462 0.511]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.049   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0501 0.0595]
+  sampling spread 0.0115   (≈0 => no diversity)
+  zero-share     pred=0.001  gt=0.257
+  pred quadrants {'--': 668, '-+': 719, '+-': 864, '++': 749}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d02_eps_s29_dropzero_ddim_raw.json
+===== diagnose d03_vpred_s11_dropzero (ddpm) =====
+device=cuda  dataset=None  samples=3000  sampler=ddpm
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddpm, v-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0109 -0.0358] std=[0.436  0.5213] frac_neg=[0.464 0.511]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.047   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0508 0.0602]
+  sampling spread 0.0170   (≈0 => no diversity)
+  zero-share     pred=0.002  gt=0.257
+  pred quadrants {'--': 667, '-+': 726, '+-': 866, '++': 741}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d03_vpred_s11_dropzero_ddpm_raw.json
+===== diagnose d03_vpred_s11_dropzero (ddim) =====
+device=cuda  dataset=None  samples=3000  sampler=ddim
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddim 5step eta=0.0, v-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0127 -0.0364] std=[0.4317 0.5198] frac_neg=[0.471 0.539]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.047   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0501 0.0595]
+  sampling spread 0.0117   (≈0 => no diversity)
+  zero-share     pred=0.002  gt=0.257
+  pred quadrants {'--': 739, '-+': 675, '+-': 879, '++': 707}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d03_vpred_s11_dropzero_ddim_raw.json
+===== diagnose d04_vpred_s29_dropzero (ddpm) =====
+device=cuda  dataset=None  samples=3000  sampler=ddpm
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddpm, v-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0122 -0.0374] std=[0.4341 0.5215] frac_neg=[0.48  0.538]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.046   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0506 0.0605]
+  sampling spread 0.0176   (≈0 => no diversity)
+  zero-share     pred=0.001  gt=0.257
+  pred quadrants {'--': 744, '-+': 695, '+-': 869, '++': 692}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d04_vpred_s29_dropzero_ddpm_raw.json
+===== diagnose d04_vpred_s29_dropzero (ddim) =====
+device=cuda  dataset=None  samples=3000  sampler=ddim
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddim 5step eta=0.0, v-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0104 -0.0319] std=[0.4172 0.5029] frac_neg=[0.483 0.526]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.043   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0189 0.0226]
+  sampling spread 0.0117   (≈0 => no diversity)
+  zero-share     pred=0.061  gt=0.257
+  pred quadrants {'--': 758, '-+': 692, '+-': 821, '++': 729}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d04_vpred_s29_dropzero_ddim_raw.json
+===== diagnose d05_vpred_s11_none (ddpm) =====
+device=cuda  dataset=None  samples=3000  sampler=ddpm
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddpm, v-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0105 -0.0331] std=[0.421 0.506] frac_neg=[0.481 0.525]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.046   (≈1 => diagonal collapse)
+  MAE vs gt      [0.02   0.0246]
+  sampling spread 0.0172   (≈0 => no diversity)
+  zero-share     pred=0.079  gt=0.257
+  pred quadrants {'--': 751, '-+': 691, '+-': 824, '++': 734}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d05_vpred_s11_none_ddpm_raw.json
+===== diagnose d05_vpred_s11_none (ddim) =====
+device=cuda  dataset=None  samples=3000  sampler=ddim
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddim 5step eta=0.0, epsilon-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0119 -0.0333] std=[0.4139 0.5001] frac_neg=[0.488 0.59 ]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.039   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0235 0.0284]
+  sampling spread 0.0139   (≈0 => no diversity)
+  zero-share     pred=0.083  gt=0.257
+  pred quadrants {'--': 847, '-+': 618, '+-': 924, '++': 611}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d05_vpred_s11_none_ddim_raw.json
+===== diagnose d06_eps_s11_none (ddpm) =====
+device=cuda  dataset=None  samples=3000  sampler=ddpm
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000  (ddpm, epsilon-pred, 4 draws)
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0114 -0.0338] std=[0.4192 0.5048] frac_neg=[0.485 0.59 ]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.045   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0243 0.0305]
+  sampling spread 0.0207   (≈0 => no diversity)
+  zero-share     pred=0.094  gt=0.257
+  pred quadrants {'--': 848, '-+': 606, '+-': 921, '++': 625}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d06_eps_s11_none_ddpm_raw.json
+===== diagnose d06_eps_s11_none (ddim) =====
+device=cuda  dataset=None  samples=3000  sampler=ddim
+
+===== seed 0001 =====
+seed 1 FAILED: [Errno 2] No such file or directory: '/home1/halbertb/Q3CIBC/checkpoints/pusht_real_dp/seed_0001/config.json'
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_d06_eps_s11_none_ddim_raw.json
