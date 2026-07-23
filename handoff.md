@@ -376,7 +376,24 @@ Lives in `combinedv2_cpascounter_training.py`.
 
 Lives in `scripts/deploy_pusht_real.py`.
 
-### D1. Channel order (RGB vs BGR)
+### D1. Channel order (RGB vs BGR) — CHECKED, CORRECT (not the bug)
+Analyzed the existing capture `results/dry_03/` (raw_*.npy + fed_*.png):
+- `raw_000.npy` most-chromatic pixel (the T) = RGB(94, 11, 20): **R ≫ B**
+  (max redness 79 vs max blueness 15). Buffer is genuinely RGB.
+- `fed_000.png` renders the T **red and upright**, correct layout. No swap.
+- **Reversal ruled out:** `imageio.imread(fed_000.png)` (read as RGB) equals the
+  exact model-input array `frame_buf[-1]` byte-for-byte (`np.array_equal ==
+  True`); T pixel RGB(95,12,21), index0=R highest. The dump's `cvtColor(RGB2BGR)`
+  is cancelled by `imwrite`'s BGR convention, so the file stores true RGB. A
+  BGR buffer would have rendered the T **blue** — red proves RGB into the model.
+- **Caveat:** valid only if `dry_03` came from the *current* rig/server; if the
+  server changed since, re-capture with `--dry-run` and re-check.
+- **Side finding → G2:** the deploy T is a dull maroon, peak redness **79** vs a
+  training frame's ~133. The T is measurably darker/desaturated — the G2
+  lighting OOD, visible in this same capture.
+
+Original notes below.
+
 - **What / why.** Training frames are tf-decoded RGB with the red T in channel
   0. The deploy client feeds the server frame as-is (no swap), assuming the same
   order. If this rig's server delivers BGR, the T's color channel is scrambled
@@ -390,31 +407,60 @@ Lives in `scripts/deploy_pusht_real.py`.
   **red** and upright (imshow/imwrite assume BGR, so a correct RGB buffer saved
   via `RGB2BGR` shows red correctly). If the T is blue, channels are swapped.
 
-### D2. Resize mismatch (deploy side)
-- Same underlying issue as **A4**, viewed from the deploy end. `preprocess`
-  uses `cv2.INTER_AREA`; the cache used tf AREA. Test as in A4.
+### D2. Resize mismatch (deploy side) — CLOSED (negligible)
+Same issue as A4, measured on **real deploy frames** (`dry_03/raw_*.npy`, 20
+frames, 480x640 -> 240x320): `|cv2_deploy - tf_train|` mean **0.116/255, max 1,
+0% of pixels off by >1**, signed bias +0.116. The deploy cv2 INTER_AREA output
+matches the tf training cache to within rounding. Not a train/deploy shift.
 
-### D3. Wrong target resolution
-- **What / why.** Training cache is 240×320; deploy must resize to the same
-  `(image_height, image_width)` before the encoder (which then bilinearly
-  resizes to 180×240 internally). A mismatch changes aspect/scale.
-- **Failure type.** Geometric OOD.
-- **Files.** deploy reads `image_height`/`image_width` from `config.json`;
-  `preprocess(out_hw=(image_h, image_w))`.
-- **Test.** Confirm `image_height=240`, `image_width=320` in `config.json`;
-  `fed_*.png` should be 320×240.
+### D3. Wrong target resolution — CLOSED (correct)
+`dry_03/fed_000.png` is **240x320** = the model input size; the raw server frame
+is 480x640 and `preprocess` downsizes it to 240x320. Also verified fed png ==
+`frame_buf[-1]` (the exact model-input array) byte-for-byte, so what the model
+ingests is confirmed 240x320. Matches training `state_shape=(6,240,320)`.
 
-### D4. Stale / duplicate / zero-motion frame
-- **What / why.** The original `(-,-)` runaway was caused by a 2-frame stack
-  with no inter-frame motion (server repeated an image, or the frame was grabbed
-  before the commanded move landed). The stack is the *only* motion signal the
-  pixels-only policy has; a static stack maps to the learned "hold".
-- **Failure type.** Freeze or runaway; self-locking once the arm stalls.
-- **Files.** `extract_blue_frame` / the control loop grab logic;
-  `stack_to_tensor` (line ~431).
-- **Test.** From a `--log-dir` run, diff consecutive `raw/*.npy`; they must
-  differ by more than sensor noise. If identical frames appear in a stack, the
-  freshness guard is failing.
+Original notes: training cache 240×320; deploy `preprocess(out_hw=(image_h,
+image_w))` reads `image_height`/`image_width` from `config.json`; encoder then
+bilinearly resizes to 180×240 internally.
+
+### D4. Stale / duplicate / zero-motion frame — ANALYZED: stall REPRODUCED, but NOT a frame-grab bug
+Analyzed `results/roll_03/` (120-step logged rollout of a **pixels-only** config
+— `steps.jsonl` has no `cond` field, so c01–c08, not c09/c10):
+
+- **No stale/duplicate frames.** 0/119 consecutive raw pairs are identical; the
+  freshness guard is fine. The server never repeats an image. D4-as-originally-
+  written (frame-grab freshness) is **clean**.
+- **But the stall is real and self-locking.** Steps 0–~60 push healthily
+  (x 0.110→0.210, |action| ~.005–.007); after ~step 65 the policy commands
+  **exactly 0.0000** (40.8% of all steps, all in the back half) and the arm
+  freezes at (0.218, 0.105) — short of the demo push range (x up to 0.49). A
+  premature stall, not task success.
+- **Root cause = razor-thin motion margin.** Inter-frame pixel motion while
+  *moving* is only ~1.2–1.6 (0–255 scale); the camera **noise floor is 0.94**.
+  The 8 mm max step barely clears sensor noise. As the arm decelerates near the
+  push, real motion sinks *into* the noise → the 2-frame stack reads static →
+  the pixels-only model fires its learned **"static pair ⇒ hold"** rule → arm
+  stops → stack stays static → absorbing lock. `corr(frame-diff, next |action|)
+  = +0.47` confirms: less scene motion → smaller next action.
+- **Reconciles with "healthy offline".** Offline sampled *moving* transitions;
+  the model correctly emits ~0 on static pairs, and near-target the deploy input
+  *becomes* a static pair. This is the B1 / zero-action absorbing state
+  manifesting at deploy, triggered physically — exactly what the idle filters +
+  negatives were meant to break, and it still bites a pixels-only policy.
+
+**Implication / leading fix.** A pixels-only policy has no motion signal but the
+2-frame pixel diff, so it is structurally prone to this lock. **c09/c10 add
+eef-(x,y) conditioning to supply a non-visual "where am I"** — the primary
+candidate fix. Deploy c09/c10 and re-run this same rollout analysis; if the
+conditioned policy keeps moving past step ~65, this is confirmed. (Deploy-side
+palliatives: inject a minimum step, or gate on proprioceptive velocity rather
+than pixel motion.)
+
+- **Files.** `extract_blue_frame` / control-loop grab logic; `stack_to_tensor`
+  (line ~431); analysis via `results/roll_*/raw/*.npy` + `steps.jsonl`.
+- **Test (reusable).** Diff consecutive `raw/*.npy` (duplicates = freshness bug),
+  and cross-plot `|action|` vs frame-diff vs EEF-move from `steps.jsonl` to catch
+  the absorbing lock even when frames are technically fresh.
 
 ---
 
