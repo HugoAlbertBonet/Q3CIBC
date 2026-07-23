@@ -450,11 +450,28 @@ Analyzed `results/roll_03/` (120-step logged rollout of a **pixels-only** config
 
 **Implication / leading fix.** A pixels-only policy has no motion signal but the
 2-frame pixel diff, so it is structurally prone to this lock. **c09/c10 add
-eef-(x,y) conditioning to supply a non-visual "where am I"** — the primary
-candidate fix. Deploy c09/c10 and re-run this same rollout analysis; if the
-conditioned policy keeps moving past step ~65, this is confirmed. (Deploy-side
-palliatives: inject a minimum step, or gate on proprioceptive velocity rather
-than pixel motion.)
+eef-(x,y) conditioning to supply a non-visual "where am I"**.
+
+**UPDATE — c09/c10 tested (`roll_04`, `roll_05`), stall NOT solved, only
+changed.** Conditioning removes the *exact-zero* collapse (0% zero-action vs
+40.8% pixels-only) but all three still stall mid-task at a premature fixed
+point, far from goal (demos push x→0.49; reached: pixels 0.218, **c09 0.303**,
+c10 0.184):
+- Pixels-only fixed point = *exact zero* action (static-stack → hold).
+- c09/c10 fixed point = a small **constant nonzero** action (~0.001 m, pointing
+  −dx toward base) that the arm does not execute (move ~0.4 mm) → position
+  frozen → conditioning input frozen → same action out → fixed-point lock.
+- `corr(cmd, actual) = +0.82…+0.94` (F1 sign fine); `action == env_action`
+  through the whole stuck region (F2 approach-floor NOT firing). Neither is the
+  cause.
+- **G4 z-droop is the prime physical contributor** — see G4: `corr(x,z) = −0.97`,
+  c09 sags to z=0.007 at x=0.303 vs the 0.0197 contact height. Wrong contact
+  height → no purchase on the T → no progress → the policy settles.
+
+Next: compensate the droop (raise `--fixed-z-height`, ideally x-dependent) and
+re-test; separately check whether the reached fixed-point region is OOD (few
+demos there) so the policy under-drives. (Deploy palliatives: minimum-step floor
+on |action|, proprioceptive-velocity gating.)
 
 - **Files.** `extract_blue_frame` / control-loop grab logic; `stack_to_tensor`
   (line ~431); analysis via `results/roll_*/raw/*.npy` + `steps.jsonl`.
@@ -465,6 +482,60 @@ than pixel motion.)
 ---
 
 ## E. Conditioning  *(new; only c09 / c10)*
+
+### E — conditioning INPUTS verified offline; end-to-end behavior UNVERIFIED (needs rig)
+Checked offline from `roll_04` (c09) / `roll_05` (c10) `steps.jsonl` vs the
+training workspace (zarr `robot_eef_pose[:, :2]`). This confirms the *inputs* to
+conditioning are sane — NOT that conditioning is wired correctly through the
+model or that it actually steers the policy. Those are only confirmable on the
+rig by testing.
+- **E1 layout correct.** Deploy start `state=(0.110, −0.017)` matches the known
+  demo start `(0.117, −0.019)` → `state[0]=x, state[1]=y`. The "inferred from old
+  logs, unconfirmed" worry is resolved for the layout.
+- **In-distribution.** 100% of the fed x,y lie inside the training range
+  (x∈[0.094,0.491], y∈[−0.376,0.338]).
+- **E3 no saturation.** Normalized cond never pinned at ±1 (x∈[−0.92,+0.05],
+  0% saturated). E2 already verified in-repo (`make_cond` == `normalize_cond` to
+  1e-7).
+
+**Open:** whether the cond head is correctly connected and whether the (x,y)
+signal is actually driving the policy (vs decorative / under-driving) is NOT
+proven offline. **Order: try the two deploy fixes below on the rig FIRST.** If
+the stall clears, conditioning was fine. If it persists, do full E diagnostics —
+e.g. ablate the cond input at deploy (feed constant vs true (x,y) and check the
+action changes), and confirm the cond tensor reaches the value net with nonzero
+learned weights.
+
+### ROOT CAUSE (deepest): expert action dead zone → OOD sub-min-step stall
+Measured on the raw zarr (normalized actions, ±0.008 → ±1):
+- Per axis the expert is **bang-bang**: exactly 0, or a real step ≥ ~1.5 mm.
+  dx is 0 in 46.4% of rows, dy in 38.1% (the (0,0) both-zero case is 24%). The
+  smallest nonzero |dx| is 1.5 mm; **only 0.30% of nonzero dx fall below 1.5 mm**
+  → an empty dead zone in (0, 1.5 mm).
+- The stuck fixed-point actions (c09 dx≈−0.57 mm, c10 ≈−1 mm) sit **inside that
+  dead zone** — values with ~zero training support. The energy/IBC policy
+  interpolates between the 0-spike and the ≥1.5 mm cluster and emits an
+  in-between action that (a) no expert made and (b) is below the arm's execution
+  threshold → under-executes → freeze → same action out → lock.
+- Explains BOTH modes: pixels-only interpolation collapses to the dominant
+  0-spike (exact-zero hold); conditioned lands in the (0,1.5 mm) gap
+  (sub-threshold creep).
+
+### FIXES IMPLEMENTED — test on rig (ablation)
+Two opt-in deploy flags in `scripts/deploy_pusht_real.py`:
+1. **Min-step snap** `--min-step-xy 0.0015`: any nonzero |dx|/|dy| below the
+   value is snapped up to it (sign kept); exact 0 preserved. Forces commands onto
+   the supported bang-bang grid so they execute. (`apply_min_step`.)
+2. **z-hold servo** `--z-hold 0.0197 [--z-hold-gain 1.0 --z-hold-max 0.01]`:
+   injects a per-step `dz = clip(gain*(z_target−cur_z))` to actively hold z flat
+   against the x-dependent droop. **Requires `--action-mode 3trans`** (startup
+   guard rejects 2trans) and a server/arm that executes dz; dz is injected, not
+   from the 2trans-trained policy. (`z_hold_dz`, `z_from_obs`.)
+
+**Ablation to run (c09, the furthest-pushing config):** baseline / snap-only /
+z-servo-only / both. Re-run the D4 rollout analysis each time; success = the arm
+keeps moving past x≈0.30 with z≈0.0197 and progresses toward the goal instead of
+fixed-pointing.
 
 ### E1. Deploy state layout — is `state[:2]` really (x, y)?
 - **What / why.** The conditioned policy expects the current EEF (x, y),
@@ -574,12 +645,21 @@ These are setup-match issues, all testable without retraining.
   (`scripts/assets/pusht_start_eep.npy`); logged `state`.
 - **Test.** `steps.jsonl` step 0 EEF vs the asset (x≈0.117, y≈−0.019).
 
-### G4. z droop
-- **Why.** `lock_z` commands z=0.02 but the arm was measured drooping to ~0.009
-  at extended poses; demos held ~0.0197. Wrong contact height with the T.
+### G4. z droop — CONFIRMED, strong (prime physical contributor to the stall)
+- **Why.** `lock_z` commands z=0.02 but the arm droops at extended poses; demos
+  held ~0.0197. Wrong contact height with the T.
+- **Measured** across `roll_03/04/05` steps.jsonl (`state[2]`):
+  `corr(x, z) = -0.97 (c09) / -0.84 (c10) / -0.83 (pixels)` — z falls as the arm
+  extends. Every run sits below 0.0197 even near the base (z max 0.017–0.018),
+  and **c09 sags to z=0.007 at x=0.303**, exactly where it stalls. ~14 mm below
+  contact height at reach → the gripper loses purchase on the T, the push does
+  nothing, and the policy settles into its premature fixed point (see D4 UPDATE).
 - **Files.** deploy `--fixed-z-height` / `--lock-z`; logged `state[2]`.
-- **Test.** Log z through a rollout; compare to 0.0197. Raise `--fixed-z-height`
-  to compensate if it sags.
+- **Test / fix.** Raise `--fixed-z-height` to compensate. Because the droop is
+  x-dependent (corr −0.97), a single fixed offset won't hold z flat across the
+  reach — characterize z_actual(x) from these logs and apply an x-dependent
+  offset (or accept a compromise height) so z stays ≈0.0197 out to x≈0.35, then
+  re-run the rollout and re-check whether the fixed-point stall clears.
 
 ---
 

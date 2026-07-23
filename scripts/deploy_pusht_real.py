@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -104,10 +105,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--action-mode", default="2trans",
                    choices=["2trans", "3trans", "3trans1rot", "3trans3rot"])
     p.add_argument("--safety-max-xy-delta", type=float, default=SAFETY_MAX_XY_DELTA)
+    p.add_argument("--min-step-xy", type=float, default=0.0,
+                   help="metres. If >0, any nonzero |dx|/|dy| below this is "
+                        "snapped UP to it (sign kept); exact 0 stays 0. The "
+                        "expert teleop is bang-bang (0 or >=1.5mm; measured "
+                        "dead zone in (0,1.5mm)), so the energy policy can emit "
+                        "sub-min-step OOD actions that the arm can't execute and "
+                        "it locks. Suggested 0.0015. Default 0 = off.")
     p.add_argument("--lock-z", dest="lock_z", action="store_true", default=True)
     p.add_argument("--no-lock-z", dest="lock_z", action="store_false")
     p.add_argument("--fixed-z-height", type=float, default=FIXED_Z_HEIGHT)
     p.add_argument("--neutral-z-height", type=float, default=NEUTRAL_Z_HEIGHT)
+    p.add_argument("--z-hold", type=float, default=0.0,
+                   help="metres. If >0, inject a per-step dz to actively hold "
+                        "the measured EEF z at this target, compensating the "
+                        "x-dependent cantilever droop (measured corr(x,z)=-0.97; "
+                        "demos held ~0.0197). REQUIRES an action_mode that sends "
+                        "z (3trans/3trans1rot/3trans3rot) and a server/arm that "
+                        "executes dz. dz is injected, NOT from the 2trans-trained "
+                        "policy. Suggested 0.0197. Default 0 = off.")
+    p.add_argument("--z-hold-gain", type=float, default=1.0,
+                   help="proportional gain on (z_target - cur_z) for --z-hold.")
+    p.add_argument("--z-hold-max", type=float, default=0.01,
+                   help="metres, per-step |dz| clip for --z-hold.")
     p.add_argument("--fixed-gripper", type=float, default=FIXED_GRIPPER,
                    help="gripper target for the 2trans env (0.0 = CLOSED, 1.0 = "
                         "OPEN, per the WidowX SDK convention).")
@@ -556,6 +576,52 @@ def to_action_7d(act_xy: np.ndarray, gripper_value: float) -> np.ndarray:
     return out
 
 
+def apply_min_step(act_xy: np.ndarray, min_step: float,
+                   eps: float = 1e-5) -> tuple[np.ndarray, bool]:
+    """Snap sub-min-step nonzero components up to the min real step.
+
+    The expert action distribution is bang-bang per axis: exactly 0, or a real
+    step >= ~1.5mm, with an empty dead zone in between. An energy/IBC policy
+    interpolating between the 0-spike and the min-step cluster can output a
+    value inside that dead zone -- too small for the arm to execute, so it
+    freezes at a fixed point (measured on c09/c10 rollouts). This forces any
+    nonzero-but-tiny command onto the supported grid. Exact 0 (a genuine hold)
+    is preserved.
+    """
+    if min_step <= 0:
+        return act_xy, False
+    act = np.asarray(act_xy, np.float64).copy()
+    snapped = False
+    for i in range(len(act)):
+        v = act[i]
+        if eps < abs(v) < min_step:
+            act[i] = math.copysign(min_step, v)
+            snapped = True
+    return act, snapped
+
+
+def z_hold_dz(cur_z: float | None, z_target: float, gain: float,
+              max_dz: float) -> float:
+    """Proportional dz to drive measured z toward z_target (G4 droop hold).
+
+    Returns 0 if z_target<=0 (disabled) or cur_z is unavailable.
+    """
+    if z_target <= 0 or cur_z is None:
+        return 0.0
+    dz = gain * (z_target - cur_z)
+    return float(np.clip(dz, -max_dz, max_dz))
+
+
+def z_from_obs(raw_obs) -> float | None:
+    """Measured EEF z = state[2], mirroring eef_x_from_obs's state[0]."""
+    if raw_obs is None:
+        return None
+    st = raw_obs.get("state")
+    if st is None or len(st) < 3:
+        return None
+    return float(st[2])
+
+
 def safety_clip_action(action_7d: np.ndarray, action_mode: str,
                        max_xy_delta: float) -> np.ndarray:
     action = np.asarray(action_7d, dtype=np.float64).copy()
@@ -583,6 +649,12 @@ def project_action_to_env_mode(action_7d: np.ndarray, action_mode: str) -> np.nd
 
 def main() -> int:
     args = parse_args()
+    if args.z_hold > 0 and args.action_mode == "2trans":
+        raise SystemExit(
+            "--z-hold needs an action_mode that sends z "
+            "(3trans/3trans1rot/3trans3rot); got 2trans. The injected dz would "
+            "be dropped. Re-run with e.g. --action-mode 3trans."
+        )
     seed_dir = args.seed_dir.resolve()
 
     # --- checkpoint metadata -------------------------------------------------
@@ -843,6 +915,14 @@ def main() -> int:
                                cond=make_cond(raw_obs))
             act_xy = unnormalize(na, act_min, act_max, norm_range)
 
+            # Snap sub-min-step OOD dead-zone actions onto the supported grid
+            # (see apply_min_step) so tiny nonzero commands actually execute
+            # instead of freezing the arm at a fixed point.
+            act_xy, snapped = apply_min_step(act_xy, args.min_step_xy)
+            if snapped:
+                print(f"[min-step] snapped {np.round(na, 3)} -> "
+                      f"dx,dy={np.round(act_xy, 4)}")
+
             # HARD SAFETY: never move closer to the robot than the start pose.
             cur_x = eef_x_from_obs(raw_obs)
             act_xy, floored = apply_approach_floor(act_xy, cur_x, approach_floor_x)
@@ -853,6 +933,13 @@ def main() -> int:
             action_7d = to_action_7d(act_xy, args.fixed_gripper)
             action_7d = safety_clip_action(action_7d, args.action_mode,
                                            args.safety_max_xy_delta)
+            # G4 z-droop compensation: inject dz AFTER safety_clip (which zeros
+            # dims 2-6 in 2trans) so it survives, and only when the mode carries
+            # z. Startup guard already rejects --z-hold with action_mode=2trans.
+            if args.z_hold > 0:
+                dz = z_hold_dz(z_from_obs(raw_obs), args.z_hold,
+                               args.z_hold_gain, args.z_hold_max)
+                action_7d[2] = dz
             env_action = project_action_to_env_mode(action_7d, args.action_mode)
 
             if not blocking:
