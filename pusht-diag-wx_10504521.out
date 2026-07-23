@@ -1,0 +1,138 @@
+===== diagnose c01_dropzero_base =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0132 -0.0362] std=[0.4566 0.5411] frac_neg=[0.482 0.534]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.049   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0816 0.0854]
+  pred quadrants {'--': 768, '-+': 678, '+-': 833, '++': 721}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c01_dropzero_base_raw.json
+===== diagnose c02_none_control =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0089 -0.0287] std=[0.4362 0.5225] frac_neg=[0.491 0.512]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.049   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0463 0.0494]
+  pred quadrants {'--': 739, '-+': 733, '+-': 798, '++': 730}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c02_none_control_raw.json
+===== diagnose c03_dropstatic =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0116 -0.0334] std=[0.4292 0.5199] frac_neg=[0.493 0.526]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.051   (≈1 => diagonal collapse)
+  MAE vs gt      [0.038  0.0442]
+  pred quadrants {'--': 744, '-+': 734, '+-': 833, '++': 689}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c03_dropstatic_raw.json
+SKIP c04_subsample: /home1/halbertb/Q3CIBC/checkpoints/pusht_real_combinedv2_v2/c04_subsample missing
+===== diagnose c05_libero_recipe =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0152 -0.0374] std=[0.4463 0.5296] frac_neg=[0.48  0.531]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.056   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0744 0.0795]
+  pred quadrants {'--': 751, '-+': 688, '+-': 841, '++': 720}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c05_libero_recipe_raw.json
+===== diagnose c06_hard_negatives =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0142 -0.0363] std=[0.4452 0.5337] frac_neg=[0.481 0.52 ]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.065   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0675 0.0765]
+  pred quadrants {'--': 742, '-+': 700, '+-': 817, '++': 741}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c06_hard_negatives_raw.json
+SKIP c07_lowmse_cp: /home1/halbertb/Q3CIBC/checkpoints/pusht_real_combinedv2_v2/c07_lowmse_cp missing
+===== diagnose c08_dropzero_aug =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[-0.0041 -0.0416] std=[0.4741 0.5733] frac_neg=[0.521 0.542]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.032   (≈1 => diagonal collapse)
+  MAE vs gt      [0.1702 0.1833]
+  pred quadrants {'--': 865, '-+': 698, '+-': 761, '++': 676}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c08_dropzero_aug_raw.json
+===== diagnose c09_condxy_dropzero =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0157 -0.0407] std=[0.4431 0.5326] frac_neg=[0.472 0.524]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.051   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0671 0.075 ]
+  pred quadrants {'--': 738, '-+': 678, '+-': 833, '++': 751}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c09_condxy_dropzero_raw.json
+===== diagnose c10_condxy_nofilter =====
+device=cuda  dataset=None  samples=3000
+
+===== seed 0001 =====
+PushTWidowXVideoDataset: 150 episodes, 72988 frames, camera=1, frame_stack=2, state_shape=(6, 240, 320), raw action range=[-0.008 -0.008] -> [0.008 0.008]
+  idle_filter='none' -> 72988/72988 transitions kept (100.0%); zero-action share now 24.1%
+  samples        3000
+  act range      min=[-0.00800000037997961, -0.00800000037997961]  max=[0.00800000037997961, 0.00800000037997961]
+  pred mean/std  mean=[ 0.0085 -0.0321] std=[0.4249 0.5159] frac_neg=[0.514 0.524]
+  gt   mean/std  mean=[ 0.0098 -0.0314] std=[0.4212 0.5078] frac_neg=[0.252 0.321]
+  corr(dx,dy)    -0.056   (≈1 => diagonal collapse)
+  MAE vs gt      [0.0379 0.0425]
+  pred quadrants {'--': 800, '-+': 742, '+-': 773, '++': 685}
+  gt   quadrants {'--': 280, '-+': 476, '+-': 683, '++': 1561}
+  => looks responsive
+
+Wrote /home1/halbertb/Q3CIBC/results/diag_c10_condxy_nofilter_raw.json
