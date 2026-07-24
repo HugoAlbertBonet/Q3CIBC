@@ -1,0 +1,31 @@
+# Push-T WidowX Diffusion-Policy — CAMERA 1, architecture sweep + val split.
+#
+# Follow-up to batches/pushtWidowXdp.txt. The d01..d06 checkpoints fit the demo
+# action distribution offline (diagnose_pusht_actions_dp.py: pred std ~= gt std,
+# MAE ~0.05, no idle collapse) yet the task is still far from solved on the arm.
+# Hypothesis: the ConvMaxpool encoder is the bottleneck. This batch swaps in the
+# ImageNet-pretrained ResNet-18 + SpatialSoftmax encoder (the LIBERO-standard BC
+# backbone) and keeps a conv_maxpool CONTROL so the delta is measurable.
+#
+# Every run holds out 10% of EPISODES (--val-frac 0.1, shared --val-seed 0 so all
+# runs and the both-camera batch hold out the SAME episodes) and logs a live
+# held-out sampled-action MAE — a generalization signal the earlier runs lacked.
+#
+# Fixed axes (best pushing_pixels DP recipe): v-prediction, drop_zero idle
+# filter, T=100 cosine, DenseResnet 1024x1 head, EMA 0.999, 750k steps.
+# ResNet-18 uses default BN (standard fine-tuning) + 64 SpatialSoftmax keypoints.
+#
+# Camera 1 is the fixed blue scene camera the deploy client reads. Its frame
+# cache already exists. Run scripts/prepare_pusht_video_cache.py FIRST if not.
+# --workers 4 matches submit_experiments.sh's --cpus-per-task=4.
+
+# 01 PRIMARY: ImageNet ResNet-18 encoder, seed 11.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag e01_resnet18_s11 --workers 4 --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet
+
+# 02 seed repeat of 01. DP single-seed success bounces (pushingPixelsDPD showed
+#    83-95%), so one seed is not a number.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag e02_resnet18_s29 --workers 4 --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet
+
+# 03 CONTROL: identical recipe, conv_maxpool encoder (== the d03 architecture).
+#    Isolates exactly what the pretrained ResNet buys under the val split.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag e03_conv_s11 --workers 4 --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind conv_maxpool

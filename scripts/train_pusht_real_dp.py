@@ -316,7 +316,14 @@ def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
     # zarr_video trains on ONE camera (the blue scene view); bridge_zip keeps
     # the explicit stream list. Both end up as a 1-element channel group so the
     # in_channels arithmetic is identical.
-    n_cams = 1 if args.data_format == "zarr_video" else len(args.cameras)
+    # zarr_video can now stack MULTIPLE per-episode cameras (--video-cameras);
+    # bridge_zip keeps its explicit stream list. Both end up as n_cams channel
+    # groups so the in_channels arithmetic (3 * n_cams * frame_stack) is shared.
+    video_cameras = (
+        list(args.video_cameras) if args.video_cameras
+        else [args.video_camera]
+    )
+    n_cams = len(video_cameras) if args.data_format == "zarr_video" else len(args.cameras)
     env = {
         "data_archive": str(args.dataset.resolve()),
         "data_format": args.data_format,
@@ -329,11 +336,12 @@ def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
         "action_dim": 2,
         "frame_stack": args.frame_stack,
         "camera_streams": (
-            [f"video{args.video_camera}"]
+            [f"video{c}" for c in video_cameras]
             if args.data_format == "zarr_video"
             else list(args.cameras)
         ),
-        "video_camera": args.video_camera,
+        "video_camera": video_cameras[0] if args.data_format == "zarr_video" else args.video_camera,
+        "video_cameras": video_cameras,
         "image_height": args.image_height,
         "image_width": args.image_width,
         "action_bounds": [-1.0, 1.0],
@@ -346,6 +354,9 @@ def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
         "idle_move_eps": args.idle_move_eps,
         "idle_keep_frac": args.idle_keep_frac,
         "cond_eef_xy": args.cond_eef_xy,
+        # Episode-level held-out validation (0.0 = off).
+        "val_frac": args.val_frac,
+        "val_seed": args.val_seed,
         "training": {
             "training_steps": args.steps,
             "batch_size": args.batch_size,
@@ -354,7 +365,11 @@ def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
         },
         "model": {
             "kind": "dp_pixel_denoiser",
-            "encoder_kind": "conv_maxpool",
+            "encoder_kind": args.encoder_kind,
+            "encoder_pretrained": (args.encoder_pretrained == "imagenet"),
+            "encoder_norm_kind": args.encoder_norm_kind,
+            "encoder_num_kp": args.encoder_num_kp,
+            "encoder_per_camera": args.encoder_per_camera,
             "diffusion": {
                 "num_train_timesteps": DP_BEST["num_train_timesteps"],
                 "beta_schedule": DP_BEST["beta_schedule"],
@@ -436,17 +451,24 @@ def main() -> int:
 
     from utils.diffusion import build_diffusion, build_pixel_denoiser
 
+    video_cameras = (
+        list(args.video_cameras) if args.video_cameras
+        else [args.video_camera]
+    )
+    # Episode-level held-out validation: train on the "train" split, eval MAE on
+    # "val". val_frac=0 => split "all" (train on everything), val dataset None.
+    use_val = args.data_format == "zarr_video" and args.val_frac > 0.0
+    val_dataset = None
     if args.data_format == "zarr_video":
         from utils.datasets import PushTWidowXVideoDataset
 
-        dataset = PushTWidowXVideoDataset(
+        ds_common = dict(
             archive_path=str(args.dataset),
             frame_stack=args.frame_stack,
-            camera=args.video_camera,
+            cameras=video_cameras,
             resize_hw=(args.image_height, args.image_width),
             normalize_actions=True,
             action_norm_range=(-1.0, 1.0),
-            augment=args.aug,
             idle_filter=args.idle_filter,
             idle_eps=args.idle_eps,
             idle_move_eps=args.idle_move_eps,
@@ -458,12 +480,26 @@ def main() -> int:
                 else None
             ),
             cond_eef_xy=args.cond_eef_xy,
+            val_frac=args.val_frac,
+            val_seed=args.val_seed,
         )
+        dataset = PushTWidowXVideoDataset(
+            augment=args.aug,
+            split=("train" if use_val else "all"),
+            **ds_common,
+        )
+        if use_val:
+            # Val mirrors deploy: no augmentation, same normalization stats.
+            val_dataset = PushTWidowXVideoDataset(
+                augment=False, split="val", **ds_common,
+            )
     else:
         from utils.datasets import PushTRealPixelsDataset
 
         if args.cond_eef_xy:
             raise ValueError("--cond-eef-xy requires --data-format zarr_video")
+        if args.val_frac > 0.0:
+            raise ValueError("--val-frac is only wired for --data-format zarr_video")
         dataset = PushTRealPixelsDataset(
             archive_path=str(args.dataset),
             frame_stack=args.frame_stack,
@@ -483,6 +519,19 @@ def main() -> int:
         persistent_workers=args.workers > 0,
         pin_memory=device.type == "cuda",
     )
+    val_loader = None
+    if val_dataset is not None:
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=max(1, args.workers // 2),
+            persistent_workers=args.workers > 0,
+            pin_memory=device.type == "cuda",
+        )
+        print(f"Held-out val: {len(val_dataset)} samples "
+              f"({args.val_frac:.0%} of episodes, seed {args.val_seed})")
 
     dp = {
         "num_train_timesteps": DP_BEST["num_train_timesteps"],
@@ -495,7 +544,11 @@ def main() -> int:
         "denoiser_use_spectral_norm": DP_BEST["denoiser_use_spectral_norm"],
     }
     if cond_dim:
-        # Local subclass — the shared PixelDiffusionDenoiser is pixels-only.
+        # Local subclass — pixels-only, conv_maxpool-only (the resnet18 encoder
+        # is not wired through the cond head).
+        if args.encoder_kind != "conv_maxpool":
+            raise ValueError(
+                "--cond-eef-xy is only supported with --encoder-kind conv_maxpool")
         denoiser = CondPixelDiffusionDenoiser(
             2,
             in_channels=dataset.in_channels,
@@ -510,11 +563,20 @@ def main() -> int:
             2, dataset.in_channels, dp,
             encoder_target_height=DP_BEST["encoder_target_height"],
             encoder_target_width=DP_BEST["encoder_target_width"],
+            encoder_feature_dim=DP_BEST["encoder_feature_dim"],
+            encoder_kind=args.encoder_kind,
+            encoder_pretrained=(args.encoder_pretrained == "imagenet"),
+            encoder_num_kp=args.encoder_num_kp,
+            encoder_norm_kind=args.encoder_norm_kind,
+            encoder_per_camera=args.encoder_per_camera,
             device=device,
         )
     diffusion = build_diffusion(dp, device, (-1.0, 1.0))
     n_params = sum(p.numel() for p in denoiser.parameters())
-    print(f"PixelDiffusionDenoiser (ConvMaxpool + DenseResnet "
+    enc_desc = (args.encoder_kind
+                + ("-imagenet" if args.encoder_pretrained == "imagenet" else "")
+                + (f" x{len(video_cameras)}cam" if args.data_format == "zarr_video" else ""))
+    print(f"PixelDiffusionDenoiser ({enc_desc} + DenseResnet "
           f"{DP_BEST['denoiser_width']}x{DP_BEST['denoiser_depth']}, "
           f"{args.prediction_type}-pred): {n_params:,} params")
     if cond_dim:
@@ -547,7 +609,13 @@ def main() -> int:
         "encoder_target_height": DP_BEST["encoder_target_height"],
         "encoder_target_width": DP_BEST["encoder_target_width"],
         "encoder_feature_dim": DP_BEST["encoder_feature_dim"],
-        "encoder_kind": "conv_maxpool",
+        "encoder_kind": args.encoder_kind,
+        # resnet18-specific knobs (ignored by conv_maxpool) — the deploy /
+        # diagnose clients rebuild the SAME encoder from these.
+        "encoder_pretrained": (args.encoder_pretrained == "imagenet"),
+        "encoder_num_kp": args.encoder_num_kp,
+        "encoder_norm_kind": args.encoder_norm_kind,
+        "encoder_per_camera": args.encoder_per_camera,
         "cond_dim": cond_dim,
         "data_format": args.data_format,
         "idle_filter": args.idle_filter,
@@ -570,6 +638,26 @@ def main() -> int:
         torch.save(denoiser.state_dict(), run_dir / f"denoiser{tag}.pt")
         torch.save(ema_denoiser.state_dict(), run_dir / f"denoiser_ema{tag}.pt")
         (run_dir / "last_step.json").write_text(json.dumps({"step": step}) + "\n")
+
+    # ── Held-out validation: sampled-action MAE on the EMA denoiser (the copy
+    #    the deploy client uses). DDIM with a few steps keeps the eval cheap. ──
+    val_interval = args.val_interval or args.save_interval
+    val_ddim_steps = int(DP_BEST["ddim_eval_steps"][0])
+
+    @torch.no_grad()
+    def _val_action_mae() -> float:
+        ema_denoiser.eval()
+        tot, n = 0.0, 0
+        for vb in val_loader:
+            vs = vb["state"].float().to(device, non_blocking=True)
+            va = vb["action"].float().to(device, non_blocking=True)
+            if cond_dim:
+                ema_denoiser._cond = vb["cond"].float().to(device, non_blocking=True)
+            pred = diffusion.ddim_sample(ema_denoiser, vs, action_dim=2,
+                                         num_steps=val_ddim_steps, eta=0.0)
+            tot += (pred - va).abs().mean().item() * vs.shape[0]
+            n += vs.shape[0]
+        return tot / max(n, 1)
 
     step = 0
     start = time.time()
@@ -620,6 +708,11 @@ def main() -> int:
                 running_n = 0
             if step % args.save_interval == 0:
                 save_ckpt(f"_step{step:06d}", step)
+            if val_loader is not None and step % val_interval == 0:
+                v = _val_action_mae()
+                print(f"  [val] step {step}/{args.steps} | "
+                      f"held-out sampled-action MAE (ddim{val_ddim_steps}): "
+                      f"{v:.5f}", flush=True)
 
     save_ckpt("", args.steps)
     total = time.time() - start

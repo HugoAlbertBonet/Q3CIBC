@@ -1,0 +1,28 @@
+# Push-T WidowX Diffusion-Policy — BOTH CAMERAS (0 + 1), architecture sweep.
+#
+# Counterpart of batches/pushtWidowXdpCam1.txt: same recipe, same val split
+# (--val-frac 0.1 --val-seed 0 -> identical held-out episodes, so cam1-only vs
+# both-cam MAE is directly comparable), but stacks BOTH per-episode views
+# (--video-cameras 0 1). Camera 1 is the fixed blue scene view the deploy client
+# reads; camera 0 is the second viewpoint. Two cameras x frame_stack 2 = 12
+# input channels; the shared ResNet trunk runs on each frame and concatenates.
+#
+# NOTE: deploy_pusht_real_dp.py currently reads a SINGLE camera from the server.
+# A both-camera checkpoint can be diagnosed offline (diagnose_pusht_actions_dp.py
+# handles multi-cam via norm_stats) but needs a two-camera deploy client before
+# it can drive the arm. Treat this batch as the offline generalization probe:
+# does a second view lift the held-out MAE?
+#
+# Frame cache: BOTH camera 0 and camera 1 caches must exist. Camera 0's cache is
+# already built; camera 1's is the one every prior run used. If either is on
+# scratch rather than <dataset dir>/_frame_cache, add --frame-cache-dir <dir>.
+# --workers 4 matches submit_experiments.sh's --cpus-per-task=4.
+
+# 01 PRIMARY: ImageNet ResNet-18 encoder, both cameras, seed 11.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag f01_resnet18_bothcam_s11 --workers 4 --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet
+
+# 02 seed repeat of 01.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag f02_resnet18_bothcam_s29 --workers 4 --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet
+
+# 03 CONTROL: conv_maxpool encoder, both cameras, seed 11.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag f03_conv_bothcam_s11 --workers 4 --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind conv_maxpool

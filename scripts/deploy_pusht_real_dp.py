@@ -178,7 +178,16 @@ def build_dp_policy(env_cfg: dict, norm_stats: dict, in_channels: int, device):
                                env_cfg.get("encoder_target_width", 240)))
     denoiser = build_pixel_denoiser(
         2, in_channels, dp,
-        encoder_target_height=enc_h, encoder_target_width=enc_w, device=device)
+        encoder_target_height=enc_h, encoder_target_width=enc_w,
+        encoder_feature_dim=int(norm_stats.get("encoder_feature_dim", 256)),
+        encoder_kind=str(norm_stats.get("encoder_kind", "conv_maxpool")),
+        # Weights come from the checkpoint's state_dict; pretrained only affects
+        # train-time init, so force False here to skip a needless ImageNet fetch.
+        encoder_pretrained=False,
+        encoder_num_kp=int(norm_stats.get("encoder_num_kp", 64)),
+        encoder_norm_kind=str(norm_stats.get("encoder_norm_kind", "bn")),
+        encoder_per_camera=bool(norm_stats.get("encoder_per_camera", False)),
+        device=device)
     diffusion = build_diffusion(dp, device, (-1.0, 1.0))
     return denoiser, diffusion, dp
 

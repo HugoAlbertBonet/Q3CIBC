@@ -176,7 +176,15 @@ def diagnose_seed(seed: int, args, device) -> dict:
         )
     denoiser = build_pixel_denoiser(
         2, in_channels, dp,
-        encoder_target_height=enc_h, encoder_target_width=enc_w, device=device,
+        encoder_target_height=enc_h, encoder_target_width=enc_w,
+        encoder_feature_dim=int(norm_stats.get("encoder_feature_dim", 256)),
+        encoder_kind=str(norm_stats.get("encoder_kind", "conv_maxpool")),
+        # weights come from state_dict; skip the ImageNet fetch at diagnose time.
+        encoder_pretrained=False,
+        encoder_num_kp=int(norm_stats.get("encoder_num_kp", 64)),
+        encoder_norm_kind=str(norm_stats.get("encoder_norm_kind", "bn")),
+        encoder_per_camera=bool(norm_stats.get("encoder_per_camera", False)),
+        device=device,
     )
     suffix = "" if args.no_ema else "_ema"
     weights = torch.load(seed_dir / f"denoiser{suffix}.pt", map_location=device,
