@@ -77,6 +77,25 @@ def parse_args() -> argparse.Namespace:
              "deploy_pusht_real.py — chunk execution is a separate change).",
     )
     parser.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.0,
+        help="Hold out this fraction of EPISODES (no frame leakage) as a "
+             "validation set. The trainer logs a live held-out action-MAE "
+             "(deploy-matching argmax-Q selection) for a generalization signal. "
+             "0.0 (default) = no split, train on everything.",
+    )
+    parser.add_argument(
+        "--val-seed", type=int, default=0,
+        help="RNG seed choosing which episodes are held out (shared across a "
+             "sweep so every run holds out the SAME episodes — comparable MAE).",
+    )
+    parser.add_argument(
+        "--val-interval", type=int, default=None,
+        help="Steps between held-out MAE evals (default: the checkpoint "
+             "save_interval).",
+    )
+    parser.add_argument(
         "--frame-cache-dir",
         type=Path,
         default=None,
@@ -128,6 +147,15 @@ def parse_args() -> argparse.Namespace:
         # appearance augmentation. Separate root so the deployed v1 seeds
         # (pusht_real_combinedv2) are never overwritten.
         default=ROOT / "checkpoints" / "pusht_real_combinedv2_v2",
+    )
+    parser.add_argument(
+        "--aug-photometric",
+        action="store_true",
+        help="Enable PHOTOMETRIC-ONLY augmentation: brightness / contrast / "
+             "saturation / per-channel-gain jitter to harden against the deploy "
+             "lighting+saturation shift (G2), with NO crop-zoom (zoom fixed at "
+             "1.0). Preferred over --aug for this FIXED camera, where a view "
+             "crop would translate the scene and break the pixel->world map.",
     )
     parser.add_argument(
         "--aug",
@@ -262,7 +290,16 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "encoder_target_width": 240,
             # Train-time appearance augmentation (see PushTRealPixelsDataset).
             # Ranges cover the measured train->deploy shift (T at ~0.67x red).
-            "image_aug": args.aug,
+            # --aug-photometric drops the crop-zoom (zoom_range=(1,1)) so the
+            # fixed-camera pixel->world map is preserved; --aug keeps the crop.
+            "image_aug": bool(args.aug or args.aug_photometric),
+            "image_aug_params": (
+                {"zoom_range": [1.0, 1.0]} if args.aug_photometric else None
+            ),
+            # Held-out validation split (episode-level; see the trainer's live
+            # val action-MAE). 0.0 = train on everything.
+            "val_frac": args.val_frac,
+            "val_seed": args.val_seed,
             # Idle-transition handling — see PushTWidowXVideoDataset docstring.
             "idle_filter": args.idle_filter,
             "idle_eps": args.idle_eps,
@@ -282,6 +319,12 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             # Open-loop action chunking: K planar deltas per step (see
             # PushTWidowXVideoDataset / build_chunked_actions). K=1 is single-step.
             "action_chunk": args.action_chunk,
+            # Held-out val MAE cadence (defaults to save_interval in the trainer).
+            **(
+                {"val_interval": args.val_interval}
+                if args.val_interval is not None
+                else {}
+            ),
             # There is deliberately no simulator-based model selection for
             # this dataset. Each run is an independently testable config.
             "best_ckpt": False,

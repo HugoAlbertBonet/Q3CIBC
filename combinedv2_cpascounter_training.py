@@ -272,8 +272,12 @@ action_bounds = env_config.get("action_bounds", [-1, 1])
 frame_stack = env_config.get("frame_stack", 1)
 
 
-def load_dataset():
-    """Load the appropriate dataset based on active_env."""
+def load_dataset(split="train"):
+    """Load the appropriate dataset based on active_env.
+
+    `split` ("train"/"val"/"all") only affects the zarr_video PushT dataset,
+    which supports an episode-level held-out split; other datasets ignore it.
+    """
     if active_env in ("pen", "door", "kitchen"):
         from utils.datasets import D4RLDataset
         dataset_name = env_config["dataset_name"]
@@ -345,6 +349,9 @@ def load_dataset():
                 action_chunk=int(
                     env_config.get("training", {}).get("action_chunk", 1)
                 ),
+                split=split,
+                val_frac=float(env_config.get("val_frac", 0.0)),
+                val_seed=int(env_config.get("val_seed", 0)),
             )
         if data_format != "bridge_zip":
             raise ValueError(
@@ -659,7 +666,28 @@ def main():
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
     )
-    
+
+    # Optional held-out validation set (episode-level split) for a live
+    # generalization signal. Only the zarr_video PushT dataset supports it;
+    # gated on val_frac>0 so all other envs are unaffected.
+    val_loader = None
+    val_interval = int(env_training.get("val_interval", save_interval))
+    if (str(env_config.get("data_format", "")) == "zarr_video"
+            and float(env_config.get("val_frac", 0.0)) > 0.0):
+        val_dataset = load_dataset(split="val")
+        val_loader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            persistent_workers=num_workers > 0,
+        )
+        print(
+            f"Validation: {len(val_dataset)} held-out transitions "
+            f"({len(val_dataset._val_episodes)} episodes); val action-MAE "
+            f"logged every {val_interval} steps."
+        )
+
     # Observation normalizer.
     # For pushing we run in IBC-paper-faithful "standardize" mode using
     # per-dim mean/std computed from the dataset (matches `get_normalizers.py`
@@ -863,6 +891,37 @@ def main():
         print(f"Best-checkpoint selection: ON (every {best_ckpt_eval_interval} steps, "
               f"{best_ckpt_eval_seeds} seeds, keep max reward)")
     best_reward = float("-inf")
+
+    # ── Held-out validation helpers (action-MAE via the deploy-matching
+    #    argmax-Q-over-CP-cloud selection). No-ops unless val_loader is set. ──
+    @torch.no_grad()
+    def _argmax_action_mae(cp_model, q_model, states_t, actions_t, cond_t=None):
+        if cond_t is not None:
+            cp_model._cond = cond_t
+            q_model._cond = cond_t
+        preds = cp_model(states_t)                                # (B, Ncp, A)
+        qv = q_score_candidates(states_t, preds).squeeze(-1)      # (B, Ncp)
+        best = preds[
+            torch.arange(states_t.shape[0], device=states_t.device),
+            qv.argmax(dim=1),
+        ]                                                         # (B, A)
+        return (best - actions_t).abs().mean().item()
+
+    @torch.no_grad()
+    def _val_action_mae(cp_model, q_model):
+        was_training = cp_model.training
+        cp_model.eval(); q_model.eval()
+        tot, n = 0.0, 0
+        for vb in val_loader:
+            vs = vb["state"].float().to(device)
+            va = vb["action"].float().to(device)
+            vc = vb["cond"].float().to(device) if "cond" in vb else None
+            bs = vs.shape[0]
+            tot += _argmax_action_mae(cp_model, q_model, vs, va, vc) * bs
+            n += bs
+        if was_training:
+            cp_model.train(); q_model.train()
+        return tot / max(n, 1)
 
     # Training timing
     start_time = time.time()
@@ -1153,6 +1212,27 @@ def main():
                     print(f"[best-ckpt] step {step}: reward {r:.1f} -> NEW BEST, saved")
                 elif r is not None:
                     print(f"[best-ckpt] step {step}: reward {r:.1f} (best {best_reward:.1f})")
+
+            # ── Held-out validation: live generalization signal ──────────────
+            if val_loader is not None and step % val_interval == 0:
+                use_ema_eval = ema_generator is not None and ema_estimator is not None
+                eval_cp = ema_generator if use_ema_eval else control_point_generator
+                eval_q = ema_estimator if use_ema_eval else estimator
+                val_mae = _val_action_mae(eval_cp, eval_q)
+                # Paired TRAIN MAE on the current batch, same argmax path / same
+                # (EMA) weights / eval mode, for a direct train-vs-val read.
+                if not use_ema_eval:
+                    control_point_generator.eval(); estimator.eval()
+                train_cond = cond if "cond" in batch else None
+                train_mae = _argmax_action_mae(
+                    eval_cp, eval_q, states, actions, train_cond
+                )
+                if not use_ema_eval:
+                    control_point_generator.train(); estimator.train()
+                print(
+                    f"[val] step {step}: action_MAE train={train_mae:.4f} "
+                    f"val={val_mae:.4f} gap={val_mae - train_mae:+.4f}"
+                )
 
             # Logging
             if step % log_interval == 0:

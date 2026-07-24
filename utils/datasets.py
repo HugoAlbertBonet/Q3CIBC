@@ -1381,6 +1381,9 @@ class PushTWidowXVideoDataset(Dataset):
         cache_dir: Optional[str] = None,
         cond_eef_xy: bool = False,
         action_chunk: int = 1,
+        split: str = "all",
+        val_frac: float = 0.0,
+        val_seed: int = 0,
     ):
         self.archive_path = os.path.abspath(os.path.expanduser(archive_path))
         if not os.path.isfile(self.archive_path):
@@ -1417,6 +1420,13 @@ class PushTWidowXVideoDataset(Dataset):
             float(action_norm_range[1]),
         )
         self.action_chunk = max(1, int(action_chunk))
+        # Episode-level train/val split (generalization insight). Held out by
+        # EPISODE so no frames leak between splits. "all" = no split (default).
+        if split not in ("all", "train", "val"):
+            raise ValueError(f"split must be all|train|val, got {split!r}")
+        self.split = split
+        self.val_frac = float(val_frac)
+        self.val_seed = int(val_seed)
         self.action_dims = (0, 1)
         self.action_semantics = (
             "planar end-effector delta (x, y), metres per control step"
@@ -1450,6 +1460,17 @@ class PushTWidowXVideoDataset(Dataset):
         ).astype(np.int64)
         self.n_episodes = len(self._episode_ends)
         n_frames = int(self._episode_ends[-1])
+
+        # Deterministic held-out episode set (shared by the train and val
+        # instances via the same val_frac/val_seed). Empty when split="all".
+        if self.val_frac > 0.0 and self.split in ("train", "val"):
+            n_val = max(1, int(round(self.n_episodes * self.val_frac)))
+            vrng = np.random.default_rng(self.val_seed)
+            self._val_episodes = set(
+                int(e) for e in vrng.choice(self.n_episodes, size=n_val, replace=False)
+            )
+        else:
+            self._val_episodes = set()
 
         raw_actions = np.asarray(raw_actions[:, :2], dtype=np.float32)
         if len(raw_actions) != n_frames:
@@ -1539,9 +1560,15 @@ class PushTWidowXVideoDataset(Dataset):
             f"state_shape={self.state_shape}, "
             f"raw action range={self.act_min} -> {self.act_max}"
         )
+        split_note = (
+            f"split={self.split} ({len(self._val_episodes)}/{self.n_episodes} "
+            f"episodes held out); "
+            if self._val_episodes
+            else ""
+        )
         print(
-            f"  idle_filter={self.idle_filter!r} -> {kept}/{n_frames} transitions "
-            f"kept ({kept / max(n_frames, 1):.1%}); "
+            f"  {split_note}idle_filter={self.idle_filter!r} -> {kept}/{n_frames} "
+            f"transitions kept ({kept / max(n_frames, 1):.1%}); "
             f"zero-action share now {(np.linalg.norm(raw_actions[self._samples], axis=1) <= self.idle_eps).mean():.1%}"
         )
 
@@ -1781,6 +1808,15 @@ class PushTWidowXVideoDataset(Dataset):
             if drop_n > 0:
                 drop = rng.choice(idle_idx, size=drop_n, replace=False)
                 keep[drop] = False
+
+        # Episode-level train/val split: keep only train (or only val) episodes.
+        if self._val_episodes:
+            ep_of = np.searchsorted(self._episode_ends, np.arange(n), side="right")
+            in_val = np.isin(ep_of, list(self._val_episodes))
+            if self.split == "train":
+                keep &= ~in_val
+            elif self.split == "val":
+                keep &= in_val
 
         return np.nonzero(keep)[0].astype(np.int64)
 
