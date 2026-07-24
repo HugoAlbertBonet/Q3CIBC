@@ -121,9 +121,11 @@ def parse_args() -> argparse.Namespace:
                         "the measured EEF z at this target, compensating the "
                         "x-dependent cantilever droop (measured corr(x,z)=-0.97; "
                         "demos held ~0.0197). REQUIRES an action_mode that sends "
-                        "z (3trans/3trans1rot/3trans3rot) and a server/arm that "
-                        "executes dz. dz is injected, NOT from the 2trans-trained "
-                        "policy. Suggested 0.0197. Default 0 = off.")
+                        "z (3trans/3trans1rot/3trans3rot) AND a widowx_env_service "
+                        "relaunched with a matching 3-dim action space -- the live "
+                        "env asserts action shape (2,) otherwise. dz is injected, "
+                        "NOT from the 2trans-trained policy. Suggested 0.0197. "
+                        "Default 0 = off.")
     p.add_argument("--z-hold-gain", type=float, default=1.0,
                    help="proportional gain on (z_target - cur_z) for --z-hold.")
     p.add_argument("--z-hold-max", type=float, default=0.01,
@@ -188,6 +190,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cp-selection", choices=["argmax", "sample"], default=None,
                    help="override CP-cloud selection (default: from norm_stats)")
     p.add_argument("--cp-temperature", type=float, default=None)
+    p.add_argument("--inference", choices=["argmax", "sample", "langevin", "dfo"],
+                   default="argmax",
+                   help="action selection. argmax/sample = pure CP-cloud ranking "
+                        "(default). langevin = refine the CP cloud with Langevin "
+                        "MCMC, matching TRAINING inference (closes the train/deploy "
+                        "gap; argmax over discrete CPs can miss the energy min). "
+                        "dfo = derivative-free iterative refinement (cheaper).")
+    p.add_argument("--refine-iters", type=int, default=50,
+                   help="langevin/dfo refinement iterations (train used 50).")
+    p.add_argument("--langevin-lr-init", type=float, default=0.1)
+    p.add_argument("--langevin-lr-final", type=float, default=1e-5)
+    p.add_argument("--dfo-noise-init", type=float, default=0.1)
+    p.add_argument("--dfo-noise-decay", type=float, default=0.8)
 
     # --- diagnostics ---------------------------------------------------------
     p.add_argument("--dry-run", action="store_true",
@@ -533,18 +548,79 @@ def load_weights(model, path: Path, device):
 
 
 @torch.no_grad()
-def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
-                  cond: "torch.Tensor | None" = None):
-    """Pure CP-cloud ranking (langevin/DFO disabled for this hardware).
+def _refine_dfo(q_net, features, init_cps, amin, amax, iters, noise0, decay):
+    """Derivative-free (IBC) refinement: score -> resample -> jitter -> shrink.
 
-    `cond` is the (1, cond_dim) conditioning vector for checkpoints trained with
-    --cond-eef-xy (normalized EEF x/y). Both nets read it off their `_cond`
-    attribute, exactly as the trainer sets it per batch.
+    Starts from the CP cloud and iteratively concentrates samples on the
+    low-energy (high-score) region. No gradients -> cheap on CPU. Returns the
+    best refined action (A,).
+    """
+    samples = init_cps.clone()                        # (1, N, A)
+    N = samples.shape[1]
+    noise = noise0
+    with torch.no_grad():
+        for _ in range(iters):
+            scores = q_net.score(features, samples).squeeze(-1)      # (1, N)
+            probs = torch.softmax(scores.squeeze(0), dim=-1)
+            idx = torch.multinomial(probs, N, replacement=True)
+            samples = samples[:, idx, :]
+            samples = torch.clamp(samples + torch.randn_like(samples) * noise,
+                                  amin, amax)
+            noise *= decay
+        scores = q_net.score(features, samples).squeeze(-1)
+        best = int(scores.squeeze(0).argmax().item())
+    return samples[0, best]
+
+
+def _refine_langevin(q_net, features, init_cps, amin, amax, iters, lr0, lr1):
+    """Langevin MCMC refinement, matching the trainer's sampler
+    (utils.sampling.sample_langevin, energy = -q_net.score)."""
+    from utils.sampling import sample_langevin
+
+    def energy_fn(_obs, actions):
+        return -q_net.score(features, actions).squeeze(-1)
+
+    refined = sample_langevin(
+        energy_function=energy_fn, observations=features,
+        num_samples=init_cps.shape[1], action_min=amin, action_max=amax,
+        num_iterations=iters, lr_init=lr0, lr_final=lr1,
+        initial_actions=init_cps,
+    )                                                 # (1, N, A)
+    with torch.no_grad():
+        scores = q_net.score(features, refined).squeeze(-1)
+        best = int(scores.squeeze(0).argmax().item())
+    return refined[0, best]
+
+
+def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
+                  cond: "torch.Tensor | None" = None, inference: str = "argmax",
+                  refine_iters: int = 50, langevin_lr=(0.1, 1e-5),
+                  dfo_noise=(0.1, 0.8)):
+    """Pick an action from the energy model.
+
+    `inference`:
+      - "argmax"/"sample": pure CP-cloud ranking (default; langevin/DFO off).
+      - "langevin": refine the CP cloud with Langevin MCMC (matches TRAINING
+        inference; the trainer used sample_langevin. Closes the train/deploy
+        inference gap — argmax-over-discrete-CPs can miss the true energy min).
+      - "dfo": derivative-free iterative refinement (cheaper, no grads).
+    `cond` is the (1, cond_dim) conditioning vector; both nets read it off `_cond`.
     """
     cp_gen._cond = cond
     q_net._cond = cond
     features = q_net.encode(obs_u8)                   # (1, feat)
     cps = cp_gen(obs_u8)                              # (1, P, action_dim)
+    if inference in ("langevin", "dfo"):
+        A = cps.shape[-1]
+        amin = torch.full((A,), -1.0, device=cps.device)
+        amax = torch.full((A,), 1.0, device=cps.device)   # normalized action bounds
+        if inference == "langevin":
+            act = _refine_langevin(q_net, features, cps, amin, amax,
+                                   refine_iters, langevin_lr[0], langevin_lr[1])
+        else:
+            act = _refine_dfo(q_net, features, cps, amin, amax,
+                              refine_iters, dfo_noise[0], dfo_noise[1])
+        return act.detach().cpu().numpy()
     logits = q_net.score(features, cps).squeeze(-1)   # (1, P)
     if cp_selection == "sample":
         probs = torch.softmax(logits.squeeze(0) / max(temperature, 1e-6), dim=-1)
@@ -878,7 +954,10 @@ def main() -> int:
             frame_buf.append(preprocess(raw, (image_h, image_w)))
             obs_u8 = stack_to_tensor(frame_buf, device)
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
-                               cond=make_cond(raw_obs))
+                               cond=make_cond(raw_obs), inference=args.inference,
+                               refine_iters=args.refine_iters,
+                               langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
+                               dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
             act = unnormalize(na, act_min, act_max, norm_range)
             cv2.imwrite(str(args.dump_dir / f"fed_{i:03d}.png"),
                         cv2.cvtColor(list(frame_buf)[-1], cv2.COLOR_RGB2BGR))
@@ -912,7 +991,10 @@ def main() -> int:
             obs_u8 = stack_to_tensor(frame_buf, device)
 
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
-                               cond=make_cond(raw_obs))
+                               cond=make_cond(raw_obs), inference=args.inference,
+                               refine_iters=args.refine_iters,
+                               langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
+                               dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
             act_xy = unnormalize(na, act_min, act_max, norm_range)
 
             # Snap sub-min-step OOD dead-zone actions onto the supported grid

@@ -483,7 +483,9 @@ on |action|, proprioceptive-velocity gating.)
 
 ## E. Conditioning  *(new; only c09 / c10)*
 
-### E — conditioning INPUTS verified offline; end-to-end behavior UNVERIFIED (needs rig)
+### E — CLEARED BY TEST. Inputs correct (offline) AND conditioning proven effective (probe).
+(See the E-EFFICACY PROBE result below: cond STRONG and balanced with vision.)
+
 Checked offline from `roll_04` (c09) / `roll_05` (c10) `steps.jsonl` vs the
 training workspace (zarr `robot_eef_pose[:, :2]`). This confirms the *inputs* to
 conditioning are sane — NOT that conditioning is wired correctly through the
@@ -532,10 +534,66 @@ Two opt-in deploy flags in `scripts/deploy_pusht_real.py`:
    guard rejects 2trans) and a server/arm that executes dz; dz is injected, not
    from the 2trans-trained policy. (`z_hold_dz`, `z_from_obs`.)
 
-**Ablation to run (c09, the furthest-pushing config):** baseline / snap-only /
-z-servo-only / both. Re-run the D4 rollout analysis each time; success = the arm
-keeps moving past x≈0.30 with z≈0.0197 and progresses toward the goal instead of
-fixed-pointing.
+### ABLATION RESULTS (c09 on the rig) — neither fix solves it; z-hold blocked
+Analyze with `scripts/analyze_rollout.py <log-dir>`.
+
+| run | sub-min-step | outcome | x reached | note |
+|-----|--------------|---------|-----------|------|
+| base (this session) | 87% | FREEZE @step47 | 0.171 | z~0.017 flat (corr +0.04) |
+| min-step snap | 0% | **ORBIT**, no stall | 0.231 | limit cycle: path 0.76 m / net 0.12 m |
+| z-flat (`--fixed-z-height 0.026`) | 88% | FREEZE @step27 | 0.173 | barely changed base |
+| z-hold servo (3trans) | — | **SERVER ERROR** | — | see below |
+
+- **Min-step snap trades freeze for a limit cycle.** It removes the exact-zero /
+  dead-zone freeze (0% sub-min-step, "no stall") but the arm then **orbits** the
+  fixed point (~(0.21,0.02), heading flips >90° on 13% of steps) and never seats
+  the T. Snap forces intended-near-zero commands to 1.5 mm in oscillating
+  directions. Not a standalone fix.
+- **z-hold servo is BLOCKED by the server, not our code.** The injected dz was
+  correct (`env_action=[dx,dy,+0.0036,grip]`) but the live widowx_env_service env
+  is hardwired to a **2-dim action space**:
+  `AssertionError: Action should have shape (2,) but has shape (4,)`. Running it
+  needs the server relaunched with a 3-dim action space (and the Push-T env to
+  actually accept a z-delta) — a server-side change. In 2trans the only z lever
+  is the flat `--fixed-z-height` (imperfect for x-dependent droop).
+- **CONFOUND / correction to G4:** this session's baseline holds z≈0.017 **flat**
+  (corr(x,z)=+0.04), NOT the droop-to-0.007 (corr −0.97) that `roll_04` showed —
+  the server restart changed z handling. With decent z the policy **still**
+  stalls at x≈0.17. So **G4 z-droop is real but NOT the primary blocker now.**
+
+### E-EFFICACY PROBE — conditioning WORKS (not decorative, not over-conditioned)
+`scripts/probe_conditioning.py` holds the image fixed, sweeps cond over the full
+workspace (and the mirror: fixed cond, vary image):
+- **c09:** cond-induced action range = 96% of the ±8 mm span → STRONG. Mirror:
+  **cond 88% vs image 32%** — cond-leaning (~2.7×) but the image clearly matters.
+- **c10:** STRONG. Mirror: **cond 54% vs image 52%** — essentially **balanced**.
+
+Both policies genuinely use the image; c10 is well-balanced and still stalls. So
+the stall is **not** "visually blind / over-conditioned." Combined with E1
+(layout correct, in-distribution, no saturation) and E2 (verified in-repo),
+**section E is CLEARED by test** — conditioning is wired, effective, balanced.
+
+### PRIME REMAINING LEAD — deploy inference is degraded vs training (no Langevin)
+`select_action` (deploy) does **pure argmax over the control-point cloud**;
+training refines actions with **Langevin sampling** (`langevin_num_iterations`
+default 50, lr schedule; `combinedv2_cpascounter_training.py:75`,
+`utils/sampling.sample_langevin`). Comment: "langevin/DFO disabled for this
+hardware." So deploy is limited to the generator's discrete candidates with no
+gradient refinement toward the energy minimum — near contact the true optimum can
+fall between control points → coarse actions → the orbit/dead-zone behavior.
+Caveat: offline MAE with this same argmax-CP path was decent (~0.067), so Langevin
+may sharpen rather than transform. **Next: re-enable Langevin/DFO at deploy as an
+opt-in flag and re-test** (then F).
+
+### WHERE THE DIAGNOSIS HAS CONVERGED
+A/B/C/D/E and F(sign/clip) cleared as *bugs*. The failure is **policy robustness
+in closed-loop deployment**: reasonable single-step behavior (offline MAE ok,
+conditioning works) but it reaches x≈0.17–0.23 and fixed-points/orbits short of
+the goal (x≈0.49). Concrete contributing levers, in priority:
+1. **Deploy inference degraded (no Langevin/DFO)** — most actionable, testable.
+2. **G2 T-darkness** OOD (peak redness 79 vs 133) — still open, physical.
+3. Compounding covariate shift + contact dynamics — a fundamental BC limit that
+   may need more/near-contact data or a stronger policy/inference.
 
 ### E1. Deploy state layout — is `state[:2]` really (x, y)?
 - **What / why.** The conditioned policy expects the current EEF (x, y),
