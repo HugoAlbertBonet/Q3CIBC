@@ -109,6 +109,33 @@ def main() -> int:
     print(f"\nmedian cond-induced action range: dx={med[0]*1000:.2f}mm "
           f"dy={med[1]*1000:.2f}mm = {100*med/ (2*scale)}% of full action span")
     frac = (med / (2 * scale)).mean()
+
+    # ---- MIRROR PROBE: image sensitivity at FIXED cond -------------------
+    # Vary the image across the sampled frames while holding cond constant;
+    # if the action barely moves, the policy is visually blind / over-conditioned.
+    print("\n=== IMAGE sensitivity (cond held fixed at center 0,0) ===")
+    print("    (frames should have DIFFERENT T positions for this to be "
+          "meaningful; similar images -> small range is expected, not proof)")
+    fidx = [i for i in args.frames if i < len(raws)]
+    obses = [obs_at(i) for i in fidx]
+    acts = np.array([act_for(o, (0.0, 0.0)) for o in obses])
+    img_rng = np.array([acts[:, 0].max() - acts[:, 0].min(),
+                        acts[:, 1].max() - acts[:, 1].min()])
+    for i, a in zip(fidx, acts):
+        print(f"  frame {i:4d} @cond(0,0): action dx={a[0]*1000:+6.2f} dy={a[1]*1000:+6.2f} mm")
+    print(f"  image-induced action range: dx={img_rng[0]*1000:.2f}mm "
+          f"dy={img_rng[1]*1000:.2f}mm = {np.round(100*img_rng/(2*scale),1)}% of span")
+    img_frac = (img_rng / (2 * scale)).mean()
+    print(f"\ncond-vs-image dominance: cond {100*frac:.0f}% vs image {100*img_frac:.0f}% "
+          f"of action span")
+    if img_frac < 0.25 and frac > 2 * img_frac:
+        print("  -> OVER-CONDITIONED: action is driven by eef(x,y), nearly blind to "
+              "the T. Drives to a position attractor -> stall/orbit regardless of "
+              "the T. Fix = rebalance (down-weight cond / augment it out / more "
+              "visual capacity), not deploy tweaks.")
+    else:
+        print("  -> image also matters; not purely over-conditioned.")
+
     if frac < 0.10:
         print("VERDICT: WEAK — action barely moves across the whole cond workspace. "
               "Conditioning is near-decorative; c09/c10 are effectively pixels-only.")
