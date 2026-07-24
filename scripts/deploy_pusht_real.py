@@ -203,6 +203,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--langevin-lr-final", type=float, default=1e-5)
     p.add_argument("--dfo-noise-init", type=float, default=0.1)
     p.add_argument("--dfo-noise-decay", type=float, default=0.8)
+    p.add_argument("--calibrate", action="store_true",
+                   help="ignore the policy; command scripted OPEN-LOOP moves "
+                        "(+dx,-dx,+dy,-dy) and log raw frames + state to "
+                        "--log-dir. Lets you verify (a) the action->image "
+                        "direction matches training and (b) the arm actually "
+                        "pushes the T. Analyze with check_action_image_frame.py.")
+    p.add_argument("--calibrate-step", type=float, default=0.006,
+                   help="metres per calibration step (default 6mm, a clear move).")
+    p.add_argument("--calibrate-reps", type=int, default=8,
+                   help="steps per direction (out then back each axis).")
 
     # --- diagnostics ---------------------------------------------------------
     p.add_argument("--dry-run", action="store_true",
@@ -965,6 +975,48 @@ def main() -> int:
             time.sleep(args.step_duration)
         client.stop()
         print("Dry run done. Inspect deploy_dryrun/fed_000.png before live control.")
+        return 0
+
+    # --- calibration: scripted open-loop moves (no policy) -------------------
+    if args.calibrate:
+        if args.log_dir is None:
+            raise SystemExit("--calibrate needs --log-dir to write raw/ + steps.jsonl")
+        (args.log_dir / "raw").mkdir(parents=True, exist_ok=True)
+        log_fh = (args.log_dir / "steps.jsonl").open("w")
+        phases = [("+dx", (1.0, 0.0)), ("-dx", (-1.0, 0.0)),
+                  ("+dy", (0.0, 1.0)), ("-dy", (0.0, -1.0))]
+        print(f"CALIBRATE: {args.calibrate_reps} steps/dir @ {args.calibrate_step*1000:.0f}mm "
+              f"in +dx,-dx,+dy,-dy. Watch the image + whether the T moves.")
+        input("Press [Enter] to start calibration.")
+        step = 0
+        for name, (ux, uy) in phases:
+            for _ in range(args.calibrate_reps):
+                raw_obs = grab_obs()
+                raw = extract_blue_frame(raw_obs)
+                np.save(args.log_dir / f"raw/{step:04d}.npy", np.ascontiguousarray(raw))
+                act_xy = np.array([ux, uy], np.float64) * args.calibrate_step
+                cur_x = eef_x_from_obs(raw_obs)
+                act_xy2, floored = apply_approach_floor(act_xy, cur_x, approach_floor_x)
+                a7 = safety_clip_action(to_action_7d(act_xy2, args.fixed_gripper),
+                                        args.action_mode, args.safety_max_xy_delta)
+                env_action = project_action_to_env_mode(a7, args.action_mode)
+                st = client.step_action(env_action, blocking=not args.non_blocking)
+                if st != WidowXStatus.SUCCESS:
+                    raise RuntimeError(f"step_action failed: status={st}")
+                log_fh.write(json.dumps({
+                    "step": step, "phase": name, "t": time.time(),
+                    "action": act_xy.tolist(), "env_action": np.asarray(env_action).tolist(),
+                    "floored": bool(floored),
+                    "state": (None if raw_obs is None else
+                              np.asarray(raw_obs.get("state")).tolist()),
+                }) + "\n")
+                log_fh.flush()
+                print(f"[{step:03d}] {name} cmd={np.round(act_xy,4)} floored={floored}")
+                step += 1
+                time.sleep(args.step_duration)
+        log_fh.close(); client.stop()
+        print(f"Calibration done -> {args.log_dir}. Analyze with "
+              f"check_action_image_frame.py (or eyeball raw/ frames per phase).")
         return 0
 
     # --- forensic logging ----------------------------------------------------

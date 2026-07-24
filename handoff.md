@@ -637,6 +637,33 @@ the goal (x≈0.49). Concrete contributing levers, in priority:
 
 ## F. Robot mapping / action execution
 
+### F — sign/clip cleared; frame check surfaced the REAL root: NO T CONTACT
+- **F1 sign** clean: `corr(cmd, actual eef-Δ) = +0.82…+0.94` across roll_03/04/05.
+- **F2 clip/floor** clean: `action == env_action` (0% clipped) in every stuck
+  region; the approach floor fired only once at start.
+- **F3 denorm** clean: commanded actions ≤ ±0.008 m = act_max.
+- **Action↔IMAGE frame** (`scripts/check_action_image_frame.py`, optical flow):
+  TRAINING is clean (+dx→image RIGHT/UP, +dy→LEFT/UP, R²≈0.2–0.4). INFERENCE is
+  **unmeasurable from policy rollouts** — an early "FLIPPED" verdict was NOISE
+  (negative R²): deploy per-step motion is too small for optical flow.
+
+**THE PIVOTAL FINDING — the T never moves in deployment.** Red-T centroid is
+frozen at (211,203) for all 200 frames of `roll_c09_base` (and only a single
+~14 px nudge in `roll_04`), while the arm travels 6–19 cm in world space. So:
+- The arm approaches the T (fed pngs show the gripper at the T's corner) but
+  **does not push it** — ineffective contact.
+- T static → whole scene static → **frame-diff pinned at the 0.92 noise floor**
+  (this is *why* it sits at noise — nothing moves), so the pixels-only motion
+  signal is dead → the policy gets no progress feedback → settles/orbits.
+- Therefore the "policy attractor / dead-zone / freeze-or-orbit" is all
+  **downstream of the arm failing to move the T.** The offline policy was fine;
+  the deploy arm just isn't moving the object. **Root is physical CONTACT → G.**
+
+**Definitive frame test tool added:** `deploy_pusht_real.py --calibrate`
+(scripted open-loop ±dx/±dy, logs `raw/` + `steps.jsonl`). Run it + the frame
+check for a clean action↔image direction check, AND to see whether a scripted
+push moves the T at all (contact test), since the policy won't move it.
+
 ### F1. Sign / axis flip (command → motion)
 - **What / why.** If the server maps +dx to −x (or swaps x/y), the policy fights
   itself: correct intentions produce wrong motion.
@@ -703,21 +730,33 @@ These are setup-match issues, all testable without retraining.
   (`scripts/assets/pusht_start_eep.npy`); logged `state`.
 - **Test.** `steps.jsonl` step 0 EEF vs the asset (x≈0.117, y≈−0.019).
 
-### G4. z droop — CONFIRMED, strong (prime physical contributor to the stall)
-- **Why.** `lock_z` commands z=0.02 but the arm droops at extended poses; demos
-  held ~0.0197. Wrong contact height with the T.
-- **Measured** across `roll_03/04/05` steps.jsonl (`state[2]`):
-  `corr(x, z) = -0.97 (c09) / -0.84 (c10) / -0.83 (pixels)` — z falls as the arm
-  extends. Every run sits below 0.0197 even near the base (z max 0.017–0.018),
-  and **c09 sags to z=0.007 at x=0.303**, exactly where it stalls. ~14 mm below
-  contact height at reach → the gripper loses purchase on the T, the push does
-  nothing, and the policy settles into its premature fixed point (see D4 UPDATE).
-- **Files.** deploy `--fixed-z-height` / `--lock-z`; logged `state[2]`.
-- **Test / fix.** Raise `--fixed-z-height` to compensate. Because the droop is
-  x-dependent (corr −0.97), a single fixed offset won't hold z flat across the
-  reach — characterize z_actual(x) from these logs and apply an x-dependent
-  offset (or accept a compromise height) so z stays ≈0.0197 out to x≈0.35, then
-  re-run the rollout and re-check whether the fixed-point stall clears.
+### G4. z height — CORRECTED: deploy arm is too HIGH, not drooping. Prime contact suspect.
+- **Earlier claim was WRONG** (compared deploy z to the demo *start* z 0.0197
+  instead of the demo z at the *same x*). The demos are SUPPOSED to be low at
+  reach — they deliberately press the gripper DOWN as the arm extends.
+- **Demo z(x) profile** (zarr `robot_eef_pose[:,2]`):
+  x~0.11→0.016, 0.17→0.0125, 0.25→0.0039, 0.35→−0.0071, 0.45→−0.0097
+  (full range +0.0195 … −0.0155). Roughly `z(x) ≈ 0.016 − 0.076·(x−0.11)`.
+- **Deploy holds z too high** at matched x: roll_c09_base z=0.0169 vs demo 0.0125
+  @x=0.17 (**+4.4 mm high**); roll_04 z=0.0070 vs demo ≈−0.001 @x=0.30
+  (**+8 mm high**). lock_z holds z ~constant while the demos descend → at
+  extension the gripper is ABOVE the T's contact zone → no push → **T never
+  moves** (confirmed: red-T centroid frozen, see F). This is the likely contact
+  root of the whole failure.
+- **The demos command dz=0** (deploy: "all demo transitions have dims 2-6
+  exactly zero"), so their z-descent is NATURAL DROOP with z nominally fixed —
+  and the demos succeeded WITH it (droop brings the gripper to the T at reach).
+  Deploy also commands dz=0 but ends up HIGHER → `lock_z`/`fixed_z_height=0.02`
+  holds the arm up more than the demos drooped.
+- **Fix (INVERTED from before), 2trans-compatible, NO server change:** let the
+  arm sit LOWER to match the demo droop — try **`--no-lock-z`** (droop freely
+  like the demos) or **lower `--fixed-z-height`** (e.g. toward the demo mid-reach
+  height ~0.004). The z-hold servo / raised `--fixed-z-height` we built earlier
+  push the WRONG way. For an exact match, drive z along the demo profile
+  `z_target(x) ≈ 0.016 − 0.076·(x−0.11)` (that needs the 3trans z channel the
+  server currently rejects).
+- **Verify on rig with `--calibrate`:** does a scripted push move the T at the
+  demo-height vs at the current (higher) height? Watch the T centroid in `raw/`.
 
 ---
 
