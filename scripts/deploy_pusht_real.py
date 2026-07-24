@@ -203,6 +203,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--langevin-lr-final", type=float, default=1e-5)
     p.add_argument("--dfo-noise-init", type=float, default=0.1)
     p.add_argument("--dfo-noise-decay", type=float, default=0.8)
+    p.add_argument("--match-exposure", action="store_true",
+                   help="lift the live frame to the training white point/exposure "
+                        "(deploy scene measured ~16%% dimmer; washes out the red "
+                        "T). Applies per-channel gains in preprocess. Default gains "
+                        "(1.22,1.18,1.17) = train_board/deploy_board; override with "
+                        "--exposure-gains.")
+    p.add_argument("--exposure-gains", type=float, nargs=3, default=[1.22, 1.18, 1.17],
+                   metavar=("R", "G", "B"),
+                   help="per-channel gains for --match-exposure.")
     p.add_argument("--calibrate", action="store_true",
                    help="ignore the policy; command scripted OPEN-LOOP moves "
                         "(+dx,-dx,+dy,-dy) and log raw frames + state to "
@@ -459,14 +468,23 @@ def apply_approach_floor(act_xy: np.ndarray, cur_x: float | None,
     return act, False
 
 
-def preprocess(frame: np.ndarray, out_hw) -> np.ndarray:
+def preprocess(frame: np.ndarray, out_hw, gains=None) -> np.ndarray:
     """(H,W,3) uint8 RGB -> (H',W',3) uint8, as PushTRealPixelsDataset does.
 
     The training pipeline decodes to RGB and resizes with AREA, keeping uint8
     (the conv encoder does the /255 itself).
+
+    `gains`: optional per-channel (R,G,B) multipliers applied BEFORE resize to
+    match the training white point / exposure (see --match-exposure). The deploy
+    scene was measured ~16% dimmer than training (board 0.82-0.86x), which washes
+    out the salient red T (peak redness 79 vs 110). A per-channel gain lifts the
+    whole image to the training exposure. Clipped to [0,255].
     """
     import cv2
 
+    if gains is not None:
+        frame = np.clip(frame.astype(np.float32) * np.asarray(gains, np.float32),
+                        0, 255).astype(np.uint8)
     H, W = out_hw
     if frame.shape[:2] != (H, W):
         frame = cv2.resize(frame, (W, H), interpolation=cv2.INTER_AREA)
@@ -945,11 +963,15 @@ def main() -> int:
             time.sleep(0.2)
         raise RuntimeError("no observation from server after retries")
 
+    exposure_gains = args.exposure_gains if args.match_exposure else None
+    if exposure_gains is not None:
+        print(f"[match-exposure] per-channel gains RGB={exposure_gains}")
+
     first_obs = grab_obs()
     first = extract_blue_frame(first_obs)
     print(f"Blue frame: raw {first.shape}")
     for _ in range(frame_stack):
-        frame_buf.append(preprocess(first, (image_h, image_w)))
+        frame_buf.append(preprocess(first, (image_h, image_w), gains=exposure_gains))
 
     # --- dry run -------------------------------------------------------------
     if args.dry_run:
@@ -961,7 +983,7 @@ def main() -> int:
             raw_obs = grab_obs()
             raw = extract_blue_frame(raw_obs)
             np.save(args.dump_dir / f"raw_{i:03d}.npy", np.ascontiguousarray(raw))
-            frame_buf.append(preprocess(raw, (image_h, image_w)))
+            frame_buf.append(preprocess(raw, (image_h, image_w), gains=exposure_gains))
             obs_u8 = stack_to_tensor(frame_buf, device)
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
                                cond=make_cond(raw_obs), inference=args.inference,
@@ -1039,7 +1061,7 @@ def main() -> int:
         for step in range(args.steps):
             raw_obs = grab_obs()
             raw = extract_blue_frame(raw_obs)
-            frame_buf.append(preprocess(raw, (image_h, image_w)))
+            frame_buf.append(preprocess(raw, (image_h, image_w), gains=exposure_gains))
             obs_u8 = stack_to_tensor(frame_buf, device)
 
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,

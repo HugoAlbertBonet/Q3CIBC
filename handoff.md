@@ -707,22 +707,48 @@ push moves the T at all (contact test), since the policy won't move it.
 
 These are setup-match issues, all testable without retraining.
 
-### G1. Camera view differs from training
-- **Why.** A moved/re-aimed Logitech changes the mapping from world to pixels;
-  the fixed-camera assumption breaks.
-- **Files.** `scripts/align_pusht_camera.py` (live overlay vs
-  `scripts/assets/pusht_images1_ref.jpg`).
-- **Test.** Run the alignment overlay; nudge until the live view matches the
-  reference.
+### G1. Camera view — CLEAN. Verified aligned on the rig (≤1mm).
+Ran `align_pusht_camera.py` live overlay vs `pusht_widowx_cam1_ref.jpg`: the live
+view matched the reference (≤~1mm off, no nudge needed). Camera pose matches
+training; world→pixel mapping is correct. NOT the cause. (Offline registration
+below was inconclusive — kept for the record.)
 
-### G2. Lighting / T darkness
-- **Why.** Previously measured: the deploy T rendered ~33% darker than training
-  (peak redness 120 → 83) while the mat matched — an object-local lighting/
-  saturation shift, i.e. real OOD on the one salient object.
-- **Files.** `scripts/check_brightness_parity.py` (peak-redness vs target ≈120),
-  `deploy_pusht_real.py --dry-run` (captures `raw_*.npy`).
-- **Test.** Dry-run capture → brightness parity; tune light-on-T / camera
-  saturation until peak ≈ 120.
+### G1 (offline attempt) — INCONCLUSIVE, superseded by the rig check above
+- **Why.** A moved/re-aimed Logitech changes world→pixel mapping; a SUBTLE shift
+  puts the goal outline at slightly wrong pixels → the policy (trained to push T
+  onto the outline at training image-coords) aims slightly wrong → drifts →
+  position-dependent, random-timestep stalls (matches the observed symptom: with
+  a different initial pose the arm goes elsewhere, nudges the T, then stalls).
+- **Offline attempt (this session):** ECC registration of deploy vs training
+  frames is UNRELIABLE on this near-featureless white board — train-to-train
+  controls (same fixed camera, must be ~0) scatter 12–133 px (affine even worse:
+  scale 2.3, 12°). So no offline conclusion. Visual side-by-side
+  (`results/g1_compare.png`) shows no GROSS difference (not flipped/rotated/
+  rescaled) but can't exclude a subtle shift.
+- **Files.** `scripts/align_pusht_camera.py` (live overlay vs
+  `scripts/assets/pusht_images1_ref.jpg` — on the rig, not in this checkout).
+- **Test (definitive, needs rig).** Run the alignment overlay; nudge until the
+  live view matches the reference. **Cleaner offline check possible:** capture a
+  deploy frame with the T REMOVED (pure static board+outline+square), then it can
+  be registered against a training frame without the moving red T corrupting it.
+
+### G2. Lighting / T darkness — QUANTIFIED (global underexposure) + SOFTWARE FIX added
+- **Measured (this session)** deploy `dry_03` vs training frames:
+  - T: peak_red 79 vs 110 (0.71x), mean_red 60 vs 80, sat 0.70 vs 0.82,
+    RGB(100,32,48) vs (113,27,39) — washed out, +20%% G / +22%% B contamination.
+  - **Board: (155,152,158) vs (189,180,185) = 0.82–0.86x** — the WHOLE scene is
+    ~16%% dimmer with neutral balance preserved. So it's a **global
+    underexposure**, not object-local; the saturated red T just loses the most.
+- **Software fix added:** `deploy_pusht_real.py --match-exposure` applies
+  per-channel gains (default `(1.22,1.18,1.17)` = train_board/deploy_board) in
+  `preprocess`, lifting the frame to the training white point. Verified: deploy T
+  peak_red 79→97, mean_red 60→71 (near the 110/80 target). Does NOT fix
+  saturation (0.70→0.67) — the gains are ~uniform (brightness match). A
+  `--saturation-gain` (HSV) refinement can fix the T's saturation without
+  touching the neutral board, if brightness-match alone is insufficient.
+- **Physical alternative:** raise lighting/exposure ~+20%% (fixes board + T).
+- **Test.** `--match-exposure --dry-run` (confirm redder T), then
+  `--match-exposure --steps 200 --log-dir …` and `analyze_rollout.py`.
 
 ### G3. Start pose OOD
 - **Why.** Demos all start at x≈0.117; starting elsewhere is OOD from step 0.
@@ -730,7 +756,35 @@ These are setup-match issues, all testable without retraining.
   (`scripts/assets/pusht_start_eep.npy`); logged `state`.
 - **Test.** `steps.jsonl` step 0 EEF vs the asset (x≈0.117, y≈−0.019).
 
-### G4. z height — CORRECTED: deploy arm is too HIGH, not drooping. Prime contact suspect.
+### CONTACT ROOT — the arm never REACHES the T (approach failure, wrong y). NOT height.
+Corrects both the z-droop AND the "too high to contact" theories. Verified with
+the `--calibrate` run + demo contact analysis:
+- **Frame convention is correct** (calib open-loop: +dx→world +6mm & image RIGHT,
+  +dy→image UP, matching training). Commands execute (6mm cmd → 6mm world).
+- **The arm's operating region excludes the T.** During calibration the arm swept
+  x∈[0.11,0.23], y∈[−0.02,0.095] in all 4 directions and the T centroid never
+  moved (211,203). The deploy policy (roll_c09_base) reached only x≤0.171,
+  y∈[−0.016,0.056].
+- **Where the arm SHOULD go:** demo contact-onset eef (where the T first moves)
+  is x̄=0.228, ȳ=−0.125 (y range −0.32…+0.17). Fitting demo T-start-image →
+  contact-eef and evaluating at the deploy T (image 211,203) predicts the arm
+  must reach **≈(x=0.27, y=−0.12)** to touch it. It actually goes to ~(0.17,
+  +0.03): ~10 cm short in x and the **WRONG SIGN in y**.
+- **=> The policy drives the arm to the wrong place** (stays near y≈0 instead of
+  going to negative y where this T sits) → never contacts the T → T static →
+  dead visual signal → freeze/orbit. An APPROACH/localization failure, not
+  contact height. Behavior isn't even consistent across sessions (base went +y,
+  roll_04 went −y and grazed the T), i.e. closed-loop is unstable/OOD-sensitive.
+- **Likely cause:** perception OOD — the T/scene differs enough that the policy
+  mislocalizes the approach. z-perspective is an unlikely driver (only ~4 mm z
+  difference). Prime concrete lead now: **G2 (T darkness, redness 79 vs 133)** and
+  general closed-loop covariate shift. NEXT: fix T appearance to match training
+  (lighting/saturation) and re-test; if the arm then drives to negative-y toward
+  the T, perception was the cause.
+
+### G4. z height — deploy arm sits higher than demos at matched x (SECONDARY; not the root)
+Kept for reference, but per the CONTACT ROOT above the arm never reaches the T,
+so contact height is moot until the approach is fixed.
 - **Earlier claim was WRONG** (compared deploy z to the demo *start* z 0.0197
   instead of the demo z at the *same x*). The demos are SUPPOSED to be low at
   reach — they deliberately press the gripper DOWN as the arm extends.
