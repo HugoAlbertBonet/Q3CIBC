@@ -153,6 +153,11 @@ class PixelDiffusionDenoiser(nn.Module):
         encoder_target_height: int = 180,
         encoder_target_width: int = 240,
         encoder_feature_dim: int = 256,
+        encoder_kind: str = "conv_maxpool",
+        encoder_pretrained: bool | str = False,
+        encoder_num_kp: int = 64,
+        encoder_norm_kind: str = "bn",
+        encoder_per_camera: bool = False,
         time_emb_dim: int = 128,
         network_kind: str = "mlp",
         width: int | None = None,
@@ -160,15 +165,18 @@ class PixelDiffusionDenoiser(nn.Module):
         use_spectral_norm: bool = False,
     ) -> None:
         super().__init__()
-        from utils.models import ConvMaxpoolEncoder
-        self.encoder = ConvMaxpoolEncoder(
-            in_channels=in_channels,
-            target_height=encoder_target_height,
-            target_width=encoder_target_width,
-            feature_dim=encoder_feature_dim,
+        # Shared factory so DP gets the same conv_maxpool / resnet18 choice as
+        # the Q3C/IBC pixel nets. resnet18's feature width depends on num_kp and
+        # camera count, so the head reads the ACTUAL feat_dim the factory returns.
+        from utils.models import _build_pixel_encoder
+        self.encoder, feat_dim = _build_pixel_encoder(
+            encoder_kind, in_channels, encoder_target_height,
+            encoder_target_width, encoder_feature_dim,
+            encoder_pretrained, encoder_num_kp, encoder_norm_kind,
+            encoder_per_camera,
         )
         self.denoiser = DiffusionDenoiser(
-            state_dim=encoder_feature_dim,
+            state_dim=feat_dim,
             action_dim=action_dim,
             time_emb_dim=time_emb_dim,
             network_kind=network_kind,
@@ -407,6 +415,12 @@ def build_denoiser(
 def build_pixel_denoiser(
     action_dim: int, in_channels: int, dp: dict,
     encoder_target_height: int = 180, encoder_target_width: int = 240,
+    encoder_feature_dim: int = 256,
+    encoder_kind: str = "conv_maxpool",
+    encoder_pretrained: bool | str = False,
+    encoder_num_kp: int = 64,
+    encoder_norm_kind: str = "bn",
+    encoder_per_camera: bool = False,
     device: str | torch.device = "cpu",
 ) -> PixelDiffusionDenoiser:
     return PixelDiffusionDenoiser(
@@ -414,6 +428,12 @@ def build_pixel_denoiser(
         in_channels=in_channels,
         encoder_target_height=encoder_target_height,
         encoder_target_width=encoder_target_width,
+        encoder_feature_dim=encoder_feature_dim,
+        encoder_kind=encoder_kind,
+        encoder_pretrained=encoder_pretrained,
+        encoder_num_kp=encoder_num_kp,
+        encoder_norm_kind=encoder_norm_kind,
+        encoder_per_camera=encoder_per_camera,
         time_emb_dim=dp["time_emb_dim"],
         network_kind=dp["denoiser_network_kind"],
         width=dp["denoiser_width"],

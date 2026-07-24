@@ -586,7 +586,15 @@ def main():
             )
         source_buffers = dict(source_model.named_buffers())
         for name, ema_buffer in ema_model.named_buffers():
-            ema_buffer.copy_(source_buffers[name].detach())
+            src = source_buffers[name].detach()
+            # Some encoder buffers (e.g. the SpatialSoftmax coordinate grid on
+            # the ResNet-18 encoder) are materialized LAZILY on the first
+            # forward — after this EMA model was deep-copied — so the EMA copy
+            # still holds a 0-sized placeholder. Adopt the source shape once;
+            # these are deterministic grids, so copying is exact.
+            if ema_buffer.shape != src.shape:
+                ema_buffer.resize_(src.shape)
+            ema_buffer.copy_(src)
 
     def save_checkpoints() -> None:
         os.makedirs(MODEL_SAVE_DIR, exist_ok=True)

@@ -183,7 +183,18 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="zarr_video only: which per-episode MP4 to train on. 1 is the "
              "fixed blue scene camera (== the old images1 and the stream the "
-             "deploy client reads); camera 0 is a second viewpoint, discarded.",
+             "deploy client reads); camera 0 is a second viewpoint, discarded. "
+             "Ignored when --video-cameras is given.",
+    )
+    parser.add_argument(
+        "--video-cameras",
+        type=int,
+        nargs="+",
+        default=None,
+        help="zarr_video only: ordered list of per-episode MP4 cameras to stack "
+             "as input (e.g. `0 1` for both views). Overrides --video-camera. "
+             "Each camera adds 3 channels per stacked frame; a per-camera frame "
+             "cache is built once per camera.",
     )
     parser.add_argument(
         "--frame-cache-dir",
@@ -243,6 +254,45 @@ def parse_args() -> argparse.Namespace:
              "and train_pusht_real_ibc.py: it targets the deploy lighting "
              "shift, which is a SEPARATE problem from the stalling, and "
              "leaving it on would confound the idle-filter comparison.",
+    )
+    # ── Held-out validation (episode-level split; live generalization MAE) ──
+    parser.add_argument(
+        "--val-frac", type=float, default=0.0,
+        help="Hold out this fraction of EPISODES (no frame leakage) as a "
+             "validation set. The trainer logs a live held-out sampled-action "
+             "MAE. 0.0 (default) = no split, train on everything.",
+    )
+    parser.add_argument(
+        "--val-seed", type=int, default=0,
+        help="RNG seed choosing which episodes are held out (share it across a "
+             "sweep so every run holds out the SAME episodes — comparable MAE).",
+    )
+    parser.add_argument(
+        "--val-interval", type=int, default=None,
+        help="Steps between held-out MAE evals (default: --save-interval).",
+    )
+    # ── Encoder architecture (conv_maxpool default, resnet18 optional) ──────
+    parser.add_argument(
+        "--encoder-kind", choices=["conv_maxpool", "resnet18"],
+        default="conv_maxpool",
+        help="conv_maxpool = IBC ConvMaxpool (default, the pushing_pixels DP "
+             "recipe); resnet18 = torchvision ResNet-18 + SpatialSoftmax (the "
+             "LIBERO-standard BC encoder).",
+    )
+    parser.add_argument(
+        "--encoder-pretrained", choices=["none", "imagenet"], default="none",
+        help="resnet18 only: 'imagenet' loads ImageNet-pretrained weights, "
+             "'none' trains from scratch.",
+    )
+    parser.add_argument(
+        "--encoder-norm-kind", choices=["bn", "gn", "bn_frozen"], default="bn",
+        help="resnet18 only: normalization ('gn' = GroupNorm).",
+    )
+    parser.add_argument("--encoder-num-kp", type=int, default=64,
+                        help="resnet18 only: SpatialSoftmax keypoints.")
+    parser.add_argument(
+        "--encoder-per-camera", action="store_true",
+        help="Give each camera stream its own encoder instead of a shared one.",
     )
     parser.add_argument(
         "--tag",
