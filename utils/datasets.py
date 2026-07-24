@@ -10,7 +10,7 @@ import json
 import pickle
 import re
 import zipfile
-from typing import Optional
+from typing import Optional, Sequence
 import numpy as np
 from torch.utils.data import Dataset
 import minari
@@ -1366,6 +1366,7 @@ class PushTWidowXVideoDataset(Dataset):
         archive_path: str,
         frame_stack: int = 2,
         camera: int = 1,
+        cameras: Optional[Sequence[int]] = None,
         resize_hw: tuple[int, int] = (240, 320),
         normalize_actions: bool = True,
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
@@ -1379,6 +1380,7 @@ class PushTWidowXVideoDataset(Dataset):
         idle_seed: int = 0,
         cache_dir: Optional[str] = None,
         cond_eef_xy: bool = False,
+        action_chunk: int = 1,
     ):
         self.archive_path = os.path.abspath(os.path.expanduser(archive_path))
         if not os.path.isfile(self.archive_path):
@@ -1396,14 +1398,25 @@ class PushTWidowXVideoDataset(Dataset):
             raise ValueError(f"idle_keep_frac must be in [0, 1], got {idle_keep_frac}")
 
         self.frame_stack = int(frame_stack)
-        self.camera = int(camera)
+        # One or more per-episode MP4 streams. `cameras` (a list) is the general
+        # case; `camera` (a single int) is kept for back-compat and used for the
+        # frame-cache tag / log line. Channels are laid out interleaved per stack
+        # offset — [cam0_oldest, cam1_oldest, ..., cam0_newest, cam1_newest] —
+        # matching LiberoGoalPixelsDataset so the per-camera encoder split agrees.
+        if cameras is None:
+            self.cameras = [int(camera)]
+        else:
+            self.cameras = [int(c) for c in cameras]
+            if not self.cameras:
+                raise ValueError("cameras must contain at least one camera id")
+        self.camera = self.cameras[0]
         self.resize_hw = (int(resize_hw[0]), int(resize_hw[1]))
         self.normalize_actions = bool(normalize_actions)
         self.action_norm_range = (
             float(action_norm_range[0]),
             float(action_norm_range[1]),
         )
-        self.action_chunk = 1
+        self.action_chunk = max(1, int(action_chunk))
         self.action_dims = (0, 1)
         self.action_semantics = (
             "planar end-effector delta (x, y), metres per control step"
@@ -1412,9 +1425,9 @@ class PushTWidowXVideoDataset(Dataset):
         self.idle_eps = float(idle_eps)
         self.idle_move_eps = float(idle_move_eps)
         self.idle_keep_frac = float(idle_keep_frac)
-        # Camera streams is kept as a 1-tuple so norm_stats / in_channels
-        # arithmetic matches PushTRealPixelsDataset exactly.
-        self.camera_streams = (f"video{self.camera}",)
+        # Camera streams: one entry per camera. in_channels arithmetic
+        # (3 * len(camera_streams) * frame_stack) matches PushTRealPixelsDataset.
+        self.camera_streams = tuple(f"video{c}" for c in self.cameras)
         self.augment = bool(augment)
         self.aug_params = dict(PushTRealPixelsDataset._AUG_DEFAULTS)
         if aug_params:
@@ -1444,23 +1457,37 @@ class PushTWidowXVideoDataset(Dataset):
                 f"action rows ({len(raw_actions)}) != episode_ends[-1] ({n_frames})"
             )
 
-        # ── Frame cache (decode MP4 -> uint8 memmap once) ──────────────────
-        self._H, self._W = self.resize_hw
-        self._cache_path, self._cache_len = self._ensure_frame_cache(
-            cache_dir, n_frames
+        # Action chunking: the per-sample target becomes the next K planar deltas
+        # flattened to (N, K*2). Built BEFORE the normalization stats so act_min/
+        # act_max cover the whole chunk vector. Idle filtering below still keys
+        # off the single-step magnitude (a_t), so `raw_actions` stays (N, 2).
+        starts_mask = np.zeros(n_frames, dtype=bool)
+        starts_mask[self._episode_starts] = True
+        chunk_actions = build_chunked_actions(
+            raw_actions, starts_mask, self.action_chunk
         )
-        if self._cache_len != n_frames:
-            raise ValueError(
-                f"frame cache has {self._cache_len} frames but the replay buffer "
-                f"has {n_frames}. Delete {self._cache_path} and rebuild."
-            )
-        self._frames: np.memmap | None = None  # opened lazily per worker
+
+        # ── Frame cache (decode MP4 -> uint8 memmap once, one per camera) ──
+        self._H, self._W = self.resize_hw
+        self._cache_paths: list[str] = []
+        for cam in self.cameras:
+            cpath, clen = self._ensure_frame_cache(cache_dir, n_frames, cam)
+            if clen != n_frames:
+                raise ValueError(
+                    f"frame cache for camera {cam} has {clen} frames but the "
+                    f"replay buffer has {n_frames}. Delete {cpath} and rebuild."
+                )
+            self._cache_paths.append(cpath)
+        self._cache_len = n_frames
+        # Back-compat alias (single-camera callers may still reference this).
+        self._cache_path = self._cache_paths[0]
+        self._frames_list: Optional[list[np.memmap]] = None  # lazy per worker
 
         # ── Normalization stats from the FULL action set ───────────────────
         # Computed before filtering so act_min/act_max describe the physical
         # command range of the robot, not of whatever subset we train on.
-        self.act_min = raw_actions.min(axis=0).astype(np.float32)
-        self.act_max = raw_actions.max(axis=0).astype(np.float32)
+        self.act_min = chunk_actions.min(axis=0).astype(np.float32)
+        self.act_max = chunk_actions.max(axis=0).astype(np.float32)
         if self.normalize_actions:
             lo, hi = self.action_norm_range
             denom = np.where(
@@ -1469,10 +1496,10 @@ class PushTWidowXVideoDataset(Dataset):
                 self.act_max - self.act_min,
             )
             self.actions = (
-                lo + (raw_actions - self.act_min) * (hi - lo) / denom
+                lo + (chunk_actions - self.act_min) * (hi - lo) / denom
             ).astype(np.float32)
         else:
-            self.actions = raw_actions
+            self.actions = chunk_actions
         self._raw_actions = raw_actions
 
         # ── Optional conditioning: end-effector (x, y) ─────────────────────
@@ -1501,13 +1528,15 @@ class PushTWidowXVideoDataset(Dataset):
 
         self.in_channels = 3 * len(self.camera_streams) * self.frame_stack
         self.state_shape = (self.in_channels, self._H, self._W)
-        self.action_shape = 2
+        self.action_shape = int(self.actions.shape[1])
 
         kept = len(self._samples)
         print(
             "PushTWidowXVideoDataset: "
-            f"{self.n_episodes} episodes, {n_frames} frames, camera={self.camera}, "
-            f"frame_stack={self.frame_stack}, state_shape={self.state_shape}, "
+            f"{self.n_episodes} episodes, {n_frames} frames, "
+            f"cameras={self.cameras}, frame_stack={self.frame_stack}, "
+            f"action_chunk={self.action_chunk}, action_shape={self.action_shape}, "
+            f"state_shape={self.state_shape}, "
             f"raw action range={self.act_min} -> {self.act_max}"
         )
         print(
@@ -1555,15 +1584,17 @@ class PushTWidowXVideoDataset(Dataset):
                     return name[: idx + len("replay_buffer.zarr/")]
         raise ValueError(f"replay_buffer.zarr not found in {self.archive_path}")
 
-    def _video_member(self, archive_names: set[str], episode: int) -> str:
+    def _video_member(self, archive_names: set[str], episode: int,
+                      camera: int) -> str:
         root = self._zarr_prefix().split("replay_buffer.zarr/")[0]
-        member = f"{root}videos/{episode}/{self.camera}.mp4"
+        member = f"{root}videos/{episode}/{camera}.mp4"
         if member not in archive_names:
             raise ValueError(f"Missing video for episode {episode}: {member}")
         return member
 
-    def _ensure_frame_cache(self, cache_dir, n_frames: int) -> tuple[str, int]:
-        """Decode camera `self.camera` into a uint8 memmap once. Returns (path, N).
+    def _ensure_frame_cache(self, cache_dir, n_frames: int,
+                            camera: int) -> tuple[str, int]:
+        """Decode `camera` into a uint8 memmap once. Returns (path, N).
 
         Concurrent trainers are expected (Slurm array / batch): the build writes
         to a unique temp file and os.replace()s it into place, and waiters poll
@@ -1578,7 +1609,7 @@ class PushTWidowXVideoDataset(Dataset):
         os.makedirs(base, exist_ok=True)
         tag = (
             f"{os.path.splitext(os.path.basename(self.archive_path))[0]}"
-            f"_cam{self.camera}_{self._H}x{self._W}"
+            f"_cam{camera}_{self._H}x{self._W}"
         )
         path = os.path.join(base, f"{tag}.u8")
         meta_path = path + ".json"
@@ -1609,7 +1640,7 @@ class PushTWidowXVideoDataset(Dataset):
         try:
             os.write(lock_fd, str(os.getpid()).encode())
             os.close(lock_fd)
-            n_written = self._build_frame_cache(path, meta_path, n_frames)
+            n_written = self._build_frame_cache(path, meta_path, n_frames, camera)
             return path, n_written
         except BaseException:
             # Never leave a stale lock behind on failure.
@@ -1628,8 +1659,8 @@ class PushTWidowXVideoDataset(Dataset):
                     pass
 
     def _build_frame_cache(self, path: str, meta_path: str, n_frames: int,
-                           resize_chunk: int = 64) -> int:
-        """Decode every episode's camera video into `path` (uint8 memmap).
+                           camera: int, resize_chunk: int = 64) -> int:
+        """Decode every episode's `camera` video into `path` (uint8 memmap).
 
         `resize_chunk` bounds the peak memory of the AREA resize (see below);
         64 frames at 480x640 is ~240 MB of float32 intermediate.
@@ -1665,7 +1696,7 @@ class PushTWidowXVideoDataset(Dataset):
                 for ep in range(self.n_episodes):
                     start = int(self._episode_starts[ep])
                     end = int(self._episode_ends[ep])
-                    member = self._video_member(names, ep)
+                    member = self._video_member(names, ep, camera)
                     archive.extract(member, scratch)
                     video_path = os.path.join(scratch, member)
                     # Default plugin == imageio-ffmpeg; do not pin "pyav" (it is
@@ -1711,7 +1742,7 @@ class PushTWidowXVideoDataset(Dataset):
                         "n_frames": int(written),
                         "height": H,
                         "width": W,
-                        "camera": self.camera,
+                        "camera": camera,
                         "archive": self.archive_path,
                     },
                     fh,
@@ -1757,18 +1788,21 @@ class PushTWidowXVideoDataset(Dataset):
     def __getstate__(self):
         state = self.__dict__.copy()
         # memmap handles must not be inherited across DataLoader worker forks.
-        state["_frames"] = None
+        state["_frames_list"] = None
         return state
 
-    def _frame_array(self) -> np.memmap:
-        if self._frames is None:
-            self._frames = np.memmap(
-                self._cache_path,
-                dtype=np.uint8,
-                mode="r",
-                shape=(self._cache_len, self._H, self._W, 3),
-            )
-        return self._frames
+    def _frame_arrays(self) -> list[np.memmap]:
+        if self._frames_list is None:
+            self._frames_list = [
+                np.memmap(
+                    p,
+                    dtype=np.uint8,
+                    mode="r",
+                    shape=(self._cache_len, self._H, self._W, 3),
+                )
+                for p in self._cache_paths
+            ]
+        return self._frames_list
 
     def unnormalize_action(self, normalized_action: np.ndarray) -> np.ndarray:
         if not self.normalize_actions:
@@ -1803,11 +1837,15 @@ class PushTWidowXVideoDataset(Dataset):
         # Clamp the stack to this episode's start so frames never cross episodes.
         ep = int(np.searchsorted(self._episode_ends, t, side="right"))
         ep_start = int(self._episode_starts[ep])
-        frames_arr = self._frame_array()
-        frames = [
-            np.asarray(frames_arr[max(ep_start, t - offset)])
-            for offset in range(self.frame_stack - 1, -1, -1)
-        ]
+        frame_arrs = self._frame_arrays()
+        # Interleave cameras within each stack offset (oldest -> newest):
+        # [cam0_oldest, cam1_oldest, ..., cam0_newest, cam1_newest], matching
+        # LiberoGoalPixelsDataset so the per-camera encoder split lines up.
+        frames = []
+        for offset in range(self.frame_stack - 1, -1, -1):
+            fidx = max(ep_start, t - offset)
+            for arr in frame_arrs:
+                frames.append(np.asarray(arr[fidx]))
         if self.augment:
             frames = PushTRealPixelsDataset._augment_stack(self, frames)
         stacked = np.concatenate(frames, axis=-1)

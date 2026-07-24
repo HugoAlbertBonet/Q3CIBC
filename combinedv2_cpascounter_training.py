@@ -322,10 +322,15 @@ def load_dataset():
         )
         if data_format == "zarr_video":
             from utils.datasets import PushTWidowXVideoDataset
+            # One or more per-episode camera streams. `video_cameras` (a list)
+            # is the general case; fall back to the single `video_camera`.
+            cameras = env_config.get("video_cameras")
+            if not cameras:
+                cameras = [int(env_config.get("video_camera", 1))]
             return PushTWidowXVideoDataset(
                 archive_path=env_config["data_archive"],
                 frame_stack=frame_stack,
-                camera=int(env_config.get("video_camera", 1)),
+                cameras=[int(c) for c in cameras],
                 resize_hw=resize_hw,
                 max_trajectories=env_config.get("max_trajectories"),
                 augment=bool(env_config.get("image_aug", False)),
@@ -337,6 +342,9 @@ def load_dataset():
                 idle_seed=int(env_training.get("trial_seed", 0)),
                 cache_dir=env_config.get("frame_cache_dir"),
                 cond_eef_xy=bool(env_config.get("cond_eef_xy", False)),
+                action_chunk=int(
+                    env_config.get("training", {}).get("action_chunk", 1)
+                ),
             )
         if data_format != "bridge_zip":
             raise ValueError(

@@ -1,0 +1,32 @@
+# Push-T WidowX — libero_goal_pixels recipe port, image1 ONLY (single view).
+#
+# Controlled ablation of batches/pushtWidowXlib2cam.txt: identical recipe and
+# sweep, but the policy sees only camera 1 (the fixed blue scene camera the
+# deploy client already reads). Compares single-view vs dual-view under the
+# ported libero_goal_pixels recipe.
+#
+# Fixed recipe (all lines): resnet18 + GroupNorm + 128 SpatialSoftmax kp encoder,
+# CP generator mlp 512x4, control_points 100 / top_k 30, lr = est_lr = 2e-4,
+# batch 128, mse 1.0 / entropy-sep 0.01 / entropy_bandwidth 0.2,
+# info_nce 0.5 / generator_infonce 0.05 / infonce_clamp 20,
+# 8 Langevin negatives x 100 iters, gradient penalty hinge 1.0/1.0 (base),
+# cosine t0 75k, 150k steps, idle_filter drop_zero, frame_stack 2.
+#
+# SWEEP AXES (4 jobs): action_chunk {1, 16}  x  encoder init {scratch, imagenet}.
+#
+# PREREQUISITE: camera-1 frame cache (already built for the c01-c10 runs; the
+# loader rebuilds it automatically if missing).
+#
+# --workers 4 matches submit_experiments.sh --cpus-per-task=4.
+
+# ── L1c_ch1_scratch: single-step, ResNet-18 from scratch
+uv run python scripts/train_pusht_real.py --seed 11 --tag L1c_ch1_scratch --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000
+
+# ── L1c_ch1_imnet: single-step, ResNet-18 ImageNet-pretrained
+uv run python scripts/train_pusht_real.py --seed 11 --tag L1c_ch1_imnet --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000
+
+# ── L1c_ch16_scratch: 16-step chunks, ResNet-18 from scratch
+uv run python scripts/train_pusht_real.py --seed 11 --tag L1c_ch16_scratch --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000
+
+# ── L1c_ch16_imnet: 16-step chunks, ResNet-18 ImageNet-pretrained
+uv run python scripts/train_pusht_real.py --seed 11 --tag L1c_ch16_imnet --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000

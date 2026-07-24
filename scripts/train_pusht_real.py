@@ -55,7 +55,26 @@ def parse_args() -> argparse.Namespace:
         help="zarr_video only: which per-episode MP4 to train on. 1 is the "
              "fixed blue scene camera (== the old images1 and the stream the "
              "deploy client reads); camera 0 is a second viewpoint and is "
-             "discarded.",
+             "discarded. Ignored when --video-cameras is given.",
+    )
+    parser.add_argument(
+        "--video-cameras",
+        type=int,
+        nargs="+",
+        default=None,
+        help="zarr_video only: ordered list of per-episode MP4 cameras to stack "
+             "as input (e.g. `0 1` for both views). Overrides --video-camera. "
+             "Each camera adds 3 channels per stacked frame; a per-camera frame "
+             "cache is built once per camera.",
+    )
+    parser.add_argument(
+        "--action-chunk",
+        type=int,
+        default=1,
+        help="Predict K planar deltas per step (open-loop action chunking). "
+             "K=1 is single-step (default); K=16 matches the libero_goal_pixels "
+             "recipe. Deploy must execute the chunk open-loop (see "
+             "deploy_pusht_real.py — chunk execution is a separate change).",
     )
     parser.add_argument(
         "--frame-cache-dir",
@@ -131,6 +150,38 @@ def parse_args() -> argparse.Namespace:
              "a distinct tag per hyperparameter config so batch runs don't "
              "overwrite each other.",
     )
+    # ── Image encoder (defaults = pushing_pixels ConvMaxpool; the
+    #    libero_goal_pixels recipe uses a ResNet-18 + SpatialSoftmax) ────────
+    enc = parser.add_argument_group("encoder")
+    enc.add_argument(
+        "--encoder-kind", choices=["conv_maxpool", "resnet18"],
+        default="conv_maxpool",
+        help="conv_maxpool = IBC ConvMaxpool (default); resnet18 = torchvision "
+             "ResNet-18 + SpatialSoftmax (the LIBERO-standard BC encoder).",
+    )
+    enc.add_argument(
+        "--encoder-pretrained", choices=["none", "imagenet"], default="none",
+        help="resnet18 only: 'imagenet' loads ImageNet-pretrained weights, "
+             "'none' trains from scratch.",
+    )
+    enc.add_argument(
+        "--encoder-norm-kind", choices=["bn", "gn", "bn_frozen"], default="bn",
+        help="resnet18 only: normalization. 'gn' (GroupNorm) is the "
+             "libero_goal_pixels choice — BN's train/eval stat mismatch is "
+             "hostile to EBM training.",
+    )
+    enc.add_argument("--encoder-num-kp", type=int, default=64,
+                     help="resnet18 only: SpatialSoftmax keypoints (libero=128).")
+    enc.add_argument(
+        "--encoder-per-camera", action="store_true",
+        help="Give each camera stream its own encoder instead of a shared one.",
+    )
+    enc.add_argument(
+        "--cond-fusion", choices=["concat", "film"], default="concat",
+        help="How conditioning (proprio/goal) is fused into the pixel nets. "
+             "Only relevant with --cond-eef-xy.",
+    )
+
     # ── Hyperparameters (defaults = best pushing_pixels search recipe) ────
     # Exposed so a batch can sweep them; every one lands in the per-run
     # config.json, which is what the trainer and later diagnose/deploy read.
@@ -145,6 +196,7 @@ def parse_args() -> argparse.Namespace:
     hp.add_argument("--value-num-blocks", type=int, default=1)
     hp.add_argument("--mse-weight", type=float, default=10.0)
     hp.add_argument("--info-nce-weight", type=float, default=0.5)
+    hp.add_argument("--generator-infonce-weight", type=float, default=0.05)
     hp.add_argument("--sep-weight", type=float, default=0.1)
     hp.add_argument("--entropy-bandwidth", type=float, default=0.01)
     hp.add_argument("--uniform-negatives", type=int, default=0)
@@ -173,7 +225,12 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
     # zarr_video trains on ONE camera (the blue scene view); bridge_zip keeps
     # the explicit stream list. Both end up as a 1-element channel group so
     # in_channels arithmetic is identical.
-    n_cams = 1 if args.data_format == "zarr_video" else len(args.cameras)
+    if args.data_format == "zarr_video":
+        video_cameras = list(args.video_cameras) if args.video_cameras else [args.video_camera]
+        n_cams = len(video_cameras)
+    else:
+        video_cameras = None
+        n_cams = len(args.cameras)
     env.update(
         {
             "data_archive": str(args.dataset.resolve()),
@@ -187,11 +244,16 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "action_dim": 2,
             "frame_stack": args.frame_stack,
             "camera_streams": (
-                [f"video{args.video_camera}"]
+                [f"video{c}" for c in video_cameras]
                 if args.data_format == "zarr_video"
                 else list(args.cameras)
             ),
-            "video_camera": args.video_camera,
+            "video_camera": (
+                video_cameras[0]
+                if args.data_format == "zarr_video"
+                else args.video_camera
+            ),
+            "video_cameras": video_cameras,
             "image_height": args.image_height,
             "image_width": args.image_width,
             "dataloader_num_workers": args.workers,
@@ -217,6 +279,9 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "training_steps": args.steps,
             "batch_size": args.batch_size,
             "trial_seed": args.seed,
+            # Open-loop action chunking: K planar deltas per step (see
+            # PushTWidowXVideoDataset / build_chunked_actions). K=1 is single-step.
+            "action_chunk": args.action_chunk,
             # There is deliberately no simulator-based model selection for
             # this dataset. Each run is an independently testable config.
             "best_ckpt": False,
@@ -251,11 +316,19 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "mse_weight": args.mse_weight,
             "info_nce_weight": args.info_nce_weight,
             "separation_weight": args.sep_weight,
+            "generator_infonce_weight": args.generator_infonce_weight,
         }
     )
     env["model"].update(
         {
-            "encoder_kind": "conv_maxpool",
+            "encoder_kind": args.encoder_kind,
+            # resnet18-specific knobs (ignored by conv_maxpool). 'imagenet' ->
+            # True so the existing bool() cast in the model build loads weights.
+            "encoder_pretrained": (args.encoder_pretrained == "imagenet"),
+            "encoder_norm_kind": args.encoder_norm_kind,
+            "encoder_num_kp": args.encoder_num_kp,
+            "encoder_per_camera": args.encoder_per_camera,
+            "cond_fusion": args.cond_fusion,
             "control_points": args.control_points,
             # cp_width/cp_depth are what the pixel CP generator actually reads
             # (num_hidden_layers/num_neurons are only their fallbacks), so set

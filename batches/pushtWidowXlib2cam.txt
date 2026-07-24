@@ -1,0 +1,40 @@
+# Push-T WidowX — libero_goal_pixels recipe port, BOTH cameras (image0 + image1).
+#
+# Ports the best libero_goal_pixels combinedv2 recipe (success_rate 0.96 in
+# results/hyperparam_search/combinedv2_cpascounter_training/libero_goal_pixels/
+# trials.jsonl) onto the PushT-WidowX video dataset, using BOTH per-episode
+# camera views (video0 + video1) as stacked input — mirroring the 2-camera
+# (agentview + wrist) setup the LIBERO recipe was tuned on.
+#
+# Fixed recipe (all lines): resnet18 + GroupNorm + 128 SpatialSoftmax kp encoder,
+# CP generator mlp 512x4, control_points 100 / top_k 30, lr = est_lr = 2e-4,
+# batch 128, mse 1.0 / entropy-sep 0.01 / entropy_bandwidth 0.2,
+# info_nce 0.5 / generator_infonce 0.05 / infonce_clamp 20,
+# 8 Langevin negatives x 100 iters (lr/noise/clip 0.1/0.1/0.1 from the base
+# pushing_pixels config), gradient penalty hinge 1.0/1.0 (base), cosine t0 75k,
+# 150k steps, idle_filter drop_zero (the established fix for the 24% (0,0) spike;
+# LIBERO has no such spike). frame_stack 2 keeps the 2-frame motion signal.
+#
+# SWEEP AXES (4 jobs): action_chunk {1, 16}  x  encoder init {scratch, imagenet}.
+# action_chunk 16 is the libero recipe's open-loop chunking — the handoff's #1
+# anti-stall fix. NOTE: deploying a chunked and/or dual-camera checkpoint needs
+# deploy_pusht_real.py changes (feed camera 0 live + execute chunks open-loop);
+# that is a separate step, not required to train.
+#
+# PREREQUISITE: build the camera-0 frame cache once (camera-1 already cached):
+#   python scripts/prepare_pusht_video_cache.py --camera 0
+# Otherwise every job blocks decoding the ~17 GB cam-0 memmap.
+#
+# --workers 4 matches submit_experiments.sh --cpus-per-task=4.
+
+# ── L2c_ch1_scratch: single-step, ResNet-18 from scratch
+uv run python scripts/train_pusht_real.py --seed 11 --tag L2c_ch1_scratch --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000
+
+# ── L2c_ch1_imnet: single-step, ResNet-18 ImageNet-pretrained
+uv run python scripts/train_pusht_real.py --seed 11 --tag L2c_ch1_imnet --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000
+
+# ── L2c_ch16_scratch: 16-step chunks, ResNet-18 from scratch
+uv run python scripts/train_pusht_real.py --seed 11 --tag L2c_ch16_scratch --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000
+
+# ── L2c_ch16_imnet: 16-step chunks, ResNet-18 ImageNet-pretrained
+uv run python scripts/train_pusht_real.py --seed 11 --tag L2c_ch16_imnet --workers 4 --output-root checkpoints/pusht_real_libero --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 128 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000

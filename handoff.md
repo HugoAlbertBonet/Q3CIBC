@@ -12,6 +12,60 @@ involved and how, and a concrete test to confirm or rule it out.
 
 ---
 
+## FINAL CONCLUSION (investigation complete — read this first)
+
+**Every section A–G was worked through. No single deploy/data/environment bug
+explains the failure. The residual cause is closed-loop robustness of the
+single-step IBC policy (behavioral-cloning covariate shift): offline-healthy,
+brittle on the real robot.** The arm stalls the same way (random timestep,
+position-dependent, occasionally nudges the T) regardless of inference method,
+min-step snap, z-height, exposure match, or start tweaks.
+
+### Symptom (established from logs, not assumed)
+The arm drives to a premature fixed point and stops/orbits; **the T essentially
+never moves** (red-T centroid frozen; only a single ~14 px nudge across all
+rollouts). Because the T doesn't move, the scene is static → frame-diff pins at
+the camera noise floor (~0.92) → the pixels-only motion signal is dead → the
+policy gets no progress feedback → it settles into a dead-zone / near-zero
+action. All the downstream symptoms (freeze, orbit, dead-zone commands) follow
+from the arm not reliably driving to and moving the T.
+
+### What was RULED OUT (each by a concrete test, not assumption)
+| section | verdict | how |
+|---|---|---|
+| A data/loader | CLEAN | A1 action↔eef corr +0.8 all eps; frame-count parity exact; A2 camera=1 chain; A3 cache content reproduced; A4/D2 resize parity <1 gray level |
+| B training | CLEAN | B1 no mode-collapse (pred spread), B2 fit (MAE~0.04), B4 act scale ±0.008 |
+| C ckpt/config | CLEAN | loads without shape error; cond_dim correct |
+| D deploy preprocess | CLEAN | D1 RGB (fed==model-input byte-exact, red T), D2 resize, D3 240×320, D4 no stale/dup frames |
+| E conditioning | CLEAN | E1 layout correct (start-pose match), in-distribution, no saturation; probe: cond STRONG + balanced with vision |
+| F mapping | CLEAN | F1 corr(cmd,eef) +0.8–0.9; F2 no clipping; frame↔image direction verified via `--calibrate` (+dx→right, +dy→up, matches training) |
+| G1 camera pose | CLEAN | rig `align_pusht_camera.py` overlay, ≤1mm |
+| G2 T appearance | corrected, still stalls | scene ~16% underexposed; `--match-exposure` lifts T redness 79→97; no fix |
+| G3 start pose | MINOR OOD | deploy starts x=0.110 vs demo band [0.113,0.118]; ~7mm undershoot; not primary |
+| G4 z/contact | MOOT | arm never reaches the T, so contact height is irrelevant |
+| inference | no fix | argmax vs Langevin vs DFO all stall; Langevin/DFO make actions more decisive but same attractor |
+
+### RECOMMENDED PATH FORWARD (retrain-side; not a deploy bug)
+1. **Switch to the Diffusion Policy.** The d-series runs scored offline MAE
+   **0.019–0.030 vs IBC's 0.038–0.16**, and Diffusion Policy executes **action
+   chunks** (open-loop K-step), the single biggest known remedy for the
+   compounding single-step drift that produces this stall on real pushing tasks.
+2. **On-robot DAgger** for whichever policy — collect corrections in the drifted
+   states and retrain; directly attacks covariate shift.
+3. **Training augmentation** — brightness/saturation/color + spatial jitter for
+   robustness to residual OOD (washed-out T, 7mm start offset, etc.).
+
+### DEPLOY-SIDE PALLIATIVES ADDED (help symptoms, don't fix the root)
+`deploy_pusht_real.py` flags: `--min-step-xy` (snap sub-min-step OOD actions),
+`--inference langevin|dfo` (match training's energy-min refinement),
+`--match-exposure` (white-point lift), `--z-hold` (needs a 3-dim server action
+space), `--calibrate` (open-loop frame/contact check). Analysis tooling:
+`analyze_rollout.py`, `probe_conditioning.py`, `check_action_image_frame.py`,
+`check_frame_action_alignment.py`, `check_frame_count_parity.py`,
+`check_resize_parity.py`, `plot_pusht_action_hist.py`.
+
+---
+
 ## How to use this document
 
 ### Two priors that shrink the search
@@ -750,11 +804,22 @@ below was inconclusive — kept for the record.)
 - **Test.** `--match-exposure --dry-run` (confirm redder T), then
   `--match-exposure --steps 200 --log-dir …` and `analyze_rollout.py`.
 
-### G3. Start pose OOD
-- **Why.** Demos all start at x≈0.117; starting elsewhere is OOD from step 0.
-- **Files.** deploy `--move-to-demo-start` (default ON) + `--start-eep-npy`
-  (`scripts/assets/pusht_start_eep.npy`); logged `state`.
-- **Test.** `steps.jsonl` step 0 EEF vs the asset (x≈0.117, y≈−0.019).
+### G3. Start pose — CHECKED: ~7mm off a razor-tight demo start (minor OOD)
+- **Demos start in an extremely tight cluster:** x=0.1168±0.0004, y=−0.0195±0.0009,
+  z=0.0177±0.0002 (x range [0.113,0.118], <1mm std). Start asset
+  `pusht_start_eep.npy` = (0.1171,−0.0193,0.020), matching.
+- **Deploy settles at x≈0.110, y≈−0.016, z≈0.0163** in every rollout — ~7mm short
+  in x, BELOW the demonstrated start band [0.113,0.118] → slightly OOD from step
+  0. `--move-to-demo-start` commands the right pose but the arm **undershoots x by
+  ~7mm**.
+- **Side effect:** the approach floor is set to the commanded start x (0.1171)
+  while the arm actually starts at 0.110 → floor immediately active, pinning −dx
+  from step 0 ("clipped dx at x=0.1096"). Demos push outward (+x) so it likely
+  doesn't block, but it's off-nominal.
+- **Verdict:** genuine but MINOR OOD; not the primary cause (stalls happen at
+  random LATER steps, not at start). Worth fixing the move-to-start undershoot
+  (get x to 0.117) and lowering/removing the approach floor for the test, but not
+  the smoking gun.
 
 ### CONTACT ROOT — the arm never REACHES the T (approach failure, wrong y). NOT height.
 Corrects both the z-droop AND the "too high to contact" theories. Verified with
