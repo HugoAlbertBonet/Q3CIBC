@@ -402,8 +402,14 @@ def main() -> int:
     run_name = args.tag if args.tag else f"seed_{args.seed:04d}"
     run_dir = args.output_root.resolve() / run_name
     # Refuse to silently overwrite a finished run: checkpoints are expensive and
-    # a repeated --tag in a batch file is an easy mistake to make.
-    existing = sorted(run_dir.glob("*.pt")) if run_dir.exists() else []
+    # a repeated --tag in a batch file is an easy mistake to make. norm_stats.pt
+    # is written BEFORE the training loop, so it must not count as a "finished
+    # run" — otherwise a crash during warmup blocks a clean re-run.
+    existing = (
+        [p for p in sorted(run_dir.glob("*.pt")) if p.name != "norm_stats.pt"]
+        if run_dir.exists()
+        else []
+    )
     if existing and not args.dry_run:
         raise FileExistsError(
             f"{run_dir} already holds checkpoints ({[p.name for p in existing[:3]]}...). "
