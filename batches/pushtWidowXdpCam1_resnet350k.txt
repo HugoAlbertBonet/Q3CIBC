@@ -1,0 +1,15 @@
+# Resubmit of the CAM-1 ResNet-18 runs (e01/e02) with a 350k-step budget.
+#
+# Why: measured throughput is 2.29 steps/s for the pretrained ResNet-18 encoder
+# (250k in 109000s), so the original 750k budget needs ~91h and cannot finish in
+# the 48h cap. Worse, the CosineAnnealingLR uses T_max=--steps, so a run killed
+# at 48h (~396k) is stopped mid-schedule with the LR still ~half-annealed, and
+# the trainer has no resume path. 350k steps at 2.29 steps/s is ~42.4h — inside
+# the cap WITH the cosine fully annealed to eta_min, i.e. a properly converged
+# checkpoint. Pretrained features need far fewer steps than the conv-from-scratch
+# 750k anyway. New tags (…_350k) so the clobber guard doesn't hit the dead runs.
+# Same val split (--val-frac 0.1 --val-seed 0) as e03_conv (750k) for comparison.
+
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag e01_resnet18_s11_350k --workers 4 --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --steps 350000
+
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag e02_resnet18_s29_350k --workers 4 --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --steps 350000

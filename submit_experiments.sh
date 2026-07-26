@@ -84,7 +84,7 @@ for cmd in "${commands[@]}"; do
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|l40s|a40|v100"
+#SBATCH --constraint="a100|l40s|a40"
 #SBATCH --mem=32G
 #SBATCH --time=48:00:00
 #SBATCH --job-name=${batch_name}_${tag}

@@ -673,6 +673,9 @@ def main():
         shuffle=True,
         num_workers=num_workers,
         persistent_workers=num_workers > 0,
+        # Surface a stuck worker as a crash (requeue-able) instead of an
+        # indefinite silent hang that burns the whole GPU allocation.
+        timeout=600 if num_workers > 0 else 0,
     )
 
     # Optional held-out validation set (episode-level split) for a live
@@ -683,12 +686,15 @@ def main():
     if (str(env_config.get("data_format", "")) == "zarr_video"
             and float(env_config.get("val_frac", 0.0)) > 0.0):
         val_dataset = load_dataset(split="val")
+        # Single-process on purpose: iterating a SECOND persistent-worker loader
+        # inside the training loop (on top of the train loader's workers) can
+        # deadlock/spin. The val set is small and read once every val_interval,
+        # so main-process loading is fine and removes the hazard entirely.
         val_loader = torch.utils.data.DataLoader(
             val_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=num_workers,
-            persistent_workers=num_workers > 0,
+            num_workers=0,
         )
         print(
             f"Validation: {len(val_dataset)} held-out transitions "
