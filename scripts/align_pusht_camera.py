@@ -56,11 +56,26 @@ ROOT = Path(__file__).resolve().parents[1]
 # corner marker clearly visible for alignment). Both cameras are taken from the
 # same episode/frame, so they show the exact same physical instant.
 #   camera 1 -> blue Logitech  (images1, the stream the policy consumes)
-#   camera 0 -> D435 color     (images0, excluded from training)
+#   camera 0 -> realsense colour (images0)
 # Regenerate with the same camera streams the dataset/policy uses so the live
 # views match.
+#
+# Camera 1 is still referenced against the 2026-03 collection: it was aligned
+# back to that exact viewpoint for the 2026-07 re-collection, so the old frame
+# stays valid and every checkpoint's view is preserved.
+#
+# Camera 0 is NOT: the D435 was replaced by a D415 at a new pose, so the 2026-03
+# images0 frame is meaningless as a target. Its reference is a frame from the
+# 2026-07 collection instead -- whatever pose the D415 was frozen at. Recreate it
+# from the first frame of any accepted episode:
+#
+#   cp ~/widowx_data/<prefix>/<timestamp>/raw/traj_group0/traj0/images0/im_0.jpg \
+#      scripts/assets/pusht_widowx_cam0_ref_2026-07.jpg
+#
+# Override either with --reference / --reference-d435 to check against a
+# different episode without touching the assets.
 DEFAULT_REF_BLUE = ROOT / "scripts" / "assets" / "pusht_widowx_cam1_ref.jpg"
-DEFAULT_REF_D435 = ROOT / "scripts" / "assets" / "pusht_widowx_cam0_ref.jpg"
+DEFAULT_REF_D435 = ROOT / "scripts" / "assets" / "pusht_widowx_cam0_ref_2026-07.jpg"
 
 BLUE_TOPIC = "/blue/image_raw"
 D435_TOPIC = "/D435/color/image_raw"
@@ -99,8 +114,11 @@ def parse_args() -> argparse.Namespace:
                    help="align both cameras side by side: blue (images1) and D435 (images0)")
     p.add_argument("--reference", type=Path, default=DEFAULT_REF_BLUE,
                    help="reference frame for the blue camera (images1)")
-    p.add_argument("--reference-d435", type=Path, default=DEFAULT_REF_D435,
-                   help="reference frame for the D435 camera (images0); --both only")
+    p.add_argument("--reference-d435", "--reference-cam0", dest="reference_d435",
+                   type=Path, default=DEFAULT_REF_D435,
+                   help="reference frame for camera 0 / the realsense (images0); "
+                        "--both only. Defaults to the 2026-07 D415 pose, not the "
+                        "retired D435 one")
     p.add_argument("--alpha", type=float, default=0.5,
                    help="initial blend weight of the live frame (0..1)")
     p.add_argument("--out", type=Path, default=ROOT / "camera_align.png")
