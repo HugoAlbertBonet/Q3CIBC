@@ -103,6 +103,9 @@ cd "${PWD}"
 export UV_NO_SYNC=1
 export UV_FROZEN=1
 export PYTHONDONTWRITEBYTECODE=1
+# Reclaim fragmented CUDA memory (helps the 2-camera pusht runs, which sit near
+# the 44-48 GB card limit). Harmless for jobs that fit comfortably.
+export PYTORCH_CUDA_ALLOC_CONF=\${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 
 # Headless mujoco offscreen render (LIBERO eval). Harmless for non-render envs.
 export MUJOCO_GL=\${MUJOCO_GL:-egl}
