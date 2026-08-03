@@ -29,9 +29,13 @@ Q3C-specific (differs from the BFN reference by necessity):
     stacked on a new axis.
   * The policy emits a normalized (dx, dy); it is min-max denormalized with
     norm_stats (act_min/act_max) before being sent.
-  * Camera: seed_00XX trained on ``images1`` == ``/blue/image_raw``. With the
-    D435 removed the blue camera is the only one, so it arrives as
-    ``external_img``.
+  * Camera: the checkpoint's ``camera_streams`` index IS the dataset camera id
+    (``images1``/``video1`` -> 1 -> ``/blue/image_raw``). Topics are registered
+    in the collection's order (D435 first, blue second), and the live frame is
+    picked by that camera's POSITION in the topic list -- index 0 arrives as
+    ``external_img``, index 1 as ``over_shoulder_img``. One- and two-camera
+    checkpoints both work; a rig without the D435 needs
+    ``--camera-topics /blue/image_raw --topic-camera-ids 1``.
 
 Usage (server already up):
 
@@ -63,13 +67,26 @@ if str(ROOT) not in sys.path:
 
 # --- constants copied from the confirmed-working eval_widowx_bfn.py ---------
 WORKSPACE_BOUNDS = [[0.1, -0.15, -0.01, -1.57, 0], [0.45, 0.25, 0.25, 1.57, 0]]
-CAMERA_TOPICS = ["/blue/image_raw"]
+# Camera topics in the order the DATA COLLECTION registered them (the archive's
+# metadata.json "provenance" block). The list index IS the dataset camera id:
+# 0 == images0/video0 == D435, 1 == images1/video1 == blue scene cam. Register
+# them in this order at deploy so a checkpoint's camera_streams index means the
+# same thing live as it did in training. If a camera is physically absent, drop
+# it AND say which ids remain with --topic-camera-ids (e.g. blue-only rig:
+# `--camera-topics /blue/image_raw --topic-camera-ids 1`).
+DATASET_CAMERA_TOPICS = ["/D435/color/image_raw", "/blue/image_raw"]
+CAMERA_TOPICS = list(DATASET_CAMERA_TOPICS)
 FIXED_Z_HEIGHT = 0.02
 NEUTRAL_Z_HEIGHT = 0.02
 FIXED_GRIPPER = 0.0
 # The demo archive's actions are ±0.008 in x/y; the working script clips at the
 # same magnitude via vr_xy_step_clip.
 SAFETY_MAX_XY_DELTA = 0.008
+# The collection loop ran at move_duration = 0.05 s (20 Hz) -- see the archive
+# provenance and PUSHT_DATA_COLLECTION_RUNBOOK.md. Deploying at 0.1 s replays
+# every learned delta at half the demonstrated speed, so the default matches the
+# data.
+STEP_DURATION = 0.05
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,7 +107,16 @@ def parse_args() -> argparse.Namespace:
                         "pointing it at a second copy changes "
                         "WidowXConfigs.DefaultActionConfig and the edgeml handshake "
                         "then fails with 'Incompatible config with hash'.")
-    p.add_argument("--camera-topics", nargs="+", default=CAMERA_TOPICS)
+    p.add_argument("--camera-topics", nargs="+", default=CAMERA_TOPICS,
+                   help="ROS topics, registered in THIS order. Default = the "
+                        "order the training data was collected in "
+                        f"({DATASET_CAMERA_TOPICS}).")
+    p.add_argument("--topic-camera-ids", nargs="+", type=int, default=None,
+                   help="dataset camera id of each --camera-topics entry "
+                        "(default 0,1,...). The checkpoint's camera_streams "
+                        "(images1/video1 -> id 1) are resolved through this map, "
+                        "so a blue-only rig needs `--camera-topics "
+                        "/blue/image_raw --topic-camera-ids 1`.")
 
     # --- service image geometry (confirmed-working values) ------------------
     p.add_argument("--im-size", type=int, default=480, help="service image height")
@@ -98,8 +124,9 @@ def parse_args() -> argparse.Namespace:
 
     # --- control -------------------------------------------------------------
     p.add_argument("--steps", type=int, default=200, help="max control steps")
-    p.add_argument("--step-duration", type=float, default=0.1,
-                   help="control period; also used as env move_duration")
+    p.add_argument("--step-duration", type=float, default=STEP_DURATION,
+                   help="control period; also used as env move_duration. Default "
+                        "is the collection's move_duration (20 Hz).")
     p.add_argument("--non-blocking", action="store_true",
                    help="the working reference uses blocking=True; this opts out")
     p.add_argument("--action-mode", default="2trans",
@@ -436,6 +463,103 @@ def extract_blue_frame(raw_obs: Dict[str, Any]) -> np.ndarray:
     )
 
 
+# --- camera resolution by dataset id ---------------------------------------
+# widowx_env_service returns the registered cameras positionally: the FIRST
+# camera_topic arrives as external_img, the second as over_shoulder_img, the
+# third as wrist_img (see data/eval_widowx_bfn.py::_select_rgb_source_for_obs_key
+# and the same mapping in scripts/deploy_pusht_real_ibc.py). There is
+# deliberately NO cross-position fallback here: with both collection topics
+# registered, falling back from over_shoulder_img to external_img would silently
+# feed the D435 to a checkpoint trained on the blue camera.
+_POSITION_KEYS = (
+    ("external_img", "full_image_0", "image_0"),
+    ("over_shoulder_img", "full_image_1", "image_1"),
+    ("wrist_img", "full_image_2", "image_2"),
+)
+
+
+def camera_ids_from_streams(streams) -> List[int]:
+    """["video1"] / ["images0", "images1"] -> [1] / [0, 1]."""
+    ids = []
+    for s in streams:
+        digits = "".join(ch for ch in str(s) if ch.isdigit())
+        if not digits:
+            raise ValueError(
+                f"camera stream {s!r} carries no index; cannot map it to a "
+                "camera topic. Pass --topic-camera-ids explicitly.")
+        ids.append(int(digits))
+    return ids
+
+
+def resolve_topic_camera_ids(camera_topics, topic_camera_ids) -> List[int]:
+    """Dataset camera id of each registered topic (default: positional 0,1,...)."""
+    if topic_camera_ids is None:
+        return list(range(len(camera_topics)))
+    ids = [int(i) for i in topic_camera_ids]
+    if len(ids) != len(camera_topics):
+        raise ValueError(
+            f"--topic-camera-ids has {len(ids)} entries but --camera-topics has "
+            f"{len(camera_topics)}; they must line up one-to-one.")
+    if len(set(ids)) != len(ids):
+        raise ValueError(f"--topic-camera-ids must be unique, got {ids}")
+    return ids
+
+
+def frame_for_camera(raw_obs: Dict[str, Any], cam_id: int,
+                     topic_camera_ids: List[int]) -> np.ndarray:
+    """Live frame of DATASET camera `cam_id` as (H,W,3) uint8 RGB."""
+    if cam_id not in topic_camera_ids:
+        raise RuntimeError(
+            f"the checkpoint reads camera {cam_id} but the registered topics map "
+            f"to cameras {topic_camera_ids}. Add the topic (in collection order) "
+            "or correct --topic-camera-ids.")
+    pos = topic_camera_ids.index(cam_id)
+    if pos >= len(_POSITION_KEYS):
+        raise RuntimeError(f"no known observation key for camera position {pos}")
+
+    full = raw_obs.get("full_image")
+    full_arr = np.asarray(full) if full is not None else None
+    for key in _POSITION_KEYS[pos]:
+        if key.startswith("full_image_"):
+            i = int(key.rsplit("_", 1)[1])
+            if full_arr is not None and full_arr.ndim == 4 and full_arr.shape[0] > i:
+                return to_uint8_rgb(full_arr[i])
+            if full_arr is not None and full_arr.ndim == 3 and i == 0:
+                return to_uint8_rgb(full_arr)
+            continue
+        if raw_obs.get(key) is not None:
+            return to_uint8_rgb(np.asarray(raw_obs[key]))
+    raise RuntimeError(
+        f"no frame for camera {cam_id} (topic position {pos}) in the observation "
+        f"(keys={sorted(raw_obs.keys())}). Is the camera publishing?")
+
+
+def build_stack_frame(raw_obs: Dict[str, Any], cam_ids: List[int],
+                      topic_camera_ids: List[int], out_hw, gains=None) -> np.ndarray:
+    """One timestep of the stack: (H, W, 3*len(cam_ids)), cameras in cam_ids order.
+
+    Matches PushTWidowXVideoDataset.__getitem__, which iterates the cameras
+    INSIDE each stack offset, so channel-concatenating these per-timestep blocks
+    oldest->newest reproduces the training layout
+    [cam0_oldest, cam1_oldest, ..., cam0_newest, cam1_newest].
+    """
+    per_cam = [preprocess(frame_for_camera(raw_obs, c, topic_camera_ids),
+                          out_hw, gains=gains) for c in cam_ids]
+    return np.concatenate(per_cam, axis=-1)
+
+
+def save_fed_png(path_stem: Path, block: np.ndarray, cam_ids: List[int]) -> None:
+    """Write the fed frame(s) of one timestep. Multi-camera -> one png per cam."""
+    import cv2
+
+    for i, cam in enumerate(cam_ids):
+        img = block[:, :, 3 * i:3 * (i + 1)]
+        out = (path_stem.with_suffix(".png") if len(cam_ids) == 1
+               else path_stem.with_name(f"{path_stem.name}_cam{cam}.png"))
+        cv2.imwrite(str(out), cv2.cvtColor(np.ascontiguousarray(img),
+                                           cv2.COLOR_RGB2BGR))
+
+
 def eef_x_from_obs(raw_obs: Dict[str, Any]) -> float | None:
     """Current end-effector x (metres). state[0] is x on this rig."""
     if raw_obs is None:
@@ -492,9 +616,9 @@ def preprocess(frame: np.ndarray, out_hw, gains=None) -> np.ndarray:
 
 
 def stack_to_tensor(frame_buf, device) -> torch.Tensor:
-    """oldest->newest (H,W,3) frames -> (1, 3*fs, H, W) uint8 tensor."""
-    stacked = np.concatenate(list(frame_buf), axis=-1)     # (H, W, 3*fs)
-    stacked = np.transpose(stacked, (2, 0, 1))             # (3*fs, H, W)
+    """oldest->newest (H,W,3*ncam) blocks -> (1, 3*ncam*fs, H, W) uint8 tensor."""
+    stacked = np.concatenate(list(frame_buf), axis=-1)     # (H, W, 3*ncam*fs)
+    stacked = np.transpose(stacked, (2, 0, 1))             # (3*ncam*fs, H, W)
     return torch.from_numpy(np.ascontiguousarray(stacked)).unsqueeze(0).to(device)
 
 
@@ -773,10 +897,14 @@ def main() -> int:
                else float(norm_stats.get("cp_selection_temperature", 1.0)))
 
     frame_stack = int(env_cfg.get("frame_stack", 2))
-    cams = tuple(env_cfg.get("camera_streams", ["images1"]))
+    cams = tuple(norm_stats.get("camera_streams",
+                                env_cfg.get("camera_streams", ["images1"])))
     image_h = int(env_cfg.get("image_height", 240))
     image_w = int(env_cfg.get("image_width", 320))
     in_channels = 3 * len(cams) * frame_stack
+    cam_ids = camera_ids_from_streams(cams)
+    topic_camera_ids = resolve_topic_camera_ids(args.camera_topics,
+                                                args.topic_camera_ids)
 
     # EEF (x, y) conditioning: present only for runs trained with --cond-eef-xy.
     # cond_min/cond_max are the TRAINING workspace bounds; the live proprio must
@@ -835,7 +963,8 @@ def main() -> int:
           f"({getattr(sys.modules.get(WidowXClient.__module__), '__file__', '?')})")
 
     env_params = build_env_params(args, WidowXConfigs)
-    print(f"Camera topics: {args.camera_topics}")
+    print(f"Camera topics: {args.camera_topics} -> dataset camera ids "
+          f"{topic_camera_ids}; policy reads {cam_ids}")
     print(f"action_mode={args.action_mode} lock_z={args.lock_z} "
           f"fixed_z_height={args.fixed_z_height} move_duration={args.step_duration}")
 
@@ -944,17 +1073,6 @@ def main() -> int:
     # --- warm up the frame buffer -------------------------------------------
     frame_buf = collections.deque(maxlen=frame_stack)
 
-    def grab_frame(retries: int = 50) -> np.ndarray:
-        for _ in range(retries):
-            obs = client.get_observation()
-            if obs is not None:
-                try:
-                    return extract_blue_frame(obs)
-                except RuntimeError:
-                    pass
-            time.sleep(0.2)
-        raise RuntimeError("no observation from server after retries (server down?)")
-
     def grab_obs(retries: int = 50):
         for _ in range(retries):
             obs = client.get_observation()
@@ -967,23 +1085,30 @@ def main() -> int:
     if exposure_gains is not None:
         print(f"[match-exposure] per-channel gains RGB={exposure_gains}")
 
+    def policy_frames(raw_obs) -> np.ndarray:
+        return build_stack_frame(raw_obs, cam_ids, topic_camera_ids,
+                                 (image_h, image_w), gains=exposure_gains)
+
+    def raw_frame(raw_obs) -> np.ndarray:
+        return frame_for_camera(raw_obs, cam_ids[0], topic_camera_ids)
+
     first_obs = grab_obs()
-    first = extract_blue_frame(first_obs)
-    print(f"Blue frame: raw {first.shape}")
+    first = policy_frames(first_obs)
+    print(f"Policy cameras {cam_ids} (topics {args.camera_topics} -> ids "
+          f"{topic_camera_ids}); stacked frame {first.shape}")
     for _ in range(frame_stack):
-        frame_buf.append(preprocess(first, (image_h, image_w), gains=exposure_gains))
+        frame_buf.append(first)
 
     # --- dry run -------------------------------------------------------------
     if args.dry_run:
-        import cv2
         args.dump_dir.mkdir(parents=True, exist_ok=True)
         print(f"DRY RUN: dumping {args.dry_run_steps} frames to {args.dump_dir} "
               f"(no step_action). Confirm the T renders RED.")
         for i in range(args.dry_run_steps):
             raw_obs = grab_obs()
-            raw = extract_blue_frame(raw_obs)
-            np.save(args.dump_dir / f"raw_{i:03d}.npy", np.ascontiguousarray(raw))
-            frame_buf.append(preprocess(raw, (image_h, image_w), gains=exposure_gains))
+            np.save(args.dump_dir / f"raw_{i:03d}.npy",
+                    np.ascontiguousarray(raw_frame(raw_obs)))
+            frame_buf.append(policy_frames(raw_obs))
             obs_u8 = stack_to_tensor(frame_buf, device)
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
                                cond=make_cond(raw_obs), inference=args.inference,
@@ -991,8 +1116,7 @@ def main() -> int:
                                langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
                                dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
             act = unnormalize(na, act_min, act_max, norm_range)
-            cv2.imwrite(str(args.dump_dir / f"fed_{i:03d}.png"),
-                        cv2.cvtColor(list(frame_buf)[-1], cv2.COLOR_RGB2BGR))
+            save_fed_png(args.dump_dir / f"fed_{i:03d}", list(frame_buf)[-1], cam_ids)
             print(f"[{i:03d}] norm={np.round(na, 3)} -> action(dx,dy)={np.round(act, 4)}")
             time.sleep(args.step_duration)
         client.stop()
@@ -1014,8 +1138,8 @@ def main() -> int:
         for name, (ux, uy) in phases:
             for _ in range(args.calibrate_reps):
                 raw_obs = grab_obs()
-                raw = extract_blue_frame(raw_obs)
-                np.save(args.log_dir / f"raw/{step:04d}.npy", np.ascontiguousarray(raw))
+                np.save(args.log_dir / f"raw/{step:04d}.npy",
+                        np.ascontiguousarray(raw_frame(raw_obs)))
                 act_xy = np.array([ux, uy], np.float64) * args.calibrate_step
                 cur_x = eef_x_from_obs(raw_obs)
                 act_xy2, floored = apply_approach_floor(act_xy, cur_x, approach_floor_x)
@@ -1044,7 +1168,6 @@ def main() -> int:
     # --- forensic logging ----------------------------------------------------
     log_fh = None
     if args.log_dir is not None:
-        import cv2
         (args.log_dir / "raw").mkdir(parents=True, exist_ok=True)
         (args.log_dir / "fed").mkdir(parents=True, exist_ok=True)
         log_fh = (args.log_dir / "steps.jsonl").open("w")
@@ -1060,8 +1183,8 @@ def main() -> int:
     try:
         for step in range(args.steps):
             raw_obs = grab_obs()
-            raw = extract_blue_frame(raw_obs)
-            frame_buf.append(preprocess(raw, (image_h, image_w), gains=exposure_gains))
+            raw = raw_frame(raw_obs)
+            frame_buf.append(policy_frames(raw_obs))
             obs_u8 = stack_to_tensor(frame_buf, device)
 
             na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
@@ -1115,11 +1238,10 @@ def main() -> int:
                   f"env_action={np.round(env_action, 5)}")
 
             if log_fh is not None:
-                import cv2
                 np.save(args.log_dir / "raw" / f"{step:04d}.npy",
                         np.ascontiguousarray(raw))
-                cv2.imwrite(str(args.log_dir / "fed" / f"{step:04d}.png"),
-                            cv2.cvtColor(list(frame_buf)[-1], cv2.COLOR_RGB2BGR))
+                save_fed_png(args.log_dir / "fed" / f"{step:04d}",
+                             list(frame_buf)[-1], cam_ids)
                 st = raw_obs.get("state")
                 log_fh.write(json.dumps({
                     "step": step,

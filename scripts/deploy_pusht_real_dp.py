@@ -15,14 +15,25 @@ bit-for-bit. Only the policy differs:
 
 Weights: denoiser_ema.pt (default) or denoiser.pt (--no-ema).
 
+Cameras: driven by the checkpoint. norm_stats["camera_streams"] is ("video1",)
+for the blue-only lines (g01/g02/g03) and ("video0", "video1") for the bothcam
+line (g04); the live stack is built in that same camera order, so both work
+without a flag. The topics are registered in the collection's order (D435 then
+blue) and each camera is read from its POSITION in that list -- see
+deploy_pusht_real.frame_for_camera. On a rig without the D435:
+`--camera-topics /blue/image_raw --topic-camera-ids 1`.
+
 Usage (server already up):
 
     python scripts/deploy_pusht_real_dp.py \
-        --seed-dir checkpoints/pusht_real_dp/d03_vpred_s11_dropzero \
+        --seed-dir checkpoints/pusht_real_dp_2026_07/g01_resnet18_s11_350k \
         --device cpu --dry-run
     python scripts/deploy_pusht_real_dp.py \
-        --seed-dir checkpoints/pusht_real_dp/d03_vpred_s11_dropzero \
-        --device cpu --steps 200 --log-dir results/run_dp
+        --seed-dir checkpoints/pusht_real_dp_2026_07/g01_resnet18_s11_350k \
+        --device cpu --steps 700 --log-dir results/run_dp
+
+--steps: demos in the 2026-07 collection run 183-998 steps (mean 608) at the
+default 0.05 s period, so 200 is a third of a demo -- raise it for a real trial.
 """
 
 from __future__ import annotations
@@ -66,7 +77,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--widowx-envs-path", type=Path, default=None,
                    help="OPTIONAL path prepended to sys.path before importing "
                         "widowx_envs (see deploy_pusht_real.py).")
-    p.add_argument("--camera-topics", nargs="+", default=d.CAMERA_TOPICS)
+    p.add_argument("--camera-topics", nargs="+", default=d.CAMERA_TOPICS,
+                   help="ROS topics, registered in THIS order. Default = the "
+                        "order the training data was collected in "
+                        f"({d.DATASET_CAMERA_TOPICS}).")
+    p.add_argument("--topic-camera-ids", nargs="+", type=int, default=None,
+                   help="dataset camera id of each --camera-topics entry "
+                        "(default 0,1,...). The checkpoint's camera_streams "
+                        "(video1 -> id 1) are resolved through this map, so a "
+                        "blue-only rig needs `--camera-topics /blue/image_raw "
+                        "--topic-camera-ids 1`.")
 
     # --- service image geometry (confirmed-working values) ------------------
     p.add_argument("--im-size", type=int, default=480, help="service image height")
@@ -74,8 +94,9 @@ def parse_args() -> argparse.Namespace:
 
     # --- control -------------------------------------------------------------
     p.add_argument("--steps", type=int, default=200, help="max control steps")
-    p.add_argument("--step-duration", type=float, default=0.1,
-                   help="control period; also used as env move_duration")
+    p.add_argument("--step-duration", type=float, default=d.STEP_DURATION,
+                   help="control period; also used as env move_duration. Default "
+                        "is the collection's move_duration (20 Hz).")
     p.add_argument("--non-blocking", action="store_true",
                    help="the working reference uses blocking=True; this opts out")
     p.add_argument("--action-mode", default="2trans",
@@ -143,6 +164,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sample-seed", type=int, default=None,
                    help="if set, torch.manual_seed before sampling for a "
                         "reproducible dry run.")
+
+    # --- exposure matching (OFF by default) ---------------------------------
+    # The 2026-07 collection was captured in the CURRENT scene, so the live
+    # frames already sit at the training white point and no gain is wanted. The
+    # flag stays available for the older checkpoints, whose training scene was
+    # measured ~16% brighter than the deploy one.
+    p.add_argument("--match-exposure", action="store_true",
+                   help="OFF by default. Lift the live frame to the training "
+                        "white point with per-channel gains (see "
+                        "--exposure-gains). Only meaningful for checkpoints "
+                        "trained on a differently-lit collection.")
+    p.add_argument("--exposure-gains", type=float, nargs=3, default=[1.22, 1.18, 1.17],
+                   metavar=("R", "G", "B"),
+                   help="per-channel gains applied only with --match-exposure.")
 
     # --- diagnostics ---------------------------------------------------------
     p.add_argument("--dry-run", action="store_true",
@@ -225,12 +260,23 @@ def main() -> int:
 
     frame_stack = int(norm_stats.get("frame_stack", env_cfg.get("frame_stack", 2)))
     cams = tuple(norm_stats.get("camera_streams",
-                                env_cfg.get("camera_streams", ["images1"])))
+                                env_cfg.get("camera_streams", ["video1"])))
     image_hw = norm_stats.get("image_hw",
                               (int(env_cfg.get("image_height", 240)),
                                int(env_cfg.get("image_width", 320))))
     image_h, image_w = int(image_hw[0]), int(image_hw[1])
     in_channels = int(norm_stats.get("in_channels", 3 * len(cams) * frame_stack))
+    # One camera (`--video-camera 1`, the blue-only lines) or two
+    # (`--video-cameras 0 1`, the bothcam line) -- the checkpoint decides, and
+    # the live stack is built in the same camera order the dataset used.
+    cam_ids = d.camera_ids_from_streams(cams)
+    topic_camera_ids = d.resolve_topic_camera_ids(args.camera_topics,
+                                                  args.topic_camera_ids)
+    expected_channels = 3 * len(cam_ids) * frame_stack
+    if expected_channels != in_channels:
+        raise SystemExit(
+            f"checkpoint says in_channels={in_channels} but its camera_streams "
+            f"{cams} x frame_stack {frame_stack} imply {expected_channels}.")
 
     # EEF (x,y) conditioning mirror (pixels-only for the DP batch -> cond None).
     cond_dim = int(norm_stats.get("cond_dim", 0))
@@ -263,8 +309,8 @@ def main() -> int:
         torch.manual_seed(args.sample_seed)
 
     print(f"Loaded denoiser ({'raw' if args.no_ema else 'EMA'}) from {seed_dir}")
-    print(f"  frame_stack={frame_stack} cameras={cams} model_hw=({image_h},{image_w}) "
-          f"in_channels={in_channels}")
+    print(f"  frame_stack={frame_stack} cameras={cams} (ids {cam_ids}) "
+          f"model_hw=({image_h},{image_w}) in_channels={in_channels}")
     print(f"  sampler={args.sampler}"
           + (f" ({ddim_steps} steps, eta={ddim_eta})" if args.sampler == "ddim" else "")
           + f"  pred={dp.get('prediction_type')}  T={dp.get('num_train_timesteps')}  device={device}")
@@ -293,7 +339,8 @@ def main() -> int:
           f"({getattr(sys.modules.get(WidowXClient.__module__), '__file__', '?')})")
 
     env_params = d.build_env_params(args, WidowXConfigs)
-    print(f"Camera topics: {args.camera_topics}")
+    print(f"Camera topics: {args.camera_topics} -> dataset camera ids "
+          f"{topic_camera_ids}; policy reads {cam_ids}")
     print(f"action_mode={args.action_mode} lock_z={args.lock_z} "
           f"fixed_z_height={args.fixed_z_height} move_duration={args.step_duration}")
 
@@ -304,8 +351,11 @@ def main() -> int:
         reuse_existing_env = d.widowx_server_has_live_env(client, max_wait_sec=1.0)
         if reuse_existing_env:
             print("[INFO] Server already has a live env; reusing it (skipping init()).")
-            print("[WARN] The live env keeps its FIRST env_params; restart the "
-                  "server if action_mode/lock_z/etc. must change.")
+            print("[WARN] The live env keeps its FIRST env_params -- INCLUDING its "
+                  "camera_topics. If it was started with a different topic list "
+                  "than --camera-topics, the camera ids above are wrong and the "
+                  "policy is fed the wrong view: restart the server or pass "
+                  "--no-reuse-existing-env.")
 
     if reuse_existing_env:
         d.set_reqrep_timeout_ms(client, max(1, args.rpc_timeout_ms))
@@ -386,28 +436,37 @@ def main() -> int:
             time.sleep(0.2)
         raise RuntimeError("no observation from server after retries")
 
+    exposure_gains = args.exposure_gains if args.match_exposure else None
+    if exposure_gains is not None:
+        print(f"[match-exposure] per-channel gains RGB={exposure_gains}")
+
+    def policy_frames(raw_obs):
+        return d.build_stack_frame(raw_obs, cam_ids, topic_camera_ids,
+                                   (image_h, image_w), gains=exposure_gains)
+
+    def raw_frame(raw_obs):
+        return d.frame_for_camera(raw_obs, cam_ids[0], topic_camera_ids)
+
     first_obs = grab_obs()
-    first = d.extract_blue_frame(first_obs)
-    print(f"Blue frame: raw {first.shape}")
+    first = policy_frames(first_obs)
+    print(f"Stacked frame per timestep: {first.shape} (cameras {cam_ids})")
     for _ in range(frame_stack):
-        frame_buf.append(d.preprocess(first, (image_h, image_w)))
+        frame_buf.append(first)
 
     # --- dry run -------------------------------------------------------------
     if args.dry_run:
-        import cv2
         args.dump_dir.mkdir(parents=True, exist_ok=True)
         print(f"DRY RUN: dumping {args.dry_run_steps} frames to {args.dump_dir} "
               f"(no step_action). Confirm the T renders RED.")
         for i in range(args.dry_run_steps):
             raw_obs = grab_obs()
-            raw = d.extract_blue_frame(raw_obs)
-            np.save(args.dump_dir / f"raw_{i:03d}.npy", np.ascontiguousarray(raw))
-            frame_buf.append(d.preprocess(raw, (image_h, image_w)))
+            np.save(args.dump_dir / f"raw_{i:03d}.npy",
+                    np.ascontiguousarray(raw_frame(raw_obs)))
+            frame_buf.append(policy_frames(raw_obs))
             obs_u8 = d.stack_to_tensor(frame_buf, device)
             na = sample(obs_u8, raw_obs)
             act = d.unnormalize(na, act_min, act_max, norm_range)
-            cv2.imwrite(str(args.dump_dir / f"fed_{i:03d}.png"),
-                        cv2.cvtColor(list(frame_buf)[-1], cv2.COLOR_RGB2BGR))
+            d.save_fed_png(args.dump_dir / f"fed_{i:03d}", list(frame_buf)[-1], cam_ids)
             print(f"[{i:03d}] norm={np.round(na, 3)} -> action(dx,dy)={np.round(act, 4)}")
             time.sleep(args.step_duration)
         client.stop()
@@ -417,7 +476,6 @@ def main() -> int:
     # --- forensic logging ----------------------------------------------------
     log_fh = None
     if args.log_dir is not None:
-        import cv2
         (args.log_dir / "raw").mkdir(parents=True, exist_ok=True)
         (args.log_dir / "fed").mkdir(parents=True, exist_ok=True)
         log_fh = (args.log_dir / "steps.jsonl").open("w")
@@ -433,8 +491,8 @@ def main() -> int:
     try:
         for step in range(args.steps):
             raw_obs = grab_obs()
-            raw = d.extract_blue_frame(raw_obs)
-            frame_buf.append(d.preprocess(raw, (image_h, image_w)))
+            raw = raw_frame(raw_obs)
+            frame_buf.append(policy_frames(raw_obs))
             obs_u8 = d.stack_to_tensor(frame_buf, device)
 
             na = sample(obs_u8, raw_obs)
@@ -476,11 +534,10 @@ def main() -> int:
                   f"env_action={np.round(env_action, 5)}")
 
             if log_fh is not None:
-                import cv2
                 np.save(args.log_dir / "raw" / f"{step:04d}.npy",
                         np.ascontiguousarray(raw))
-                cv2.imwrite(str(args.log_dir / "fed" / f"{step:04d}.png"),
-                            cv2.cvtColor(list(frame_buf)[-1], cv2.COLOR_RGB2BGR))
+                d.save_fed_png(args.log_dir / "fed" / f"{step:04d}",
+                               list(frame_buf)[-1], cam_ids)
                 st = raw_obs.get("state")
                 log_fh.write(json.dumps({
                     "step": step,
