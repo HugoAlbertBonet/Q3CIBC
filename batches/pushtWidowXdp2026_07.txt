@@ -1,0 +1,72 @@
+# Push-T WidowX Diffusion-Policy — NEW hand-collected 2026-07 dataset.
+#
+# Port of batches/pushtWidowXdpCam1.txt + pushtWidowXdpBothCam.txt onto
+# data/pusht_2026_07_zarr.zip (the hand-collected re-capture converted with
+# scripts/convert_bridge_to_zarr_video.py), matching the same three-flag
+# retarget the libero batches got:
+#   --dataset          /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip
+#   --output-root      /project2/biyik_1165/halbertb/pusht_real_dp_2026_07
+#   --frame-cache-dir  /project2/biyik_1165/halbertb/pusht_frame_cache
+# No trainer code change was needed: scripts/train_pusht_real_dp.py and
+# PushTWidowXVideoDataset are archive-agnostic, and the frame-cache tag embeds
+# the archive basename, so the new caches sit beside the old ones without
+# colliding.
+#
+# NEW vs OLD archive (measured on the zarr):
+#   episodes      151      vs 150
+#   transitions   91,757   vs 72,988   (+26%)
+#   planar range  +/-0.008 vs +/-0.008 (identical VR step clip)
+#   zero-action   24.09%   vs 24.07%   -> the idle spike is UNCHANGED, so
+#                                          --idle-filter drop_zero still applies
+#   cameras       0 = D435, 1 = blue scene cam (the view the deploy client reads)
+#   video         640x480 h264 @ 10 fps, one frame per timestep
+# The source capture stored only actions + robot transforms, so robot_joint /
+# *_vel / stage / timestamp are absent — none of which this trainer reads.
+#
+# Fixed recipe (all lines, = the best pushing_pixels DP recipe): v-prediction,
+# drop_zero idle filter, T=100 cosine, DenseResnet 1024x1 head, EMA 0.999,
+# batch 128, --val-frac 0.1 --val-seed 0 (10% of EPISODES held out; the same
+# val-seed across all four lines => identical held-out episodes => the live
+# "[val] ..." action-MAE is comparable across the sweep).
+#
+# STEP BUDGETS differ per line and are set by the 48h SLURM cap, because
+# CosineAnnealingLR uses T_max=--steps and the trainer has no resume path: a run
+# killed at the wall is stopped mid-schedule with the LR half-annealed. Measured
+# throughput for the pretrained ResNet-18 at batch 128 on one camera is
+# 2.29 steps/s (see batches/pushtWidowXdpCam1_resnet350k.txt), i.e. 350k ~= 42.4h.
+# Two cameras put 4 sub-images (2 cams x frame_stack 2) through the trunk instead
+# of 2, ~2x the per-step encoder cost -> ~1.15 steps/s, so the bothcam line gets
+# 175k (~42h). conv_maxpool is far cheaper than ResNet-18 and keeps the 750k
+# budget the pushingPixelsDPD convergence ladder showed it needs.
+#
+# PREREQUISITE — build BOTH frame caches for the NEW archive before submitting,
+# on a CPU node. 91,757 frames at 240x320 is ~21 GB per camera (~42 GB total),
+# and a batch of GPU jobs idling on the build burns allocation:
+#   python scripts/prepare_pusht_video_cache.py --camera 1 \
+#     --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip \
+#     --cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache
+#   python scripts/prepare_pusht_video_cache.py --camera 0 \
+#     --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip \
+#     --cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache
+#
+# --workers 4 matches submit_experiments.sh's --cpus-per-task=4.
+#
+# Submit:  ./submit_experiments.sh batches/pushtWidowXdp2026_07.txt
+
+# ── g01 PRIMARY: camera 1, ImageNet ResNet-18, seed 11, 350k.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag g01_resnet18_s11_350k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --steps 350000
+
+# ── g02 seed repeat of g01. DP single-seed success bounces (pushingPixelsDPD
+#    showed 83-95%), so one seed is not a number.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag g02_resnet18_s29_350k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --steps 350000
+
+# ── g03 CONTROL: camera 1, conv_maxpool encoder (the d03/e03 architecture),
+#    750k. Isolates what the pretrained ResNet buys on the new collection.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag g03_conv_s11_750k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind conv_maxpool --steps 750000
+
+# ── g04 PROBE: both cameras (0 + 1), ImageNet ResNet-18, seed 11, 175k.
+#    Offline generalization read only — deploy_pusht_real_dp.py still reads a
+#    SINGLE camera from the server, so a two-camera checkpoint needs a
+#    two-camera deploy client before it can drive the arm. Question it answers:
+#    does the second view lift the held-out MAE?
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag g04_resnet18_bothcam_s11_175k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --steps 175000
