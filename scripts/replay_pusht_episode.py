@@ -15,10 +15,14 @@ Purpose: split the two failure modes that a live rollout confounds.
      plot expert vs shadow action per timestep.
 
 --policy picks the shadow family: `dp` samples the DP denoiser
-(deploy_pusht_real_dp.dp_sample_action, --sampler/--ddim-*), `q3c` runs the
-energy model's CP selection (deploy_pusht_real.select_action, --cp-selection /
---inference / --refine-iters, EEF conditioning included). `auto` (default) reads
-the weight files in --seed-dir.
+(deploy_pusht_real_dp.dp_sample_action), `q3c` runs the energy model's CP
+selection (deploy_pusht_real.select_action, EEF conditioning included). `auto`
+(default) reads the weight files in --seed-dir.
+
+--variant is repeatable and runs SEVERAL inference configs of that checkpoint
+per step, all against the same frame stack, then plots them together. That is
+the only fair comparison: a separate replay per config gives each one a
+different scene history, so their errors are not comparable.
 
 Everything policy-side is imported from scripts/deploy_pusht_real_dp.py and
 scripts/deploy_pusht_real.py (build_dp_policy, dp_sample_action, build_models,
@@ -39,25 +43,37 @@ Deviations from the deploy client, both deliberate and both printed at startup:
     of the mean-of-demos asset, so the arm starts where the demo started.
   * The policy's action is recorded, not sent; the expert's is sent.
 
+The episode comes from a committed BUNDLE, not the 2 GB archive: the robot-side
+machine only needs data/replay_episodes/ep<NNN>/ (actions.npy, eef.npy, one
+cam<N>.png per camera, meta.json), written by scripts/export_replay_episode.py
+wherever the archive lives. --archive still reads the zip directly if you have
+it.
+
 Usage (server already up):
 
     # dry run: no motion, but full alignment + shadow policy + plot
     python scripts/replay_pusht_episode.py \
         --seed-dir checkpoints/pusht_real_dp_2026_07/g01_resnet18_s11_350k \
-        --archive data/pusht_2026_07_zarr.zip --episode 0 \
-        --device cpu --sampler ddim --dry-run --log-dir results/replay_ep0
+        --episode 0 --device cpu --sampler ddim \
+        --dry-run --log-dir results/replay_ep0
 
     # live replay
     python scripts/replay_pusht_episode.py \
         --seed-dir checkpoints/pusht_real_dp_2026_07/g01_resnet18_s11_350k \
-        --archive data/pusht_2026_07_zarr.zip --episode 0 \
-        --device cpu --sampler ddim --log-dir results/replay_ep0
+        --episode 0 --device cpu --sampler ddim --log-dir results/replay_ep0
 
-    # same episode, Q3C energy model in the shadow instead
+    # Q3C, four inference configs compared in ONE replay
     python scripts/replay_pusht_episode.py \
         --seed-dir checkpoints/pusht_real_combinedv2/seed_0011 --policy q3c \
-        --archive data/pusht_2026_07_zarr.zip --episode 0 \
-        --device cpu --inference langevin --log-dir results/replay_ep0_q3c
+        --episode 70 --device cpu --shadow-every 4 \
+        --variant argmax \
+        --variant dfo:iters=50 \
+        --variant dfo:iters=200,label=dfo200 \
+        --variant langevin:iters=50 \
+        --log-dir results/replay_ep70_q3c
+
+    # read the archive directly (only where the zip is present)
+    python scripts/replay_pusht_episode.py ... --archive data/pusht_2026_07_zarr.zip
 """
 
 from __future__ import annotations
@@ -151,6 +167,67 @@ def load_episode_frames(archive_path: Path, episode: int, camera: int,
     return out
 
 
+def load_archive_metadata(archive_path: Path) -> dict:
+    """The archive's metadata.json, or {} if it has none."""
+    with zipfile.ZipFile(archive_path, "r") as ar:
+        for name in ar.namelist():
+            if name.endswith("metadata.json"):
+                return json.loads(ar.read(name))
+    return {}
+
+
+def load_episode_from_archive(archive_path: Path, episode: int, cameras):
+    """(actions[T,2], eef[T,3], {cam: frame0}, meta) straight from the zip."""
+    actions, eef, ends = load_lowdim(archive_path)
+    if not 0 <= episode < len(ends):
+        raise SystemExit(f"--episode must be in [0, {len(ends)}); got {episode}")
+    start = int(ends[episode - 1]) if episode > 0 else 0
+    end = int(ends[episode])
+    frames = {int(c): load_episode_frames(archive_path, episode, int(c), [0])[0]
+              for c in cameras}
+    prov = (load_archive_metadata(archive_path).get("provenance") or {})
+    meta = {"episode": episode, "source_archive": archive_path.name,
+            "rows": [start, end], "n_steps": end - start,
+            "move_duration": prov.get("move_duration")}
+    return (np.asarray(actions[start:end, :2], np.float64),
+            np.asarray(eef[start:end, :3], np.float64), frames, meta)
+
+
+def load_episode_bundle(bundle_dir: Path, cameras):
+    """(actions[T,2], eef[T,3], {cam: frame0}, meta) from an exported bundle.
+
+    Bundles are written by scripts/export_replay_episode.py and committed under
+    data/replay_episodes/, so the robot-side machine never needs the ~2 GB
+    archive -- only the expert actions, the demo EEF trace and one PNG per
+    camera.
+    """
+    import cv2
+
+    if not bundle_dir.is_dir():
+        raise SystemExit(
+            f"no episode bundle at {bundle_dir}. Either export it where the "
+            f"archive lives (python scripts/export_replay_episode.py --episode "
+            f"N) or point --archive at the zip.")
+    actions = np.asarray(np.load(bundle_dir / "actions.npy"), np.float64)
+    eef = np.asarray(np.load(bundle_dir / "eef.npy"), np.float64)
+    meta_path = bundle_dir / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
+
+    frames = {}
+    for cam in cameras:
+        png = bundle_dir / f"cam{int(cam)}.png"
+        if not png.is_file():
+            raise SystemExit(
+                f"{png} missing: the bundle holds cameras "
+                f"{meta.get('cameras', 'unknown')}. Re-export with --cameras, or "
+                "restrict --align-cameras.")
+        img = cv2.imread(str(png), cv2.IMREAD_COLOR)
+        if img is None:
+            raise SystemExit(f"could not read {png}")
+        frames[int(cam)] = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    return actions, eef, frames, meta
+
+
 def resolve_backend(policy: str, seed_dir: Path) -> str:
     """"auto" -> "dp" | "q3c", decided by which weight files the run wrote."""
     if policy != "auto":
@@ -169,6 +246,84 @@ def resolve_backend(policy: str, seed_dir: Path) -> str:
     raise SystemExit(
         f"no policy weights in {seed_dir}: expected denoiser{'{_ema,}'}.pt (DP) "
         f"or control_point_generator{'{_ema,}'}.pt + q_estimator*.pt (Q3C).")
+
+
+# ---------------------------------------------------------------------------
+# Shadow variants
+# ---------------------------------------------------------------------------
+# A variant is one inference configuration of the loaded checkpoint. Several can
+# run per step against the SAME frame stack, which is the only way to compare
+# them fairly: rerunning the replay gives each config a different scene history.
+#
+#   Q3C   argmax | sample:temp=1.0
+#         dfo:iters=100,noise=0.1,decay=0.8
+#         langevin:iters=50,lr0=0.1,lr1=1e-5
+#   DP    ddpm | ddim:steps=10,eta=0.0
+#
+# `label=` renames the series in the plot; everything else defaults to the
+# corresponding CLI flag, so `dfo` alone means "dfo at --refine-iters".
+_VARIANT_KINDS = {
+    "q3c": {"argmax": ("temp",), "sample": ("temp",),
+            "dfo": ("iters", "noise", "decay"),
+            "langevin": ("iters", "lr0", "lr1")},
+    "dp": {"ddpm": (), "ddim": ("steps", "eta")},
+}
+
+
+def parse_variant(spec: str, backend: str, args) -> dict:
+    """"langevin:iters=50" -> a fully-resolved variant dict."""
+    kind, _, rest = spec.partition(":")
+    kind = kind.strip()
+    known = _VARIANT_KINDS[backend]
+    if kind not in known:
+        raise SystemExit(
+            f"--variant {spec!r}: unknown kind {kind!r} for a {backend} "
+            f"checkpoint; expected one of {sorted(known)}")
+    kv = {}
+    for part in (p for p in rest.split(",") if p.strip()):
+        if "=" not in part:
+            raise SystemExit(
+                f"--variant {spec!r}: {part!r} is not key=value")
+        k, v = part.split("=", 1)
+        kv[k.strip()] = v.strip()
+    label = kv.pop("label", spec)
+    unknown = set(kv) - set(known[kind])
+    if unknown:
+        raise SystemExit(
+            f"--variant {spec!r}: {sorted(unknown)} not valid for {kind!r} "
+            f"(accepts {list(known[kind])})")
+
+    v = {"label": label, "kind": kind}
+    if backend == "dp":
+        v["steps"] = int(kv.get("steps", args.ddim_steps or 0)) or None
+        v["eta"] = (float(kv["eta"]) if "eta" in kv else args.ddim_eta)
+    else:
+        # inference="argmax"/"sample" ignores the refinement path; cp_selection
+        # is what picks argmax-vs-softmax there (see select_action).
+        v["inference"] = kind
+        v["cp_selection"] = kind if kind in ("argmax", "sample") else "argmax"
+        v["temp"] = float(kv.get("temp", args.cp_temperature or 1.0))
+        v["iters"] = int(kv.get("iters", args.refine_iters))
+        v["noise"] = float(kv.get("noise", args.dfo_noise_init))
+        v["decay"] = float(kv.get("decay", args.dfo_noise_decay))
+        v["lr0"] = float(kv.get("lr0", args.langevin_lr_init))
+        v["lr1"] = float(kv.get("lr1", args.langevin_lr_final))
+    return v
+
+
+def describe_variant(v: dict, backend: str) -> str:
+    if backend == "dp":
+        return (f"{v['label']}: {v['kind']}"
+                + (f" ({v['steps']} steps, eta={v['eta']})"
+                   if v["kind"] == "ddim" else ""))
+    if v["kind"] in ("argmax", "sample"):
+        return (f"{v['label']}: CP-cloud {v['kind']}"
+                + (f" (temp={v['temp']})" if v["kind"] == "sample" else ""))
+    if v["kind"] == "dfo":
+        return (f"{v['label']}: dfo x{v['iters']} "
+                f"(noise {v['noise']}, decay {v['decay']})")
+    return (f"{v['label']}: langevin x{v['iters']} "
+            f"(lr {v['lr0']} -> {v['lr1']})")
 
 
 # ---------------------------------------------------------------------------
@@ -250,77 +405,121 @@ def wait_for_alignment(grab_obs, live_frame, ref_frames: dict[int, np.ndarray],
 # Plot
 # ---------------------------------------------------------------------------
 
+def variant_stats(expert, policy_v):
+    """Per-axis MAE / corr / sign agreement of one variant against the expert."""
+    valid = np.isfinite(policy_v).all(axis=1)
+    out = {"n": int(valid.sum()), "mae": np.array([np.nan, np.nan]),
+           "corr": np.array([np.nan, np.nan]), "sign": np.array([np.nan, np.nan])}
+    if not valid.any():
+        return out, valid
+    e, p = expert[valid], policy_v[valid]
+    out["mae"] = np.abs(p - e).mean(axis=0)
+    for i in range(2):
+        if e[:, i].std() > 1e-9 and p[:, i].std() > 1e-9:
+            out["corr"][i] = np.corrcoef(e[:, i], p[:, i])[0, 1]
+        out["sign"][i] = float((np.sign(e[:, i]) == np.sign(p[:, i])).mean())
+    return out, valid
+
+
 def plot_expert_vs_policy(expert, policy, executed, eef_meas, eef_demo,
-                          out_path: Path, title: str) -> None:
-    """expert/policy/executed: (T,2) metres. eef_*: (T,2) or None."""
+                          labels, out_path: Path, title: str) -> None:
+    """expert/executed: (T,2) metres. policy: (T,V,2). eef_*: (T,2) or None."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     T = len(expert)
     t = np.arange(T)
-    valid = np.isfinite(policy).all(axis=1)
-    err = policy[valid] - expert[valid]
-    mae = np.abs(err).mean(axis=0) if valid.any() else np.array([np.nan, np.nan])
+    V = policy.shape[1]
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    stats = [variant_stats(expert, policy[:, v]) for v in range(V)]
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 9))
 
     for ax, ax_i, name in ((axes[0, 0], 0, "dx"), (axes[0, 1], 1, "dy")):
-        ax.plot(t, expert[:, ax_i] * 1000, lw=1.2, label="expert (executed)")
-        ax.plot(t[valid], policy[valid, ax_i] * 1000, lw=1.0, alpha=0.85,
-                label="policy (shadow)")
+        ax.plot(t, expert[:, ax_i] * 1000, lw=1.4, color="k",
+                label="expert (executed)")
+        for v in range(V):
+            st, valid = stats[v]
+            if not valid.any():
+                continue
+            ax.plot(t[valid], policy[valid, v, ax_i] * 1000, lw=1.0, alpha=0.8,
+                    color=colors[v % len(colors)],
+                    label=f"{labels[v]} (MAE {st['mae'][ax_i] * 1000:.2f} mm)")
         ax.axhline(0.0, color="k", lw=0.5)
         ax.set_xlabel("timestep")
         ax.set_ylabel(f"{name} [mm]")
-        ax.set_title(f"{name}: MAE {mae[ax_i] * 1000:.2f} mm")
-        ax.legend(fontsize=8)
+        ax.set_title(name)
+        ax.legend(fontsize=7)
         ax.grid(alpha=0.3)
 
     ax = axes[1, 0]
     exp_path = np.cumsum(executed, axis=0)
-    ax.plot(exp_path[:, 0] * 100, exp_path[:, 1] * 100, lw=1.5,
+    ax.plot(exp_path[:, 0] * 100, exp_path[:, 1] * 100, lw=1.6, color="k",
             label="expert commands (cumsum)")
-    if valid.any():
+    for v in range(V):
+        _, valid = stats[v]
+        if not valid.any():
+            continue
         # Zero-order hold across un-sampled steps (--shadow-every > 1), so the
         # hypothetical path is not artificially shortened by the missing draws.
         idx = np.where(valid, np.arange(T), 0)
-        pol = policy[np.maximum.accumulate(idx)]
+        pol = policy[np.maximum.accumulate(idx), v]
         pol[: int(np.argmax(valid))] = 0.0
         pol_path = np.cumsum(pol, axis=0)
-        ax.plot(pol_path[:, 0] * 100, pol_path[:, 1] * 100, lw=1.2, alpha=0.85,
-                label="policy commands (cumsum, hypothetical)")
+        ax.plot(pol_path[:, 0] * 100, pol_path[:, 1] * 100, lw=1.1, alpha=0.8,
+                color=colors[v % len(colors)], label=f"{labels[v]} (cumsum)")
     if eef_meas is not None and len(eef_meas):
         m = eef_meas - eef_meas[0]
-        ax.plot(m[:, 0] * 100, m[:, 1] * 100, lw=1.2, ls="--",
+        ax.plot(m[:, 0] * 100, m[:, 1] * 100, lw=1.2, ls="--", color="dimgray",
                 label="measured EEF (live)")
     if eef_demo is not None and len(eef_demo):
         dm = eef_demo - eef_demo[0]
-        ax.plot(dm[:, 0] * 100, dm[:, 1] * 100, lw=1.2, ls=":",
+        ax.plot(dm[:, 0] * 100, dm[:, 1] * 100, lw=1.2, ls=":", color="dimgray",
                 label="measured EEF (demo)")
     ax.set_xlabel("dx from start [cm]")
     ax.set_ylabel("dy from start [cm]")
     ax.set_title("planar path")
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=7)
     ax.grid(alpha=0.3)
     ax.set_aspect("equal", adjustable="datalim")
 
     ax = axes[1, 1]
-    if valid.any():
-        lim = 1000 * max(np.abs(expert).max(), np.abs(policy[valid]).max(), 1e-6)
-        for ax_i, name, marker in ((0, "dx", "o"), (1, "dy", "x")):
-            e, p = expert[valid, ax_i] * 1000, policy[valid, ax_i] * 1000
-            corr = (np.corrcoef(e, p)[0, 1]
-                    if e.std() > 1e-9 and p.std() > 1e-9 else np.nan)
-            sign = float((np.sign(e) == np.sign(p)).mean())
-            ax.scatter(e, p, s=6, alpha=0.35, marker=marker,
-                       label=f"{name}: r={corr:.2f}, sign match={sign:.0%}")
-        ax.plot([-lim, lim], [-lim, lim], "k--", lw=0.8)
-        ax.set_xlim(-lim, lim)
-        ax.set_ylim(-lim, lim)
+    if V == 1:
+        st, valid = stats[0]
+        if valid.any():
+            lim = 1000 * max(np.abs(expert).max(),
+                             np.abs(policy[valid, 0]).max(), 1e-6)
+            for ax_i, name, marker in ((0, "dx", "o"), (1, "dy", "x")):
+                ax.scatter(expert[valid, ax_i] * 1000,
+                           policy[valid, 0, ax_i] * 1000, s=6, alpha=0.35,
+                           marker=marker,
+                           label=f"{name}: r={st['corr'][ax_i]:.2f}, "
+                                 f"sign match={st['sign'][ax_i]:.0%}")
+            ax.plot([-lim, lim], [-lim, lim], "k--", lw=0.8)
+            ax.set_xlim(-lim, lim)
+            ax.set_ylim(-lim, lim)
+            ax.legend(fontsize=8)
+        ax.set_xlabel("expert [mm]")
+        ax.set_ylabel("policy [mm]")
+        ax.set_title("per-step agreement")
+    else:
+        # Many variants: a scatter per variant is unreadable, so compare them.
+        x = np.arange(V)
+        for k, (ax_i, name) in enumerate(((0, "dx"), (1, "dy"))):
+            ax.bar(x + (k - 0.5) * 0.38,
+                   [stats[v][0]["mae"][ax_i] * 1000 for v in range(V)],
+                   width=0.38, label=name)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=7)
+        ax.set_ylabel("MAE vs expert [mm]")
+        ax.set_title("per-variant error (lower = closer to the expert)")
         ax.legend(fontsize=8)
-    ax.set_xlabel("expert [mm]")
-    ax.set_ylabel("policy [mm]")
-    ax.set_title("per-step agreement")
+        for v in range(V):
+            st = stats[v][0]
+            ax.annotate(f"r={np.nanmean(st['corr']):.2f}", (v, 0),
+                        textcoords="offset points", xytext=(0, 3),
+                        ha="center", fontsize=6)
     ax.grid(alpha=0.3)
 
     fig.suptitle(title)
@@ -355,10 +554,20 @@ def parse_args() -> argparse.Namespace:
                         "/blue/image_raw --topic-camera-ids 1 --align-cameras 1`.")
 
     # --- episode source ------------------------------------------------------
-    p.add_argument("--archive", type=Path,
-                   default=ROOT / "data" / "pusht_2026_07_zarr.zip",
-                   help="zarr_video archive the checkpoint was trained on.")
-    p.add_argument("--episode", type=int, default=0)
+    # Default: the committed bundle, so the robot machine needs no archive.
+    p.add_argument("--episode", type=int, default=70,
+                   help="archive episode index. The exported bundles are 70 "
+                        "(319 steps, shortest clean one), 112 and 140; episode "
+                        "0 is NOT a good replay (43%% idle actions and 32 "
+                        "all-zero robot_eef_pose rows).")
+    p.add_argument("--episode-dir", type=Path, default=None,
+                   help="exported bundle (actions.npy, eef.npy, cam*.png, "
+                        "meta.json). Default: data/replay_episodes/ep<NNN>. "
+                        "Build one with scripts/export_replay_episode.py.")
+    p.add_argument("--archive", type=Path, default=None,
+                   help="OPTIONAL: read the episode straight from the "
+                        "zarr_video zip instead of a bundle. Only works where "
+                        "the ~2 GB archive is present.")
     p.add_argument("--max-steps", type=int, default=None,
                    help="truncate the replay (default: the whole episode).")
     p.add_argument("--align-cameras", type=int, nargs="+", default=[0, 1],
@@ -441,6 +650,16 @@ def parse_args() -> argparse.Namespace:
                         "files in --seed-dir (denoiser*.pt -> dp, "
                         "control_point_generator*.pt -> q3c).")
 
+    p.add_argument("--variant", action="append", default=None, metavar="SPEC",
+                   help="repeatable: run SEVERAL inference configs of the same "
+                        "checkpoint per step, against the same frame stack, and "
+                        "plot them together. Q3C: argmax | sample:temp=1.0 | "
+                        "dfo:iters=100,noise=0.1,decay=0.8 | "
+                        "langevin:iters=50,lr0=0.1,lr1=1e-5. DP: ddpm | "
+                        "ddim:steps=10,eta=0.0. Add label=NAME to rename the "
+                        "series. Omitted keys fall back to the flags below. "
+                        "Default: one variant built from those flags.")
+
     # --- DP sampler knobs (deploy_pusht_real_dp.py) --------------------------
     p.add_argument("--sampler", default="ddpm", choices=["ddpm", "ddim"])
     p.add_argument("--ddim-steps", type=int, default=None)
@@ -494,21 +713,38 @@ def main() -> int:
         log_dir.mkdir(parents=True, exist_ok=True)
 
     # --- episode -------------------------------------------------------------
-    actions, eef, ends = load_lowdim(args.archive)
-    if not 0 <= args.episode < len(ends):
-        raise SystemExit(f"--episode must be in [0, {len(ends)}); got {args.episode}")
-    ep_start = int(ends[args.episode - 1]) if args.episode > 0 else 0
-    ep_end = int(ends[args.episode])
-    ep_actions = np.asarray(actions[ep_start:ep_end, :2], dtype=np.float64)
-    ep_eef = np.asarray(eef[ep_start:ep_end, :3], dtype=np.float64)
+    align_cams = [] if args.skip_alignment else sorted(
+        {int(c) for c in args.align_cameras})
+    if args.archive is not None:
+        ep_actions, ep_eef, ref_frames, ep_meta = load_episode_from_archive(
+            args.archive, args.episode, align_cams)
+        source = args.archive.name
+    else:
+        bundle = args.episode_dir or (ROOT / "data" / "replay_episodes"
+                                      / f"ep{args.episode:03d}")
+        ep_actions, ep_eef, ref_frames, ep_meta = load_episode_bundle(
+            bundle, align_cams)
+        source = f"{bundle.name} (from {ep_meta.get('source_archive', '?')})"
     n_steps = len(ep_actions)
     if args.max_steps is not None:
         n_steps = min(n_steps, int(args.max_steps))
     zero_frac = float((np.linalg.norm(ep_actions, axis=1) == 0).mean())
-    print(f"Episode {args.episode} of {args.archive.name}: rows "
-          f"[{ep_start}, {ep_end}) = {ep_end - ep_start} steps "
+    print(f"Episode {args.episode} from {source}: {len(ep_actions)} steps "
           f"(replaying {n_steps}), zero-action share {zero_frac:.1%}")
     print(f"  demo EEF start={np.round(ep_eef[0], 4)} end={np.round(ep_eef[-1], 4)}")
+    # 37 of the 151 episodes carry all-zero robot_eef_pose rows (the source
+    # capture dropped the transform on those steps). They corrupt the start pose
+    # and the plot's demo reference path, not the expert actions themselves.
+    n_zero_eef = int((np.abs(ep_eef).sum(axis=1) == 0).sum())
+    if n_zero_eef:
+        print(f"[WARN] {n_zero_eef}/{len(ep_eef)} robot_eef_pose rows in this "
+              "episode are all-zero; the demo EEF reference path is unreliable. "
+              "Episodes 70, 112 and 140 have none.")
+    rec_dt = ep_meta.get("move_duration")
+    if rec_dt is not None and abs(float(rec_dt) - args.step_duration) > 1e-9:
+        print(f"[WARN] this episode was recorded at move_duration={rec_dt}s but "
+              f"--step-duration is {args.step_duration}s: the replay will not "
+              "run at the demonstrated rate.")
 
     # --- checkpoint metadata (identical to the matching deploy client) -------
     backend = resolve_backend(args.policy, seed_dir)
@@ -584,11 +820,8 @@ def main() -> int:
         if args.sample_seed is not None:
             torch.manual_seed(args.sample_seed)
         print(f"Shadow policy: DP denoiser ({which}) from {seed_dir}")
-        print(f"  sampler={args.sampler}"
-              + (f" ({ddim_steps} steps, eta={ddim_eta})"
-                 if args.sampler == "ddim" else "")
-              + f"  pred={dpar.get('prediction_type')} "
-                f"T={dpar.get('num_train_timesteps')}")
+        print(f"  pred={dpar.get('prediction_type')} "
+              f"T={dpar.get('num_train_timesteps')}")
     else:
         cp_gen, q_net = d.build_models(env_cfg, in_channels, device,
                                        cond_dim=cond_dim)
@@ -598,16 +831,31 @@ def main() -> int:
         if args.sample_seed is not None:
             torch.manual_seed(args.sample_seed)
         print(f"Shadow policy: Q3C energy model ({which}) from {seed_dir}")
-        print(f"  cp_selection={cp_selection} (temp={cp_temp}) "
-              f"inference={args.inference}"
-              + (f" ({args.refine_iters} iters)"
-                 if args.inference in ("langevin", "dfo") else ""))
+
+    # --- inference variants --------------------------------------------------
+    # One draw per variant per step, all against the SAME frame stack.
+    variants = []
     if not args.no_shadow:
+        specs = args.variant
+        if not specs:
+            default_kind = (args.sampler if backend == "dp" else
+                            (args.inference if args.inference in ("langevin", "dfo")
+                             else cp_selection))
+            specs = [default_kind]
+        variants = [parse_variant(s, backend, args) for s in specs]
+        labels = [v["label"] for v in variants]
+        if len(set(labels)) != len(labels):
+            raise SystemExit(f"--variant labels must be unique, got {labels}")
+        print(f"  {len(variants)} inference variant(s):")
+        for v in variants:
+            print(f"    - {describe_variant(v, backend)}")
         print(f"  frame_stack={frame_stack} cameras={cams} (ids {cam_ids}) "
               f"model_hw=({image_h},{image_w}) in_channels={in_channels} "
               f"device={device}")
         print(f"  act_min={act_min} act_max={act_max} norm_range={norm_range} "
               f"cond_dim={cond_dim}")
+    n_var = max(1, len(variants))
+    labels = [v["label"] for v in variants] or ["(none)"]
 
     def make_cond(raw_obs):
         """Live EEF (x,y) -> (1,2) normalized, mirroring the Q3C deploy client."""
@@ -624,29 +872,28 @@ def main() -> int:
         z = np.clip(-1.0 + 2.0 * (xy - cond_min) / span, -1.0, 1.0)
         return torch.from_numpy(z.astype(np.float32)).unsqueeze(0).to(device)
 
-    def sample(obs_u8, raw_obs):
+    def sample(v, obs_u8, raw_obs):
+        """One draw of variant `v` (normalized action), same call the deploy
+        client makes -- only the inference config differs between variants."""
         if backend == "dp":
-            return dp.dp_sample_action(diffusion, denoiser, obs_u8, args.sampler,
-                                       ddim_steps, ddim_eta, cond=None)
+            return dp.dp_sample_action(
+                diffusion, denoiser, obs_u8, v["kind"],
+                v["steps"] if v["steps"] is not None else ddim_steps,
+                v["eta"] if v["eta"] is not None else ddim_eta, cond=None)
         return d.select_action(
-            cp_gen, q_net, obs_u8, cp_selection, cp_temp,
-            cond=make_cond(raw_obs), inference=args.inference,
-            refine_iters=args.refine_iters,
-            langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
-            dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
+            cp_gen, q_net, obs_u8, v["cp_selection"], v["temp"],
+            cond=make_cond(raw_obs), inference=v["inference"],
+            refine_iters=v["iters"],
+            langevin_lr=(v["lr0"], v["lr1"]),
+            dfo_noise=(v["noise"], v["decay"]))
 
-    # --- reference frames ----------------------------------------------------
-    align_cams = sorted({int(c) for c in args.align_cameras})
-    ref_frames = {}
-    if not args.skip_alignment:
+    # --- reference frames (already loaded with the episode) ------------------
+    if align_cams:
         unavailable = [c for c in align_cams if c not in topic_camera_ids]
         if unavailable:
             raise SystemExit(
                 f"--align-cameras {unavailable} are not among the registered "
                 f"topics (which map to cameras {topic_camera_ids}).")
-        for cam in align_cams:
-            ref_frames[cam] = load_episode_frames(args.archive, args.episode,
-                                                  cam, [0])[0]
         print(f"Demo frame 0 loaded for cameras {align_cams} "
               f"({ref_frames[align_cams[0]].shape})")
 
@@ -793,16 +1040,16 @@ def main() -> int:
           f"step_duration={args.step_duration}s"
           + ("  [DRY RUN: no motion]" if args.dry_run else "")
           + ("" if args.no_shadow else
-             f", {backend.upper()} policy in shadow every "
+             f", {backend.upper()} policy ({n_var} variant(s)) in shadow every "
              f"{args.shadow_every} step(s)")
           + ". Keep a hand on the E-stop.")
     input("Press [Enter] to start.")
 
     expert_log = np.full((n_steps, 2), np.nan)
     executed_log = np.full((n_steps, 2), np.nan)
-    policy_log = np.full((n_steps, 2), np.nan)
+    policy_log = np.full((n_steps, n_var, 2), np.nan)
     eef_log = np.full((n_steps, 2), np.nan)
-    sample_ms: list[float] = []
+    sample_ms = [[] for _ in range(n_var)]
     step = -1
     last_exec = time.time()
 
@@ -811,14 +1058,18 @@ def main() -> int:
             raw_obs = grab_obs()
             frame_buf.append(policy_frames(raw_obs))
 
-            # --- SHADOW: the policy sees exactly what it would at deploy -----
-            na = None
-            if not args.no_shadow and step % max(1, args.shadow_every) == 0:
+            # --- SHADOW: every variant sees exactly what deploy would --------
+            na_by_variant = None
+            if variants and step % max(1, args.shadow_every) == 0:
                 obs_u8 = d.stack_to_tensor(frame_buf, device)
-                t0 = time.time()
-                na = sample(obs_u8, raw_obs)
-                sample_ms.append((time.time() - t0) * 1000.0)
-                policy_log[step] = d.unnormalize(na, act_min, act_max, norm_range)
+                na_by_variant = {}
+                for vi, v in enumerate(variants):
+                    t0 = time.time()
+                    na = sample(v, obs_u8, raw_obs)
+                    sample_ms[vi].append((time.time() - t0) * 1000.0)
+                    policy_log[step, vi] = d.unnormalize(na, act_min, act_max,
+                                                         norm_range)
+                    na_by_variant[v["label"]] = [float(x) for x in np.ravel(na)]
 
             # --- EXECUTED: the expert action, through the deploy pipeline ----
             act_xy = ep_actions[step].copy()
@@ -863,11 +1114,13 @@ def main() -> int:
                 last_exec = time.time()
 
             if step % 20 == 0 or snapped or floored:
-                pol = ("      -" if not np.isfinite(policy_log[step]).all()
-                       else str(np.round(policy_log[step] * 1000, 2)))
+                pol = " ".join(
+                    f"{labels[vi]}=" + ("-" if not np.isfinite(policy_log[step, vi]).all()
+                                        else str(np.round(policy_log[step, vi] * 1000, 2)))
+                    for vi in range(len(variants)))
                 print(f"[{step:04d}/{n_steps}] expert(mm)="
                       f"{np.round(expert_log[step] * 1000, 2)} "
-                      f"policy(mm)={pol} env_action={np.round(env_action, 5)}")
+                      f"policy(mm) {pol} env_action={np.round(env_action, 5)}")
 
             if log_fh is not None:
                 if args.save_frames:
@@ -878,10 +1131,11 @@ def main() -> int:
                     "t": time.time(),
                     "expert": expert_log[step].tolist(),
                     "executed": executed_log[step].tolist(),
-                    "policy_norm": (None if na is None
-                                    else [float(x) for x in np.ravel(na)]),
-                    "policy": (None if not np.isfinite(policy_log[step]).all()
-                               else policy_log[step].tolist()),
+                    "policy_norm": na_by_variant,
+                    "policy": ({labels[vi]: policy_log[step, vi].tolist()
+                                for vi in range(len(variants))
+                                if np.isfinite(policy_log[step, vi]).all()}
+                               or None),
                     "env_action": [float(x) for x in np.ravel(env_action)],
                     "state": (np.ravel(np.asarray(st, dtype=np.float64)).tolist()
                               if st is not None else None),
@@ -908,27 +1162,34 @@ def main() -> int:
     policy_log = policy_log[:done]
     eef_log = eef_log[:done]
 
-    if sample_ms:
-        arr = np.asarray(sample_ms)
-        print(f"Shadow sampling: {arr.mean():.1f} ms mean / {arr.max():.1f} ms max "
-              f"over {len(arr)} draws (control period "
-              f"{args.step_duration * 1000:.0f} ms)")
-        if arr.mean() > args.step_duration * 1000:
-            cheaper = ("--sampler ddim" if backend == "dp" else "--inference argmax")
-            print("[WARN] sampling is slower than the control period, so the "
-                  f"replay ran slower than the demo. Use {cheaper} or raise "
-                  "--shadow-every for a rate-faithful replay.")
-
     clipped = int(np.sum(np.abs(executed_log - expert_log) > 1e-9))
     print(f"Expert steps altered by the deploy pipeline: {clipped}")
-    valid = np.isfinite(policy_log).all(axis=1)
-    if valid.any():
-        err = policy_log[valid] - expert_log[valid]
-        print(f"Shadow policy vs expert over {int(valid.sum())} steps: "
-              f"MAE dx={np.abs(err[:, 0]).mean() * 1000:.2f} mm, "
-              f"dy={np.abs(err[:, 1]).mean() * 1000:.2f} mm; "
-              f"expert |a| mean={np.linalg.norm(expert_log[valid], axis=1).mean() * 1000:.2f} mm, "
-              f"policy |a| mean={np.linalg.norm(policy_log[valid], axis=1).mean() * 1000:.2f} mm")
+
+    if variants:
+        exp_mag = np.linalg.norm(expert_log, axis=1).mean() * 1000
+        print(f"\nExpert |a| mean = {exp_mag:.2f} mm over {done} steps. "
+              f"Shadow variants (control period "
+              f"{args.step_duration * 1000:.0f} ms):")
+        print(f"  {'variant':<22} {'MAE dx':>7} {'MAE dy':>7} {'r dx':>6} "
+              f"{'r dy':>6} {'|a|':>7} {'ms/draw':>9}")
+        total_ms = 0.0
+        for vi, v in enumerate(variants):
+            st, valid = variant_stats(expert_log, policy_log[:, vi])
+            arr = np.asarray(sample_ms[vi]) if sample_ms[vi] else np.array([np.nan])
+            total_ms += float(np.nanmean(arr))
+            mag = (np.linalg.norm(policy_log[valid, vi], axis=1).mean() * 1000
+                   if valid.any() else np.nan)
+            print(f"  {v['label']:<22} {st['mae'][0] * 1000:7.2f} "
+                  f"{st['mae'][1] * 1000:7.2f} {st['corr'][0]:6.2f} "
+                  f"{st['corr'][1]:6.2f} {mag:7.2f} "
+                  f"{np.nanmean(arr):6.1f}/{np.nanmax(arr):.0f}")
+        if total_ms > args.step_duration * 1000:
+            cheaper = ("--sampler ddim" if backend == "dp"
+                       else "fewer/cheaper --variant specs (argmax is free)")
+            print(f"[WARN] the variants cost {total_ms:.0f} ms/step together, "
+                  f"more than the {args.step_duration * 1000:.0f} ms control "
+                  f"period, so the replay ran slower than the demo. Use "
+                  f"{cheaper} or raise --shadow-every.")
 
     eef_meas = eef_log if np.isfinite(eef_log).all(axis=1).any() else None
     if eef_meas is not None:
@@ -938,14 +1199,16 @@ def main() -> int:
         plot_out = ((log_dir or ROOT / "results" / f"replay_ep{args.episode}")
                     / "expert_vs_policy.png")
     plot_expert_vs_policy(
-        expert_log, policy_log, executed_log, eef_meas, ep_eef[:done, :2], plot_out,
-        f"episode {args.episode} of {args.archive.name} — expert (executed) vs "
-        f"{backend.upper()} {seed_dir.name} (shadow)")
+        expert_log, policy_log, executed_log, eef_meas, ep_eef[:done, :2],
+        labels, plot_out,
+        f"episode {args.episode} of {ep_meta.get('source_archive', source)} — "
+        f"expert (executed) vs {backend.upper()} {seed_dir.name} (shadow)")
 
     if log_dir is not None:
         np.savez(log_dir / "replay.npz", expert=expert_log, executed=executed_log,
                  policy=policy_log, eef_live=eef_log, eef_demo=ep_eef[:done],
-                 policy_backend=backend,
+                 policy_backend=backend, variant_labels=np.array(labels),
+                 variant_specs=np.array([json.dumps(v) for v in variants]),
                  episode=args.episode, step_duration=args.step_duration)
         print(f"Arrays -> {log_dir / 'replay.npz'}")
     return 0

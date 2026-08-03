@@ -1,0 +1,26 @@
+{
+  "episode": 140,
+  "source_archive": "pusht_2026_07_zarr.zip",
+  "rows": [
+    85551,
+    86281
+  ],
+  "n_steps": 730,
+  "cameras": [
+    0,
+    1
+  ],
+  "move_duration": 0.05,
+  "zero_action_share": 0.06301369863013699,
+  "eef_start": [
+    0.11605726182460785,
+    -0.019077889621257782,
+    0.02199999988079071
+  ],
+  "eef_end": [
+    0.19502966105937958,
+    -0.1340286284685135,
+    0.02199999988079071
+  ],
+  "action_units": "metres, planar EEF delta (dx, dy) per control step"
+}
