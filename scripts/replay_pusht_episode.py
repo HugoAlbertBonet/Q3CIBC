@@ -14,15 +14,18 @@ Purpose: split the two failure modes that a live rollout confounds.
      client would, but that action is only RECORDED — never sent. Afterwards we
      plot expert vs shadow action per timestep.
 
---policy picks the shadow family: `dp` samples the DP denoiser
-(deploy_pusht_real_dp.dp_sample_action), `q3c` runs the energy model's CP
-selection (deploy_pusht_real.select_action, EEF conditioning included). `auto`
-(default) reads the weight files in --seed-dir.
+--seed-dir is repeatable, so a DP and a Q3C checkpoint can shadow the SAME
+replay; --policy defaults to `auto`, which reads each directory's weight files
+(denoiser*.pt -> DP, control_point_generator*.pt -> Q3C). Models keep their own
+cameras, resize, frame_stack and action normalization -- the buffer holds RAW
+camera frames and each model builds the stack its deploy client would.
 
---variant is repeatable and runs SEVERAL inference configs of that checkpoint
-per step, all against the same frame stack, then plots them together. That is
-the only fair comparison: a separate replay per config gives each one a
-different scene history, so their errors are not comparable.
+--variant is repeatable and runs SEVERAL inference configs per step, all against
+those same raw frames, then plots them together. That is the only fair
+comparison: a separate replay per config gives each one a different scene
+history, so their errors are not comparable. Variants route to a model by
+`model=NAME`, or automatically, because the DP and Q3C kind names are disjoint
+(ddpm/ddim vs argmax/sample/dfo/langevin).
 
 Everything policy-side is imported from scripts/deploy_pusht_real_dp.py and
 scripts/deploy_pusht_real.py (build_dp_policy, dp_sample_action, build_models,
@@ -71,6 +74,17 @@ Usage (server already up):
         --variant dfo:iters=200,label=dfo200 \
         --variant langevin:iters=50 \
         --log-dir results/replay_ep70_q3c
+
+    # DP and Q3C side by side, several variants each, one replay
+    python scripts/replay_pusht_episode.py \
+        --seed-dir dp=checkpoints/pusht_real_dp_2026_07/g01_resnet18_s11_350k \
+        --seed-dir q3c=checkpoints/pusht_real_combinedv2/seed_0011 \
+        --episode 70 --device cpu --shadow-every 4 \
+        --variant ddim:steps=10 \
+        --variant ddpm \
+        --variant argmax \
+        --variant langevin:iters=50 \
+        --log-dir results/replay_ep70_both
 
     # read the archive directly (only where the zip is present)
     python scripts/replay_pusht_episode.py ... --archive data/pusht_2026_07_zarr.zip
@@ -270,15 +284,106 @@ _VARIANT_KINDS = {
 }
 
 
-def parse_variant(spec: str, backend: str, args) -> dict:
-    """"langevin:iters=50" -> a fully-resolved variant dict."""
+def load_model(name: str, seed_dir: Path, policy: str, args, device) -> dict:
+    """Load one checkpoint (DP or Q3C) and everything needed to run it.
+
+    Each model keeps its OWN preprocessing (cameras, resize, frame_stack) and
+    its own action normalization, so a Q3C run trained on `images1` at 240x320
+    and a DP run trained on two `video` streams can be compared in the same
+    replay: the frame buffer stores raw camera frames and every model builds its
+    stack from those.
+    """
+    backend = resolve_backend(policy, seed_dir)
+    env_cfg = d.load_run_config(seed_dir)
+    norm_stats = torch.load(seed_dir / "norm_stats.pt", map_location="cpu",
+                            weights_only=False)
+    m = {"name": name, "seed_dir": seed_dir, "backend": backend,
+         "env_cfg": env_cfg, "norm_stats": norm_stats}
+    m["act_min"] = np.asarray(norm_stats["act_min"], np.float32)
+    m["act_max"] = np.asarray(norm_stats["act_max"], np.float32)
+    m["norm_range"] = tuple(norm_stats.get("action_norm_range", (-1.0, 1.0)))
+    m["frame_stack"] = int(norm_stats.get("frame_stack",
+                                          env_cfg.get("frame_stack", 2)))
+    image_hw = norm_stats.get("image_hw",
+                              (int(env_cfg.get("image_height", 240)),
+                               int(env_cfg.get("image_width", 320))))
+    m["image_hw"] = (int(image_hw[0]), int(image_hw[1]))
+    # The DP trainer records camera_streams as ("video1",); the Q3C runs carry
+    # ("images1",) in their run config. Both index the same dataset cameras.
+    cams = tuple(norm_stats.get("camera_streams",
+                                env_cfg.get("camera_streams", ["video1"])))
+    m["cams"] = cams
+    m["cam_ids"] = d.camera_ids_from_streams(cams)
+    expected = 3 * len(m["cam_ids"]) * m["frame_stack"]
+    m["in_channels"] = int(norm_stats.get("in_channels", expected))
+    if expected != m["in_channels"]:
+        raise SystemExit(
+            f"{name}: checkpoint says in_channels={m['in_channels']} but its "
+            f"camera_streams {cams} x frame_stack {m['frame_stack']} imply "
+            f"{expected}.")
+    if m["act_min"].size != 2:
+        raise SystemExit(
+            f"{name}: act_min has {m['act_min'].size} entries, i.e. this "
+            "checkpoint predicts an action chunk, which no deploy client executes.")
+
+    # EEF (x, y) conditioning: Q3C runs trained with --cond-eef-xy carry it; the
+    # DP client has no conditioned path (deploy_pusht_real_dp.build_dp_policy
+    # raises), so mirror that limitation instead of inventing one here.
+    cond_dim = int(norm_stats.get("cond_dim", 0))
+    m["cond_dim"] = cond_dim
+    m["cond_min"] = m["cond_max"] = None
+    if cond_dim:
+        if backend == "dp":
+            raise SystemExit(
+                f"{name}: conditioned DP checkpoints are not wired up "
+                "(same limitation as deploy_pusht_real_dp.py).")
+        if str(norm_stats.get("cond_kind", "")) != "eef_xy":
+            raise SystemExit(
+                f"{name}: cond_dim={cond_dim} "
+                f"cond_kind={norm_stats.get('cond_kind')!r}; only eef_xy is known")
+        m["cond_min"] = np.asarray(norm_stats["cond_min"], np.float32)
+        m["cond_max"] = np.asarray(norm_stats["cond_max"], np.float32)
+
+    suffix = "" if args.no_ema else "_ema"
+    m["which"] = "raw" if args.no_ema else "EMA"
+    if backend == "dp":
+        denoiser, diffusion, dpar = dp.build_dp_policy(
+            env_cfg, norm_stats, m["in_channels"], device)
+        denoiser.load_state_dict(torch.load(seed_dir / f"denoiser{suffix}.pt",
+                                            map_location=device, weights_only=True))
+        denoiser.eval()
+        ev = norm_stats.get("ddim_eval_steps", dpar.get("ddim_eval_steps", [10]))
+        m["denoiser"], m["diffusion"], m["dpar"] = denoiser, diffusion, dpar
+        m["ddim_steps"] = args.ddim_steps or (int(ev[0]) if ev else 10)
+        m["ddim_eta"] = (args.ddim_eta if args.ddim_eta is not None
+                         else float(norm_stats.get("ddim_eta",
+                                                   dpar.get("ddim_eta", 0.0))))
+        m["detail"] = (f"pred={dpar.get('prediction_type')} "
+                       f"T={dpar.get('num_train_timesteps')}")
+    else:
+        cp_gen, q_net = d.build_models(env_cfg, m["in_channels"], device,
+                                       cond_dim=cond_dim)
+        d.load_weights(cp_gen, seed_dir / f"control_point_generator{suffix}.pt",
+                       device)
+        d.load_weights(q_net, seed_dir / f"q_estimator{suffix}.pt", device)
+        m["cp_gen"], m["q_net"] = cp_gen, q_net
+        m["cp_selection"] = (args.cp_selection
+                             or str(norm_stats.get("cp_selection", "argmax")))
+        m["cp_temp"] = (args.cp_temperature if args.cp_temperature is not None
+                        else float(norm_stats.get("cp_selection_temperature", 1.0)))
+        m["detail"] = f"checkpoint cp_selection={m['cp_selection']}"
+    return m
+
+
+def parse_variant(spec: str, models: list, args) -> dict:
+    """"langevin:iters=50" -> a fully-resolved variant bound to a model.
+
+    Routing: an explicit `model=NAME` wins; otherwise the KIND decides, because
+    the DP and Q3C kind names are disjoint (ddpm/ddim vs argmax/sample/dfo/
+    langevin). Only if that still leaves several candidates is `model=` required.
+    """
     kind, _, rest = spec.partition(":")
     kind = kind.strip()
-    known = _VARIANT_KINDS[backend]
-    if kind not in known:
-        raise SystemExit(
-            f"--variant {spec!r}: unknown kind {kind!r} for a {backend} "
-            f"checkpoint; expected one of {sorted(known)}")
     kv = {}
     for part in (p for p in rest.split(",") if p.strip()):
         if "=" not in part:
@@ -286,14 +391,41 @@ def parse_variant(spec: str, backend: str, args) -> dict:
                 f"--variant {spec!r}: {part!r} is not key=value")
         k, v = part.split("=", 1)
         kv[k.strip()] = v.strip()
+    want_model = kv.pop("model", None)
     label = kv.pop("label", spec)
+
+    if want_model is not None:
+        cand = [m for m in models if m["name"] == want_model]
+        if not cand:
+            raise SystemExit(
+                f"--variant {spec!r}: model={want_model!r} is not one of "
+                f"{[m['name'] for m in models]}")
+    else:
+        cand = [m for m in models if kind in _VARIANT_KINDS[m["backend"]]]
+        if not cand:
+            backends = sorted({m["backend"] for m in models})
+            raise SystemExit(
+                f"--variant {spec!r}: unknown kind {kind!r} for the loaded "
+                f"{backends} checkpoint(s); expected one of "
+                f"{sorted(k for b in backends for k in _VARIANT_KINDS[b])}")
+        if len(cand) > 1:
+            raise SystemExit(
+                f"--variant {spec!r}: {kind!r} fits several loaded models "
+                f"({[m['name'] for m in cand]}); disambiguate with model=NAME")
+    model = cand[0]
+    backend = model["backend"]
+    known = _VARIANT_KINDS[backend]
+    if kind not in known:
+        raise SystemExit(
+            f"--variant {spec!r}: unknown kind {kind!r} for {model['name']} "
+            f"(a {backend} checkpoint); expected one of {sorted(known)}")
     unknown = set(kv) - set(known[kind])
     if unknown:
         raise SystemExit(
             f"--variant {spec!r}: {sorted(unknown)} not valid for {kind!r} "
             f"(accepts {list(known[kind])})")
 
-    v = {"label": label, "kind": kind}
+    v = {"label": label, "kind": kind, "model": model["name"], "_model": model}
     if backend == "dp":
         v["steps"] = int(kv.get("steps", args.ddim_steps or 0)) or None
         v["eta"] = (float(kv["eta"]) if "eta" in kv else args.ddim_eta)
@@ -311,19 +443,22 @@ def parse_variant(spec: str, backend: str, args) -> dict:
     return v
 
 
-def describe_variant(v: dict, backend: str) -> str:
-    if backend == "dp":
-        return (f"{v['label']}: {v['kind']}"
-                + (f" ({v['steps']} steps, eta={v['eta']})"
-                   if v["kind"] == "ddim" else ""))
+def describe_variant(v: dict) -> str:
+    m = v["_model"]
+    head = f"{v['label']} [{v['model']}]:"
+    if m["backend"] == "dp":
+        # Unset steps/eta fall back to the checkpoint's own values at sample time.
+        steps = v["steps"] if v["steps"] is not None else m["ddim_steps"]
+        eta = v["eta"] if v["eta"] is not None else m["ddim_eta"]
+        return (f"{head} {v['kind']}"
+                + (f" ({steps} steps, eta={eta})" if v["kind"] == "ddim" else ""))
     if v["kind"] in ("argmax", "sample"):
-        return (f"{v['label']}: CP-cloud {v['kind']}"
+        return (f"{head} CP-cloud {v['kind']}"
                 + (f" (temp={v['temp']})" if v["kind"] == "sample" else ""))
     if v["kind"] == "dfo":
-        return (f"{v['label']}: dfo x{v['iters']} "
+        return (f"{head} dfo x{v['iters']} "
                 f"(noise {v['noise']}, decay {v['decay']})")
-    return (f"{v['label']}: langevin x{v['iters']} "
-            f"(lr {v['lr0']} -> {v['lr1']})")
+    return (f"{head} langevin x{v['iters']} (lr {v['lr0']} -> {v['lr1']})")
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +672,13 @@ def plot_expert_vs_policy(expert, policy, executed, eef_meas, eef_demo,
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--seed-dir", type=Path, required=True)
+    p.add_argument("--seed-dir", action="append", required=True, metavar="[NAME=]PATH",
+                   help="repeatable: run SEVERAL checkpoints in the shadow at "
+                        "once, e.g. --seed-dir dp=checkpoints/.../g01 "
+                        "--seed-dir q3c=checkpoints/.../seed_0011. NAME "
+                        "defaults to the directory name and is what "
+                        "--variant model=NAME refers to. All of them see the "
+                        "same live frames, each with its own preprocessing.")
     p.add_argument("--device", default="cuda")
     p.add_argument("--no-ema", action="store_true",
                    help="use raw denoiser instead of the EMA copy")
@@ -646,19 +787,22 @@ def parse_args() -> argparse.Namespace:
 
     # --- which policy runs in the shadow -------------------------------------
     p.add_argument("--policy", default="auto", choices=["auto", "dp", "q3c"],
-                   help="shadow policy family. auto = infer from the weight "
-                        "files in --seed-dir (denoiser*.pt -> dp, "
-                        "control_point_generator*.pt -> q3c).")
+                   help="policy family of every --seed-dir. auto (default) "
+                        "infers it per directory from the weight files "
+                        "(denoiser*.pt -> dp, control_point_generator*.pt -> "
+                        "q3c), which is what a mixed DP+Q3C run needs.")
 
     p.add_argument("--variant", action="append", default=None, metavar="SPEC",
-                   help="repeatable: run SEVERAL inference configs of the same "
-                        "checkpoint per step, against the same frame stack, and "
-                        "plot them together. Q3C: argmax | sample:temp=1.0 | "
+                   help="repeatable: run SEVERAL inference configs per step, "
+                        "against the same raw frames, and plot them together. "
+                        "Q3C kinds: argmax | sample:temp=1.0 | "
                         "dfo:iters=100,noise=0.1,decay=0.8 | "
-                        "langevin:iters=50,lr0=0.1,lr1=1e-5. DP: ddpm | "
-                        "ddim:steps=10,eta=0.0. Add label=NAME to rename the "
-                        "series. Omitted keys fall back to the flags below. "
-                        "Default: one variant built from those flags.")
+                        "langevin:iters=50,lr0=0.1,lr1=1e-5. DP kinds: ddpm | "
+                        "ddim:steps=10,eta=0.0. The kind picks the model when "
+                        "it is unambiguous; add model=NAME when several loaded "
+                        "models share a backend. label=NAME renames the series. "
+                        "Omitted keys fall back to the flags below. Default: "
+                        "one variant per --seed-dir, built from those flags.")
 
     # --- DP sampler knobs (deploy_pusht_real_dp.py) --------------------------
     p.add_argument("--sampler", default="ddpm", choices=["ddpm", "ddim"])
@@ -707,7 +851,17 @@ def main() -> int:
         raise SystemExit(
             "--z-hold needs an action_mode that sends z "
             "(3trans/3trans1rot/3trans3rot); got 2trans.")
-    seed_dir = args.seed_dir.resolve()
+    seed_dirs = []
+    for entry in args.seed_dir:
+        name, sep, path = str(entry).partition("=")
+        if not sep:
+            name, path = None, entry
+        p = Path(path).expanduser().resolve()
+        seed_dirs.append((name or p.name, p))
+    if len({n for n, _ in seed_dirs}) != len(seed_dirs):
+        raise SystemExit(
+            f"--seed-dir names must be unique, got {[n for n, _ in seed_dirs]}; "
+            "prefix them with NAME= to disambiguate.")
     log_dir = args.log_dir
     if log_dir is not None:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -746,143 +900,93 @@ def main() -> int:
               f"--step-duration is {args.step_duration}s: the replay will not "
               "run at the demonstrated rate.")
 
-    # --- checkpoint metadata (identical to the matching deploy client) -------
-    backend = resolve_backend(args.policy, seed_dir)
-    env_cfg = d.load_run_config(seed_dir)
-    norm_stats = torch.load(seed_dir / "norm_stats.pt", map_location="cpu",
-                            weights_only=False)
-    act_min = np.asarray(norm_stats["act_min"], np.float32)
-    act_max = np.asarray(norm_stats["act_max"], np.float32)
-    norm_range = tuple(norm_stats.get("action_norm_range", (-1.0, 1.0)))
-    frame_stack = int(norm_stats.get("frame_stack", env_cfg.get("frame_stack", 2)))
-    image_hw = norm_stats.get("image_hw",
-                              (int(env_cfg.get("image_height", 240)),
-                               int(env_cfg.get("image_width", 320))))
-    image_h, image_w = int(image_hw[0]), int(image_hw[1])
-    # The DP trainer records camera_streams as ("video1",); the Q3C runs carry
-    # ("images1",) in their run config. Both index the same dataset cameras.
-    cams = tuple(norm_stats.get("camera_streams",
-                                env_cfg.get("camera_streams", ["video1"])))
-    cam_ids = d.camera_ids_from_streams(cams)
+    # --- checkpoints (each identical to its own deploy client) ---------------
     topic_camera_ids = d.resolve_topic_camera_ids(args.camera_topics,
                                                   args.topic_camera_ids)
-    in_channels = int(norm_stats.get("in_channels",
-                                     3 * len(cam_ids) * frame_stack))
-    expected_channels = 3 * len(cam_ids) * frame_stack
-    if expected_channels != in_channels:
-        raise SystemExit(
-            f"checkpoint says in_channels={in_channels} but its camera_streams "
-            f"{cams} x frame_stack {frame_stack} imply {expected_channels}.")
-    if act_min.size != 2:
-        raise SystemExit(
-            f"act_min has {act_min.size} entries: this checkpoint predicts an "
-            "action chunk, which neither deploy client executes.")
-
-    # EEF (x, y) conditioning: Q3C runs trained with --cond-eef-xy carry it; the
-    # DP client has no conditioned path (deploy_pusht_real_dp.build_dp_policy
-    # raises), so mirror that limitation instead of inventing one here.
-    cond_dim = int(norm_stats.get("cond_dim", 0))
-    cond_min = cond_max = None
-    if cond_dim:
-        if backend == "dp":
-            raise SystemExit("conditioned DP checkpoints are not wired up "
-                             "(same limitation as deploy_pusht_real_dp.py).")
-        if str(norm_stats.get("cond_kind", "")) != "eef_xy":
-            raise SystemExit(
-                f"cond_dim={cond_dim} cond_kind={norm_stats.get('cond_kind')!r}; "
-                "only eef_xy is known")
-        cond_min = np.asarray(norm_stats["cond_min"], np.float32)
-        cond_max = np.asarray(norm_stats["cond_max"], np.float32)
-
     device = torch.device(
         args.device if (torch.cuda.is_available() or args.device == "cpu") else "cpu")
-    suffix = "" if args.no_ema else "_ema"
-    which = "raw" if args.no_ema else "EMA"
-    denoiser = diffusion = cp_gen = q_net = None
-    ddim_steps, ddim_eta = args.ddim_steps, args.ddim_eta
-    cp_selection = args.cp_selection or str(norm_stats.get("cp_selection", "argmax"))
-    cp_temp = (args.cp_temperature if args.cp_temperature is not None
-               else float(norm_stats.get("cp_selection_temperature", 1.0)))
 
+    models = []
     if args.no_shadow:
-        print("[INFO] --no-shadow: policy never loaded; pure open-loop rig check.")
-    elif backend == "dp":
-        denoiser, diffusion, dpar = dp.build_dp_policy(
-            env_cfg, norm_stats, in_channels, device)
-        denoiser.load_state_dict(torch.load(seed_dir / f"denoiser{suffix}.pt",
-                                            map_location=device, weights_only=True))
-        denoiser.eval()
-        if ddim_steps is None:
-            ev = norm_stats.get("ddim_eval_steps", dpar.get("ddim_eval_steps", [10]))
-            ddim_steps = int(ev[0]) if ev else 10
-        if ddim_eta is None:
-            ddim_eta = float(norm_stats.get("ddim_eta", dpar.get("ddim_eta", 0.0)))
-        if args.sample_seed is not None:
-            torch.manual_seed(args.sample_seed)
-        print(f"Shadow policy: DP denoiser ({which}) from {seed_dir}")
-        print(f"  pred={dpar.get('prediction_type')} "
-              f"T={dpar.get('num_train_timesteps')}")
+        print("[INFO] --no-shadow: no policy loaded; pure open-loop rig check.")
     else:
-        cp_gen, q_net = d.build_models(env_cfg, in_channels, device,
-                                       cond_dim=cond_dim)
-        d.load_weights(cp_gen, seed_dir / f"control_point_generator{suffix}.pt",
-                       device)
-        d.load_weights(q_net, seed_dir / f"q_estimator{suffix}.pt", device)
+        for name, path in seed_dirs:
+            models.append(load_model(name, path, args.policy, args, device))
         if args.sample_seed is not None:
             torch.manual_seed(args.sample_seed)
-        print(f"Shadow policy: Q3C energy model ({which}) from {seed_dir}")
+        for m in models:
+            print(f"Shadow model {m['name']}: "
+                  f"{'DP denoiser' if m['backend'] == 'dp' else 'Q3C energy model'}"
+                  f" ({m['which']}) from {m['seed_dir']}")
+            print(f"    {m['detail']}  frame_stack={m['frame_stack']} "
+                  f"cameras={m['cams']} (ids {m['cam_ids']}) "
+                  f"model_hw={m['image_hw']} in_channels={m['in_channels']} "
+                  f"cond_dim={m['cond_dim']}")
+            print(f"    act_min={m['act_min']} act_max={m['act_max']} "
+                  f"norm_range={m['norm_range']}")
+
+    # Every model reads the live cameras it was trained on; they need not agree.
+    cam_ids = sorted({c for m in models for c in m["cam_ids"]})
+    missing = [c for c in cam_ids if c not in topic_camera_ids]
+    if missing:
+        raise SystemExit(
+            f"the loaded checkpoints need cameras {missing}, which the "
+            f"registered topics ({topic_camera_ids}) do not provide.")
+    max_stack = max((m["frame_stack"] for m in models), default=1)
 
     # --- inference variants --------------------------------------------------
-    # One draw per variant per step, all against the SAME frame stack.
+    # One draw per variant per step, all against the SAME raw frames.
     variants = []
-    if not args.no_shadow:
+    if models:
         specs = args.variant
         if not specs:
-            default_kind = (args.sampler if backend == "dp" else
-                            (args.inference if args.inference in ("langevin", "dfo")
-                             else cp_selection))
-            specs = [default_kind]
-        variants = [parse_variant(s, backend, args) for s in specs]
+            # No --variant: one default per model, from the legacy flags.
+            specs = []
+            for m in models:
+                if m["backend"] == "dp":
+                    kind = args.sampler
+                else:
+                    kind = (args.inference if args.inference in ("langevin", "dfo")
+                            else m["cp_selection"])
+                specs.append(f"{kind}:model={m['name']}"
+                             + (f",label={m['name']}" if len(models) > 1 else ""))
+        variants = [parse_variant(s, models, args) for s in specs]
         labels = [v["label"] for v in variants]
         if len(set(labels)) != len(labels):
             raise SystemExit(f"--variant labels must be unique, got {labels}")
-        print(f"  {len(variants)} inference variant(s):")
+        print(f"{len(variants)} inference variant(s) on device={device}:")
         for v in variants:
-            print(f"    - {describe_variant(v, backend)}")
-        print(f"  frame_stack={frame_stack} cameras={cams} (ids {cam_ids}) "
-              f"model_hw=({image_h},{image_w}) in_channels={in_channels} "
-              f"device={device}")
-        print(f"  act_min={act_min} act_max={act_max} norm_range={norm_range} "
-              f"cond_dim={cond_dim}")
+            print(f"  - {describe_variant(v)}")
     n_var = max(1, len(variants))
     labels = [v["label"] for v in variants] or ["(none)"]
 
-    def make_cond(raw_obs):
+    def make_cond(m, raw_obs):
         """Live EEF (x,y) -> (1,2) normalized, mirroring the Q3C deploy client."""
-        if not cond_dim:
+        if not m["cond_dim"]:
             return None
         st = None if raw_obs is None else raw_obs.get("state")
         if st is None:
             raise RuntimeError(
-                "checkpoint needs EEF conditioning but the observation has no "
+                f"{m['name']} needs EEF conditioning but the observation has no "
                 "'state' field")
         xy = np.asarray(st, np.float32).reshape(-1)[:2]
-        span = np.where(cond_max == cond_min, np.ones_like(cond_max),
-                        cond_max - cond_min)
-        z = np.clip(-1.0 + 2.0 * (xy - cond_min) / span, -1.0, 1.0)
+        lo, hi = m["cond_min"], m["cond_max"]
+        span = np.where(hi == lo, np.ones_like(hi), hi - lo)
+        z = np.clip(-1.0 + 2.0 * (xy - lo) / span, -1.0, 1.0)
         return torch.from_numpy(z.astype(np.float32)).unsqueeze(0).to(device)
 
     def sample(v, obs_u8, raw_obs):
-        """One draw of variant `v` (normalized action), same call the deploy
+        """One draw of variant `v` (normalized action), the same call its deploy
         client makes -- only the inference config differs between variants."""
-        if backend == "dp":
+        m = v["_model"]
+        if m["backend"] == "dp":
             return dp.dp_sample_action(
-                diffusion, denoiser, obs_u8, v["kind"],
-                v["steps"] if v["steps"] is not None else ddim_steps,
-                v["eta"] if v["eta"] is not None else ddim_eta, cond=None)
+                m["diffusion"], m["denoiser"], obs_u8, v["kind"],
+                v["steps"] if v["steps"] is not None else m["ddim_steps"],
+                v["eta"] if v["eta"] is not None else m["ddim_eta"], cond=None)
         return d.select_action(
-            cp_gen, q_net, obs_u8, v["cp_selection"], v["temp"],
-            cond=make_cond(raw_obs), inference=v["inference"],
+            m["cp_gen"], m["q_net"], obs_u8, v["cp_selection"], v["temp"],
+            cond=make_cond(m, raw_obs), inference=v["inference"],
             refine_iters=v["iters"],
             langevin_lr=(v["lr0"], v["lr1"]),
             dfo_noise=(v["noise"], v["decay"]))
@@ -1009,9 +1113,31 @@ def main() -> int:
     def live_frame(raw_obs, cam_id):
         return d.frame_for_camera(raw_obs, cam_id, topic_camera_ids)
 
-    def policy_frames(raw_obs):
-        return d.build_stack_frame(raw_obs, cam_ids, topic_camera_ids,
-                                   (image_h, image_w), gains=exposure_gains)
+    def raw_frames(raw_obs) -> dict:
+        """One timestep of RAW camera frames, {cam_id: (H,W,3) uint8}.
+
+        Stored unresized because models may disagree on image_hw and on which
+        cameras they read; each builds its own stack from these.
+        """
+        return {c: live_frame(raw_obs, c) for c in cam_ids}
+
+    def model_stack(m, frame_buf) -> torch.Tensor:
+        """The (1, C, H, W) uint8 tensor `m` expects, from the raw buffer.
+
+        Reproduces deploy_pusht_real.build_stack_frame + stack_to_tensor, and
+        therefore PushTWidowXVideoDataset's channel order: cameras iterate
+        INSIDE each stack offset, oldest -> newest. Offsets older than the
+        buffer are clamped to its first entry, exactly as the deploy clients
+        pad the warm-up.
+        """
+        blocks = []
+        for off in range(m["frame_stack"] - 1, -1, -1):
+            raws = frame_buf[max(0, len(frame_buf) - 1 - off)]
+            blocks.append(np.concatenate(
+                [d.preprocess(raws[c], m["image_hw"], gains=exposure_gains)
+                 for c in m["cam_ids"]], axis=-1))
+        stacked = np.transpose(np.concatenate(blocks, axis=-1), (2, 0, 1))
+        return torch.from_numpy(np.ascontiguousarray(stacked)).unsqueeze(0).to(device)
 
     # --- alignment gate ------------------------------------------------------
     if not args.skip_alignment:
@@ -1021,11 +1147,13 @@ def main() -> int:
         print("Alignment confirmed.")
 
     # --- warm up the frame buffer (deploy semantics: pad with the first frame)
-    frame_buf = collections.deque(maxlen=frame_stack)
-    first = policy_frames(grab_obs())
-    print(f"Stacked frame per timestep: {first.shape} (cameras {cam_ids})")
-    for _ in range(frame_stack):
+    frame_buf = collections.deque(maxlen=max_stack)
+    first = raw_frames(grab_obs())
+    for _ in range(max_stack):
         frame_buf.append(first)
+    for m in models:
+        print(f"  {m['name']} stack: {tuple(model_stack(m, frame_buf).shape)} "
+              f"from cameras {m['cam_ids']} at {m['image_hw']}")
 
     # --- replay --------------------------------------------------------------
     log_fh = None
@@ -1039,9 +1167,9 @@ def main() -> int:
     print(f"\nOpen-loop replay of {n_steps} EXPERT steps, blocking={blocking}, "
           f"step_duration={args.step_duration}s"
           + ("  [DRY RUN: no motion]" if args.dry_run else "")
-          + ("" if args.no_shadow else
-             f", {backend.upper()} policy ({n_var} variant(s)) in shadow every "
-             f"{args.shadow_every} step(s)")
+          + ("" if not variants else
+             f", {len(variants)} shadow variant(s) over {len(models)} model(s) "
+             f"every {args.shadow_every} step(s)")
           + ". Keep a hand on the E-stop.")
     input("Press [Enter] to start.")
 
@@ -1056,19 +1184,22 @@ def main() -> int:
     try:
         for step in range(n_steps):
             raw_obs = grab_obs()
-            frame_buf.append(policy_frames(raw_obs))
+            frame_buf.append(raw_frames(raw_obs))
 
             # --- SHADOW: every variant sees exactly what deploy would --------
             na_by_variant = None
             if variants and step % max(1, args.shadow_every) == 0:
-                obs_u8 = d.stack_to_tensor(frame_buf, device)
+                # One stack per MODEL (they may differ in cameras/size/depth),
+                # reused by every variant of that model.
+                stacks = {m["name"]: model_stack(m, frame_buf) for m in models}
                 na_by_variant = {}
                 for vi, v in enumerate(variants):
+                    m = v["_model"]
                     t0 = time.time()
-                    na = sample(v, obs_u8, raw_obs)
+                    na = sample(v, stacks[m["name"]], raw_obs)
                     sample_ms[vi].append((time.time() - t0) * 1000.0)
-                    policy_log[step, vi] = d.unnormalize(na, act_min, act_max,
-                                                         norm_range)
+                    policy_log[step, vi] = d.unnormalize(
+                        na, m["act_min"], m["act_max"], m["norm_range"])
                     na_by_variant[v["label"]] = [float(x) for x in np.ravel(na)]
 
             # --- EXECUTED: the expert action, through the deploy pipeline ----
@@ -1124,8 +1255,13 @@ def main() -> int:
 
             if log_fh is not None:
                 if args.save_frames:
-                    d.save_fed_png(log_dir / "fed" / f"{step:04d}",
-                                   list(frame_buf)[-1], cam_ids)
+                    # Raw newest frame per camera; the per-model resize is
+                    # deterministic from these.
+                    newest = frame_buf[-1]
+                    d.save_fed_png(
+                        log_dir / "fed" / f"{step:04d}",
+                        np.concatenate([newest[c] for c in cam_ids], axis=-1),
+                        cam_ids)
                 log_fh.write(json.dumps({
                     "step": step,
                     "t": time.time(),
@@ -1170,8 +1306,8 @@ def main() -> int:
         print(f"\nExpert |a| mean = {exp_mag:.2f} mm over {done} steps. "
               f"Shadow variants (control period "
               f"{args.step_duration * 1000:.0f} ms):")
-        print(f"  {'variant':<22} {'MAE dx':>7} {'MAE dy':>7} {'r dx':>6} "
-              f"{'r dy':>6} {'|a|':>7} {'ms/draw':>9}")
+        print(f"  {'variant':<22} {'model':<14} {'MAE dx':>7} {'MAE dy':>7} "
+              f"{'r dx':>6} {'r dy':>6} {'|a|':>7} {'ms/draw':>10}")
         total_ms = 0.0
         for vi, v in enumerate(variants):
             st, valid = variant_stats(expert_log, policy_log[:, vi])
@@ -1179,17 +1315,18 @@ def main() -> int:
             total_ms += float(np.nanmean(arr))
             mag = (np.linalg.norm(policy_log[valid, vi], axis=1).mean() * 1000
                    if valid.any() else np.nan)
-            print(f"  {v['label']:<22} {st['mae'][0] * 1000:7.2f} "
+            print(f"  {v['label']:<22} "
+                  f"{v['model'] + '/' + v['_model']['backend']:<14} "
+                  f"{st['mae'][0] * 1000:7.2f} "
                   f"{st['mae'][1] * 1000:7.2f} {st['corr'][0]:6.2f} "
                   f"{st['corr'][1]:6.2f} {mag:7.2f} "
                   f"{np.nanmean(arr):6.1f}/{np.nanmax(arr):.0f}")
         if total_ms > args.step_duration * 1000:
-            cheaper = ("--sampler ddim" if backend == "dp"
-                       else "fewer/cheaper --variant specs (argmax is free)")
             print(f"[WARN] the variants cost {total_ms:.0f} ms/step together, "
                   f"more than the {args.step_duration * 1000:.0f} ms control "
-                  f"period, so the replay ran slower than the demo. Use "
-                  f"{cheaper} or raise --shadow-every.")
+                  f"period, so the replay ran slower than the demo. Drop the "
+                  f"expensive variants (argmax/ddim are the cheap ones) or "
+                  f"raise --shadow-every.")
 
     eef_meas = eef_log if np.isfinite(eef_log).all(axis=1).any() else None
     if eef_meas is not None:
@@ -1202,13 +1339,20 @@ def main() -> int:
         expert_log, policy_log, executed_log, eef_meas, ep_eef[:done, :2],
         labels, plot_out,
         f"episode {args.episode} of {ep_meta.get('source_archive', source)} — "
-        f"expert (executed) vs {backend.upper()} {seed_dir.name} (shadow)")
+        "expert (executed) vs "
+        + ", ".join(f"{m['name']} ({m['backend'].upper()})" for m in models)
+        + " (shadow)")
 
     if log_dir is not None:
         np.savez(log_dir / "replay.npz", expert=expert_log, executed=executed_log,
                  policy=policy_log, eef_live=eef_log, eef_demo=ep_eef[:done],
-                 policy_backend=backend, variant_labels=np.array(labels),
-                 variant_specs=np.array([json.dumps(v) for v in variants]),
+                 variant_labels=np.array(labels),
+                 variant_models=np.array([v["model"] for v in variants]),
+                 variant_backends=np.array([v["_model"]["backend"]
+                                            for v in variants]),
+                 variant_specs=np.array([
+                     json.dumps({k: val for k, val in v.items() if k != "_model"})
+                     for v in variants]),
                  episode=args.episode, step_duration=args.step_duration)
         print(f"Arrays -> {log_dir / 'replay.npz'}")
     return 0
