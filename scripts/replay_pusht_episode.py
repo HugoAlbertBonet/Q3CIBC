@@ -592,6 +592,17 @@ def plot_expert_vs_policy(expert, policy, executed, eef_meas, eef_demo,
     `demo_steps` is each executed step's index in the ORIGINAL episode, so the
     time axis shows the gaps --drop-zero leaves behind.
     """
+    # widowx_envs/edgeml raise the ROOT logger to DEBUG when imported, which
+    # turns matplotlib's font cache and PIL's PNG writer into hundreds of
+    # "findfont: score(...)" lines around every savefig. Pin those loggers
+    # before importing pyplot (font_manager logs at import time).
+    import logging
+    for name in ("matplotlib", "matplotlib.font_manager", "matplotlib.pyplot",
+                 "matplotlib.backends", "matplotlib.ticker", "matplotlib.colorbar",
+                 "PIL", "PIL.PngImagePlugin", "fontTools", "fontTools.subset"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+        logging.getLogger(name).propagate = False
+
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
