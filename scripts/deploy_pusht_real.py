@@ -84,8 +84,8 @@ LEGACY_WORKSPACE_BOUNDS = [[0.1, -0.15, -0.01, -1.57, 0],
 # Default: the measured demo envelope plus ~2 cm of xy margin, with the z floor
 # raised to just under the working height. Every pose inside this box was
 # actually executed by this arm during collection.
-WORKSPACE_BOUNDS = [[0.06, -0.38, 0.015, -1.57, 0],
-                    [0.50, 0.31, 0.25, 1.57, 0]]
+WORKSPACE_BOUNDS = [[0.1, -0.15, -0.01, -1.57, 0],
+                           [0.45, 0.25, 0.25, 1.57, 0]]
 # Camera topics in the order the DATA COLLECTION registered them (the archive's
 # metadata.json "provenance" block). The list index IS the dataset camera id:
 # 0 == images0/video0 == D435, 1 == images1/video1 == blue scene cam. Register
@@ -95,7 +95,7 @@ WORKSPACE_BOUNDS = [[0.06, -0.38, 0.015, -1.57, 0],
 # `--camera-topics /blue/image_raw --topic-camera-ids 1`).
 DATASET_CAMERA_TOPICS = ["/D435/color/image_raw", "/blue/image_raw"]
 CAMERA_TOPICS = list(DATASET_CAMERA_TOPICS)
-FIXED_Z_HEIGHT = 0.022
+FIXED_Z_HEIGHT = 0.03
 NEUTRAL_Z_HEIGHT = FIXED_Z_HEIGHT
 FIXED_GRIPPER = 0.0
 # The demo archive's actions are ±0.008 in x/y; the working script clips at the
