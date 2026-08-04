@@ -20,6 +20,14 @@ replay; --policy defaults to `auto`, which reads each directory's weight files
 cameras, resize, frame_stack and action normalization -- the buffer holds RAW
 camera frames and each model builds the stack its deploy client would.
 
+--drop-zero skips the expert's exactly-(0,0) steps, matching the trainers'
+--idle-filter drop_zero (24% of this collection). Those transitions were removed
+from training, so a policy fitted on the filtered set never learned to emit 0 and
+scores badly on them; keeping them in the comparison measures nothing useful. The
+commanded path is identical either way -- a zero delta moves nothing -- only the
+pauses disappear, so the replay finishes sooner and the T ends up in the same
+place.
+
 --variant is repeatable and runs SEVERAL inference configs per step, all against
 those same raw frames, then plots them together. That is the only fair
 comparison: a separate replay per config gives each one a different scene
@@ -578,14 +586,20 @@ def variant_stats(expert, policy_v):
 
 
 def plot_expert_vs_policy(expert, policy, executed, eef_meas, eef_demo,
-                          labels, out_path: Path, title: str) -> None:
-    """expert/executed: (T,2) metres. policy: (T,V,2). eef_*: (T,2) or None."""
+                          demo_steps, labels, out_path: Path, title: str) -> None:
+    """expert/executed: (T,2) metres. policy: (T,V,2). eef_*: (T,2) or None.
+
+    `demo_steps` is each executed step's index in the ORIGINAL episode, so the
+    time axis shows the gaps --drop-zero leaves behind.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     T = len(expert)
-    t = np.arange(T)
+    t = (np.arange(T) if demo_steps is None
+         else np.asarray(demo_steps)[:T].astype(int))
+    contiguous = len(t) == T and np.array_equal(t, np.arange(T))
     V = policy.shape[1]
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     stats = [variant_stats(expert, policy[:, v]) for v in range(V)]
@@ -603,7 +617,7 @@ def plot_expert_vs_policy(expert, policy, executed, eef_meas, eef_demo,
                     color=colors[v % len(colors)],
                     label=f"{labels[v]} (MAE {st['mae'][ax_i] * 1000:.2f} mm)")
         ax.axhline(0.0, color="k", lw=0.5)
-        ax.set_xlabel("timestep")
+        ax.set_xlabel("timestep" if contiguous else "demo timestep (idle dropped)")
         ax.set_ylabel(f"{name} [mm]")
         ax.set_title(name)
         ax.legend(fontsize=7)
@@ -732,6 +746,16 @@ def parse_args() -> argparse.Namespace:
                         "the ~2 GB archive is present.")
     p.add_argument("--max-steps", type=int, default=None,
                    help="truncate the replay (default: the whole episode).")
+    p.add_argument("--drop-zero", action="store_true",
+                   help="skip the expert's idle steps, matching the trainers' "
+                        "--idle-filter drop_zero. Those (0,0) transitions were "
+                        "removed from training, so a policy fitted on the "
+                        "filtered set never learned to emit 0 and is unfairly "
+                        "penalised on them. The commanded path is unchanged "
+                        "(a zero delta moves nothing); only the pauses go away.")
+    p.add_argument("--idle-eps", type=float, default=0.0,
+                   help="|a| <= this counts as idle for --drop-zero. 0.0 = "
+                        "exactly (0,0), which is what the trainers use.")
     p.add_argument("--align-cameras", type=int, nargs="+", default=[0, 1],
                    help="camera indices shown at the alignment gate.")
     p.add_argument("--align-alpha", type=float, default=0.5,
@@ -906,6 +930,21 @@ def main() -> int:
     zero_frac = float((np.linalg.norm(ep_actions, axis=1) == 0).mean())
     print(f"Episode {args.episode} from {source}: {len(ep_actions)} steps "
           f"(replaying {n_steps}), zero-action share {zero_frac:.1%}")
+
+    # Which demo steps this replay actually commands. With --drop-zero the idle
+    # transitions are skipped exactly as the trainers' --idle-filter drop_zero
+    # removed them from the training set; `demo_steps` keeps the original index
+    # of every executed step so the plot and the log stay aligned to the demo.
+    demo_steps = np.arange(n_steps)
+    if args.drop_zero:
+        idle = np.linalg.norm(ep_actions[:n_steps], axis=1) <= args.idle_eps
+        demo_steps = demo_steps[~idle]
+        if not len(demo_steps):
+            raise SystemExit(
+                f"--drop-zero removed every step of episode {args.episode}.")
+        print(f"  --drop-zero: {int(idle.sum())} idle steps skipped "
+              f"(|a| <= {args.idle_eps}), {len(demo_steps)} commanded")
+    n_exec = len(demo_steps)
     print(f"  demo EEF start={np.round(ep_eef[0], 4)} end={np.round(ep_eef[-1], 4)}")
     # 37 of the 151 episodes carry all-zero robot_eef_pose rows (the source
     # capture dropped the transform on those steps). They corrupt the start pose
@@ -1188,8 +1227,9 @@ def main() -> int:
         print(f"Log -> {log_dir}")
 
     blocking = not args.non_blocking
-    print(f"\nOpen-loop replay of {n_steps} EXPERT steps, blocking={blocking}, "
-          f"step_duration={args.step_duration}s"
+    print(f"\nOpen-loop replay of {n_exec} EXPERT steps"
+          + (f" ({n_steps - n_exec} idle skipped)" if n_exec != n_steps else "")
+          + f", blocking={blocking}, step_duration={args.step_duration}s"
           + ("  [DRY RUN: no motion]" if args.dry_run else "")
           + ("" if not variants else
              f", {len(variants)} shadow variant(s) over {len(models)} model(s) "
@@ -1197,16 +1237,19 @@ def main() -> int:
           + ". Keep a hand on the E-stop.")
     input("Press [Enter] to start.")
 
-    expert_log = np.full((n_steps, 2), np.nan)
-    executed_log = np.full((n_steps, 2), np.nan)
-    policy_log = np.full((n_steps, n_var, 2), np.nan)
-    eef_log = np.full((n_steps, 2), np.nan)
+    expert_log = np.full((n_exec, 2), np.nan)
+    executed_log = np.full((n_exec, 2), np.nan)
+    policy_log = np.full((n_exec, n_var, 2), np.nan)
+    eef_log = np.full((n_exec, 2), np.nan)
     sample_ms = [[] for _ in range(n_var)]
     step = -1
     last_exec = time.time()
 
     try:
-        for step in range(n_steps):
+        # `step` indexes the executed sequence; `demo_step` the original episode
+        # (they differ once --drop-zero skips the idle transitions).
+        for step, demo_step in enumerate(demo_steps):
+            demo_step = int(demo_step)
             raw_obs = grab_obs()
             frame_buf.append(raw_frames(raw_obs))
 
@@ -1229,7 +1272,7 @@ def main() -> int:
                     na_by_variant[v["label"]] = [float(x) for x in np.ravel(na)]
 
             # --- EXECUTED: the expert action, through the deploy pipeline ----
-            act_xy = ep_actions[step].copy()
+            act_xy = ep_actions[demo_step].copy()
             expert_log[step] = act_xy
 
             act_xy, snapped = d.apply_min_step(act_xy, args.min_step_xy)
@@ -1275,7 +1318,7 @@ def main() -> int:
                     f"{labels[vi]}=" + ("-" if not np.isfinite(policy_log[step, vi]).all()
                                         else str(np.round(policy_log[step, vi] * 1000, 2)))
                     for vi in range(len(variants)))
-                print(f"[{step:04d}/{n_steps}] expert(mm)="
+                print(f"[{step:04d}/{n_exec} demo {demo_step:04d}] expert(mm)="
                       f"{np.round(expert_log[step] * 1000, 2)} "
                       f"policy(mm) {pol} env_action={np.round(env_action, 5)}")
 
@@ -1290,6 +1333,7 @@ def main() -> int:
                         cam_ids)
                 log_fh.write(json.dumps({
                     "step": step,
+                    "demo_step": demo_step,
                     "t": time.time(),
                     "expert": expert_log[step].tolist(),
                     "executed": executed_log[step].tolist(),
@@ -1323,14 +1367,18 @@ def main() -> int:
     executed_log = executed_log[:done]
     policy_log = policy_log[:done]
     eef_log = eef_log[:done]
+    demo_steps = demo_steps[:done]
 
     clipped = int(np.sum(np.abs(executed_log - expert_log) > 1e-9))
     print(f"Expert steps altered by the deploy pipeline: {clipped}")
 
     if variants:
         exp_mag = np.linalg.norm(expert_log, axis=1).mean() * 1000
-        print(f"\nExpert |a| mean = {exp_mag:.2f} mm over {done} steps. "
-              f"Shadow variants (control period "
+        idle_share = float((np.linalg.norm(expert_log, axis=1) == 0).mean())
+        print(f"\nExpert |a| mean = {exp_mag:.2f} mm over {done} executed steps "
+              f"({idle_share:.1%} of them idle"
+              + (", --drop-zero on" if args.drop_zero else "")
+              + f"). Shadow variants (control period "
               f"{args.step_duration * 1000:.0f} ms):")
         print(f"  {'variant':<22} {'model':<14} {'MAE dx':>7} {'MAE dy':>7} "
               f"{'r dx':>6} {'r dy':>6} {'|a|':>7} {'ms/draw':>10}")
@@ -1362,16 +1410,18 @@ def main() -> int:
         plot_out = ((log_dir or ROOT / "results" / f"replay_ep{args.episode}")
                     / "expert_vs_policy.png")
     plot_expert_vs_policy(
-        expert_log, policy_log, executed_log, eef_meas, ep_eef[:done, :2],
-        labels, plot_out,
+        expert_log, policy_log, executed_log, eef_meas,
+        ep_eef[demo_steps, :2], demo_steps, labels, plot_out,
         f"episode {args.episode} of {ep_meta.get('source_archive', source)} — "
         "expert (executed) vs "
         + ", ".join(f"{m['name']} ({m['backend'].upper()})" for m in models)
-        + " (shadow)")
+        + " (shadow)" + (", idle steps dropped" if args.drop_zero else ""))
 
     if log_dir is not None:
         np.savez(log_dir / "replay.npz", expert=expert_log, executed=executed_log,
-                 policy=policy_log, eef_live=eef_log, eef_demo=ep_eef[:done],
+                 policy=policy_log, eef_live=eef_log,
+                 eef_demo=ep_eef[demo_steps], demo_steps=demo_steps,
+                 drop_zero=bool(args.drop_zero), idle_eps=float(args.idle_eps),
                  variant_labels=np.array(labels),
                  variant_models=np.array([v["model"] for v in variants]),
                  variant_backends=np.array([v["_model"]["backend"]
