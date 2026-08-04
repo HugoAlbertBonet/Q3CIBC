@@ -832,6 +832,12 @@ def parse_args() -> argparse.Namespace:
                    help="translate to THIS episode's first robot_eef_pose.")
     p.add_argument("--no-start-from-episode", dest="start_from_episode",
                    action="store_false")
+    p.add_argument("--start-z", type=float, default=None,
+                   help="metres. Height of the initial move. Default: "
+                        "--fixed-z-height, i.e. the height the env's z lock "
+                        "holds. Neither the asset's z nor the episode's is "
+                        "used: the archive's z column is the lock TARGET "
+                        "echoed back, not a measurement.")
     p.add_argument("--start-move-duration", type=float, default=1.5)
     p.add_argument("--max-initial-move-retries", type=int, default=5)
 
@@ -1177,9 +1183,19 @@ def main() -> int:
                       "mean-of-demos asset instead.")
             else:
                 start_T = start_T.copy()
-                start_T[:3, 3] = xyz.astype(np.float32)
+                # x/y only: the archive's z is the z-lock TARGET echoed back
+                # (three distinct values in 91,757 rows), not a measured height,
+                # so it says nothing about where the arm actually was.
+                start_T[:2, 3] = xyz[:2].astype(np.float32)
+        # Always start at the height the z lock will hold, so the initial move
+        # and the per-step lock agree instead of fighting over a 2 mm offset.
+        start_z = (args.start_z if args.start_z is not None
+                   else args.fixed_z_height)
+        start_T = start_T.copy()
+        start_T[2, 3] = np.float32(start_z)
         print(f"[INFO] Moving EEF to start pose (x={start_T[0,3]:.4f}, "
-              f"y={start_T[1,3]:.4f}, z={start_T[2,3]:.4f})...")
+              f"y={start_T[1,3]:.4f}, z={start_T[2,3]:.4f} "
+              f"= {'--start-z' if args.start_z is not None else '--fixed-z-height'})...")
         move_status, tries = None, 0
         while move_status != WidowXStatus.SUCCESS and tries < args.max_initial_move_retries:
             move_status = client.move(start_T, duration=args.start_move_duration)
