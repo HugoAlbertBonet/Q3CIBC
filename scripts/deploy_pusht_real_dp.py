@@ -102,6 +102,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--action-mode", default="2trans",
                    choices=["2trans", "3trans", "3trans1rot", "3trans3rot"])
     p.add_argument("--safety-max-xy-delta", type=float, default=d.SAFETY_MAX_XY_DELTA)
+    p.add_argument("--workspace-xyz", type=float, nargs=6, default=None,
+                   metavar=("X0", "Y0", "Z0", "X1", "Y1", "Z1"),
+                   help="override the server's workspace box (metres); see "
+                        "deploy_pusht_real.py. Only applied on init().")
     p.add_argument("--min-step-xy", type=float, default=0.0,
                    help="metres. If >0, any nonzero |dx|/|dy| below this is "
                         "snapped UP to it (sign kept); exact 0 stays 0.")

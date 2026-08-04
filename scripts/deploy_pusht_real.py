@@ -72,7 +72,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # --- constants copied from the confirmed-working eval_widowx_bfn.py ---------
-WORKSPACE_BOUNDS = [[0.1, -0.15, -0.01, -1.57, 0], [0.45, 0.25, 0.25, 1.57, 0]]
+# Inherited box. It does NOT contain the Push-T demonstrations: measured over
+# the 2026-07 collection (151 episodes, all-zero capture rows excluded) the
+# recorded EEF spans x [0.080, 0.479], y [-0.360, 0.293], z [0.020, 0.022], so
+# 23.4% of demo steps sit outside the y limits and 1.7% outside x. Commanding
+# the arm past the boundary pins it against the wall. Worse, the z floor here is
+# -0.01 m, i.e. 30 mm BELOW the 0.02 m working height, so this guard does
+# nothing to stop the wrist sagging onto the table.
+LEGACY_WORKSPACE_BOUNDS = [[0.1, -0.15, -0.01, -1.57, 0],
+                           [0.45, 0.25, 0.25, 1.57, 0]]
+# Default: the measured demo envelope plus ~2 cm of xy margin, with the z floor
+# raised to just under the working height. Every pose inside this box was
+# actually executed by this arm during collection.
+WORKSPACE_BOUNDS = [[0.06, -0.38, 0.015, -1.57, 0],
+                    [0.50, 0.31, 0.25, 1.57, 0]]
 # Camera topics in the order the DATA COLLECTION registered them (the archive's
 # metadata.json "provenance" block). The list index IS the dataset camera id:
 # 0 == images0/video0 == D435, 1 == images1/video1 == blue scene cam. Register
@@ -148,6 +161,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--action-mode", default="2trans",
                    choices=["2trans", "3trans", "3trans1rot", "3trans3rot"])
     p.add_argument("--safety-max-xy-delta", type=float, default=SAFETY_MAX_XY_DELTA)
+    p.add_argument("--workspace-xyz", type=float, nargs=6, default=None,
+                   metavar=("X0", "Y0", "Z0", "X1", "Y1", "Z1"),
+                   help="override the server's workspace box (metres). Default "
+                        f"{[WORKSPACE_BOUNDS[0][:3], WORKSPACE_BOUNDS[1][:3]]} = "
+                        "the measured demo envelope + margin. The legacy box "
+                        f"was {[LEGACY_WORKSPACE_BOUNDS[0][:3], LEGACY_WORKSPACE_BOUNDS[1][:3]]}, "
+                        "which excluded 23% of the demo steps and let z sag "
+                        "30 mm below the working height. Only applied on init().")
     p.add_argument("--min-step-xy", type=float, default=0.0,
                    help="metres. If >0, any nonzero |dx|/|dy| below this is "
                         "snapped UP to it (sign kept); exact 0 stays 0. The "
@@ -365,12 +386,30 @@ def demo_start_state(args) -> List[float] | None:
             float(getattr(args, "fixed_gripper", FIXED_GRIPPER))]
 
 
+def workspace_bounds_from_args(args) -> list:
+    """Bounds to send to the server; --workspace-xyz overrides the xyz limits."""
+    bounds = [list(WORKSPACE_BOUNDS[0]), list(WORKSPACE_BOUNDS[1])]
+    xyz = getattr(args, "workspace_xyz", None)
+    if xyz:
+        if len(xyz) != 6:
+            raise SystemExit(
+                "--workspace-xyz takes 6 numbers: x0 y0 z0 x1 y1 z1")
+        for i in range(3):
+            bounds[0][i], bounds[1][i] = float(xyz[i]), float(xyz[3 + i])
+    for i, ax in enumerate("xyz"):
+        if bounds[0][i] >= bounds[1][i]:
+            raise SystemExit(
+                f"workspace {ax} lower bound {bounds[0][i]} >= upper "
+                f"{bounds[1][i]}")
+    return bounds
+
+
 def build_env_params(args, WidowXConfigs) -> Dict[str, Any]:
     """Exactly the dict the confirmed-working BFN eval sends."""
     env_params = WidowXConfigs.DefaultEnvParams.copy()
     env_params.update({
         "camera_topics": [{"name": t} for t in args.camera_topics],
-        "override_workspace_boundaries": WORKSPACE_BOUNDS,
+        "override_workspace_boundaries": workspace_bounds_from_args(args),
         "move_duration": args.step_duration,
         "action_mode": args.action_mode,
         "skip_move_to_neutral": bool(args.skip_move_to_neutral),

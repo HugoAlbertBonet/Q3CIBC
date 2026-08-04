@@ -777,6 +777,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--action-mode", default="2trans",
                    choices=["2trans", "3trans", "3trans1rot", "3trans3rot"])
     p.add_argument("--safety-max-xy-delta", type=float, default=d.SAFETY_MAX_XY_DELTA)
+    p.add_argument("--workspace-xyz", type=float, nargs=6, default=None,
+                   metavar=("X0", "Y0", "Z0", "X1", "Y1", "Z1"),
+                   help="override the server's workspace box (metres); see "
+                        "deploy_pusht_real.py. Only applied on init(), so a "
+                        "reused env keeps whatever box it was started with.")
+    p.add_argument("--z-drop-abort", type=float, default=0.008,
+                   help="metres. Stop the replay if the measured EEF z falls "
+                        "this far below --fixed-z-height for --z-drop-steps "
+                        "consecutive steps: the pusher is then dragging on the "
+                        "table and the rest of the episode is meaningless. "
+                        "<=0 disables.")
+    p.add_argument("--z-drop-steps", type=int, default=3,
+                   help="consecutive out-of-tolerance steps before aborting.")
     p.add_argument("--min-step-xy", type=float, default=0.0)
     p.add_argument("--match-exposure", action="store_true",
                    help="OFF by default, same as the deploy client.")
@@ -1070,6 +1083,33 @@ def main() -> int:
     env_params = d.build_env_params(args, WidowXConfigs)
     print(f"Camera topics: {args.camera_topics} -> dataset camera ids "
           f"{topic_camera_ids}; policy reads {cam_ids}")
+
+    # Preflight: this episode was recorded inside the COLLECTION's workspace
+    # box, which is not necessarily the one we are about to send. Commanding the
+    # arm past a boundary pins it against the wall, and the wrist can sag onto
+    # the table from there -- the "z suddenly drops and stays down" failure.
+    wb = d.workspace_bounds_from_args(args)
+    print(f"Workspace box: x [{wb[0][0]}, {wb[1][0]}]  y [{wb[0][1]}, {wb[1][1]}]"
+          f"  z [{wb[0][2]}, {wb[1][2]}]")
+    demo_xyz = ep_eef[demo_steps]
+    live_rows = np.abs(demo_xyz).sum(axis=1) > 0
+    for i, ax in enumerate("xyz"):
+        col = demo_xyz[live_rows, i]
+        if not col.size:
+            continue
+        outside = int(((col < wb[0][i]) | (col > wb[1][i])).sum())
+        if outside:
+            print(f"[WARN] this episode's {ax} leaves the workspace box on "
+                  f"{outside}/{col.size} steps (demo range "
+                  f"[{col.min():.4f}, {col.max():.4f}], box "
+                  f"[{wb[0][i]}, {wb[1][i]}]). The server will clip those "
+                  f"commands and the replay cannot follow the demo. Widen it "
+                  f"with --workspace-xyz.")
+    if wb[0][2] < args.fixed_z_height - 0.005:
+        print(f"[WARN] the workspace z floor ({wb[0][2]}) is "
+              f"{1000 * (args.fixed_z_height - wb[0][2]):.0f} mm below "
+              f"--fixed-z-height ({args.fixed_z_height}), so it will not stop "
+              "the wrist from sagging onto the table.")
     print(f"action_mode={args.action_mode} lock_z={args.lock_z} "
           f"fixed_z_height={args.fixed_z_height} move_duration={args.step_duration}")
 
@@ -1243,6 +1283,8 @@ def main() -> int:
     eef_log = np.full((n_exec, 2), np.nan)
     sample_ms = [[] for _ in range(n_var)]
     step = -1
+    z_low = 0
+    abort_reason = None
     last_exec = time.time()
 
     try:
@@ -1296,6 +1338,37 @@ def main() -> int:
                 sv = np.ravel(np.asarray(st, dtype=np.float64))
                 if sv.size >= 2:
                     eef_log[step] = sv[:2]
+
+            # The pusher must stay at working height. If it sinks, it is
+            # dragging on the table: everything after that is noise, and the
+            # arm is loading the table, so stop rather than finish the episode.
+            cur_z = d.z_from_obs(raw_obs)
+            if args.z_drop_abort > 0 and cur_z is not None:
+                if cur_z < args.fixed_z_height - args.z_drop_abort:
+                    z_low += 1
+                    if z_low == 1:
+                        print(f"[WARN] EEF z = {cur_z:.4f} m, "
+                              f"{1000 * (args.fixed_z_height - cur_z):.1f} mm "
+                              f"below --fixed-z-height at step {step} "
+                              f"(demo {demo_step}), eef x={cur_x:.4f} "
+                              f"y={eef_log[step][1]:.4f}")
+                    if z_low >= max(1, args.z_drop_steps):
+                        abort_reason = (
+                            f"EEF z stayed >{1000 * args.z_drop_abort:.0f} mm "
+                            f"below {args.fixed_z_height} m for {z_low} steps "
+                            f"(now {cur_z:.4f} m) at step {step} / demo "
+                            f"{demo_step}. The pusher is on the table.")
+                        print(f"[ABORT] {abort_reason}")
+                        print("        Check, in order: (1) the workspace box "
+                              "-- the arm pins at a boundary and the wrist can "
+                              "sag from there, (2) whether the server env was "
+                              "re-initialised with THIS client's env_params "
+                              "(a reused env keeps its own box and z lock), "
+                              "(3) the z lock itself. --z-drop-abort 0 "
+                              "disables this guard.")
+                        break
+                else:
+                    z_low = 0
 
             if not args.dry_run:
                 if not blocking:
@@ -1359,7 +1432,8 @@ def main() -> int:
             pass
 
     done = step + 1
-    print(f"\nReplay stopped after {done} steps.")
+    print(f"\nReplay stopped after {done}/{n_exec} steps"
+          + (f" -- ABORTED: {abort_reason}" if abort_reason else "") + ".")
     if done <= 0:
         return 1
 
