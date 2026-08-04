@@ -124,6 +124,12 @@ def parse_args() -> argparse.Namespace:
 
     # --- control -------------------------------------------------------------
     p.add_argument("--steps", type=int, default=200, help="max control steps")
+    p.add_argument("--exec-horizon", type=int, default=1,
+                   help="receding horizon: how many sub-actions of a predicted "
+                        "action chunk to execute open-loop before re-predicting. "
+                        "1 (default) = re-predict every control step. Clipped to "
+                        "the checkpoint's chunk length (act_min size / 2), so it "
+                        "is a no-op for unchunked checkpoints.")
     p.add_argument("--step-duration", type=float, default=STEP_DURATION,
                    help="control period; also used as env move_duration. Default "
                         "is the collection's move_duration (20 Hz).")
@@ -1212,12 +1218,31 @@ def main() -> int:
         print(f"Forensic log -> {args.log_dir}")
 
     blocking = not args.non_blocking
+
+    # Receding horizon. A chunked checkpoint predicts `chunk_len` consecutive
+    # (dx,dy) pairs in one flat vector (act_min has size 2 * chunk_len); we
+    # execute the first `exec_horizon` of them open-loop, then re-predict.
+    # Observations are still appended to frame_buf on EVERY control step, so
+    # the frame stack stays a run of adjacent env steps as in training.
+    chunk_len = max(1, int(act_min.size) // 2)
+    if args.exec_horizon < 1:
+        raise SystemExit("--exec-horizon must be >= 1")
+    exec_horizon = min(args.exec_horizon, chunk_len)
+    if exec_horizon < args.exec_horizon:
+        print(f"[WARN] --exec-horizon {args.exec_horizon} > chunk length "
+              f"{chunk_len}; clipped to {exec_horizon}.")
+
     print(f"Closed-loop control up to {args.steps} steps, blocking={blocking}, "
           f"step_duration={args.step_duration}s. Keep a hand on the E-stop.")
+    print(f"  chunk_len={chunk_len} exec_horizon={exec_horizon} "
+          f"(re-predict every {exec_horizon} step(s))")
     input("Press [Enter] to start.")
 
     step = 0
     last_exec = time.time()
+    pending: list[np.ndarray] = []   # unexecuted (dx,dy) tail of the chunk
+    pending_norm: list[np.ndarray] = []
+    chunk_idx = 0
     try:
         for step in range(args.steps):
             raw_obs = grab_obs()
@@ -1225,12 +1250,22 @@ def main() -> int:
             frame_buf.append(policy_frames(raw_obs))
             obs_u8 = stack_to_tensor(frame_buf, device)
 
-            na = select_action(cp_gen, q_net, obs_u8, cp_selection, cp_temp,
-                               cond=make_cond(raw_obs), inference=args.inference,
-                               refine_iters=args.refine_iters,
-                               langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
-                               dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
-            act_xy = unnormalize(na, act_min, act_max, norm_range)
+            if not pending:
+                na_full = select_action(
+                    cp_gen, q_net, obs_u8, cp_selection, cp_temp,
+                    cond=make_cond(raw_obs), inference=args.inference,
+                    refine_iters=args.refine_iters,
+                    langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
+                    dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
+                act_full = unnormalize(na_full, act_min, act_max, norm_range)
+                pending = list(np.asarray(act_full).reshape(-1, 2)[:exec_horizon])
+                pending_norm = list(np.asarray(na_full).reshape(-1, 2)[:exec_horizon])
+                chunk_idx = 0
+            else:
+                chunk_idx += 1
+
+            na = pending_norm.pop(0)
+            act_xy = pending.pop(0)
 
             # Snap sub-min-step OOD dead-zone actions onto the supported grid
             # (see apply_min_step) so tiny nonzero commands actually execute
@@ -1272,7 +1307,8 @@ def main() -> int:
                     f"{status_name(step_status, WidowXStatus)}, "
                     f"env_action={np.asarray(env_action).tolist()}")
 
-            print(f"[{step:03d}] norm={np.round(na, 3)} -> "
+            print(f"[{step:03d}] chunk[{chunk_idx}/{exec_horizon - 1}] "
+                  f"norm={np.round(na, 3)} -> "
                   f"env_action={np.round(env_action, 5)}")
 
             if log_fh is not None:
@@ -1284,6 +1320,8 @@ def main() -> int:
                 log_fh.write(json.dumps({
                     "step": step,
                     "t": time.time(),
+                    "chunk_idx": chunk_idx,
+                    "exec_horizon": exec_horizon,
                     "norm": [float(x) for x in np.ravel(na)],
                     "action": [float(x) for x in np.ravel(act_xy)],
                     "env_action": [float(x) for x in np.ravel(env_action)],
