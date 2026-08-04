@@ -17,9 +17,15 @@ Key facts taken from the confirmed-working script (do not "fix" these):
   * ``env_params`` is built on top of ``WidowXConfigs.DefaultEnvParams.copy()``.
   * Init needs a LONG rpc timeout (180 s) and several retries; the short default
     is what produces spurious init failures.
-  * The start pose comes from ``reset(itraj=N)`` (the collect-style reset), NOT
-    from ``start_state`` and NOT from an explicit absolute ``move``. The optional
-    absolute move is documented there as "recommended false".
+  * ``reset()`` is what places the arm. NOTE: ``--i-traj`` cannot reach the
+    server -- ``WidowXClient.reset()`` takes no argument, so the server always
+    calls ``bridge_env.reset()`` with ``itraj=None``, which runs
+    ``move_to_startstate()`` -> ``env_params["start_state"]``. The collection
+    ran the OTHER branch (``reset(itraj=int)`` with ``move_to_rand_start_freq
+    == -1``), which never moves off neutral, so its demos start at the neutral
+    pose, x~0.117. We therefore set ``start_state`` to that same pose (see
+    ``demo_start_state``) instead of leaving the ``WidowXConfigs`` default of
+    (0.3, 0.0), which is ~18 cm further from the base than any demo.
   * ``blocking=True`` by default.
 
 Q3C-specific (differs from the BFN reference by necessity):
@@ -82,6 +88,10 @@ FIXED_GRIPPER = 0.0
 # The demo archive's actions are ±0.008 in x/y; the working script clips at the
 # same magnitude via vr_xy_step_clip.
 SAFETY_MAX_XY_DELTA = 0.008
+# 4x4 EEF transform of the demo start pose (mean over the archive's episodes;
+# x~0.117, y~-0.019). This is the collection's neutral pose: every demo's first
+# robot_eef_pose sits within a millimetre of it.
+START_EEP_NPY = ROOT / "scripts" / "assets" / "pusht_start_eep.npy"
 # The collection loop ran at move_duration = 0.05 s (20 Hz) -- see the archive
 # provenance and PUSHT_DATA_COLLECTION_RUNBOOK.md. Deploying at 0.1 s replays
 # every learned delta at half the demonstrated speed, so the default matches the
@@ -183,9 +193,16 @@ def parse_args() -> argparse.Namespace:
                         "--start-eep-npy (same as the ibc deploy).")
     p.add_argument("--no-move-to-demo-start", dest="move_to_demo_start",
                    action="store_false")
-    p.add_argument("--start-eep-npy", type=Path,
-                   default=ROOT / "scripts" / "assets" / "pusht_start_eep.npy",
+    p.add_argument("--start-eep-npy", type=Path, default=START_EEP_NPY,
                    help="4x4 EEF start transform (mean of demo starts, x~0.117).")
+    p.add_argument("--demo-start-state", dest="demo_start_state",
+                   action="store_true", default=True,
+                   help="derive the env's start_state from --start-eep-npy so "
+                        "reset() itself lands on the demo start pose. Off means "
+                        "reset() uses the WidowXConfigs default (0.3, 0.0) and "
+                        "the arm crosses the board on every reset.")
+    p.add_argument("--no-demo-start-state", dest="demo_start_state",
+                   action="store_false")
     p.add_argument("--start-move-duration", type=float, default=1.5)
     p.add_argument("--max-initial-move-retries", type=int, default=5)
 
@@ -312,6 +329,42 @@ def set_reqrep_timeout_ms(client: Any, timeout_ms: int) -> None:
         pass
 
 
+def demo_start_state(args) -> List[float] | None:
+    """``start_state`` that makes the server's reset() land on the demo start.
+
+    The server always resets with ``itraj=None`` (see the module docstring), so
+    ``move_to_startstate()`` runs and drives the arm to ``start_state``. The
+    ``WidowXConfigs`` default is ``[0.3, 0.0, 0.15, ...]`` -- ~18 cm further
+    from the base than any demo -- so the arm swings out across the board and
+    only comes back on the ``--move-to-demo-start`` move that follows.
+
+    The state layout is ``[x, y, z, roll, pitch, yaw, gripper]`` and
+    ``state2transform`` builds the rotation as ``euler(rpy) @ default_rot``.
+    The asset's rotation IS ``default_rot`` (``DEFAULT_ROTATION``, with
+    ``workspace_rotation_angle_z == 0``), so zero rpy reproduces the asset's
+    transform exactly -- this is the same target the explicit ``client.move``
+    sends, just applied one step earlier. ``move_to_startstate`` overwrites z
+    with ``fixed_z_height`` while ``lock_z`` is on; we pass it anyway so the
+    value is right if z-lock is ever disabled.
+
+    Returns None to keep the stock default (flag off, or asset missing).
+    """
+    # Callers that share this builder (deploy_pusht_real_dp.py,
+    # replay_pusht_episode.py) have no --demo-start-state of their own, so they
+    # follow their --move-to-demo-start instead.
+    if not getattr(args, "demo_start_state",
+                   getattr(args, "move_to_demo_start", True)):
+        return None
+    path = Path(getattr(args, "start_eep_npy", None) or START_EEP_NPY).expanduser()
+    if not path.is_file():
+        print(f"[WARN] {path} not found; reset() keeps the stock start_state "
+              "(0.3, 0.0), ~18 cm outside the demos' start distribution.")
+        return None
+    xyz = np.load(path).astype(np.float64)[:3, 3]
+    return [float(xyz[0]), float(xyz[1]), float(xyz[2]), 0.0, 0.0, 0.0,
+            float(getattr(args, "fixed_gripper", FIXED_GRIPPER))]
+
+
 def build_env_params(args, WidowXConfigs) -> Dict[str, Any]:
     """Exactly the dict the confirmed-working BFN eval sends."""
     env_params = WidowXConfigs.DefaultEnvParams.copy()
@@ -338,6 +391,9 @@ def build_env_params(args, WidowXConfigs) -> Dict[str, Any]:
         "lock_z": bool(args.lock_z),
         "action_clipping": None,
     })
+    start_state = demo_start_state(args)
+    if start_state is not None:
+        env_params["start_state"] = start_state
     return env_params
 
 
@@ -1011,6 +1067,10 @@ def main() -> int:
           f"{topic_camera_ids}; policy reads {cam_ids}")
     print(f"action_mode={args.action_mode} lock_z={args.lock_z} "
           f"fixed_z_height={args.fixed_z_height} move_duration={args.step_duration}")
+    _ss = env_params["start_state"]
+    print(f"reset start_state=({_ss[0]:.4f}, {_ss[1]:.4f}, {_ss[2]:.4f})"
+          + ("  [demo start pose]" if args.demo_start_state else
+             "  [WidowXConfigs default -- NOT where the demos start]"))
 
     client = WidowXClient(host=args.ip, port=args.port)
 
@@ -1043,9 +1103,10 @@ def main() -> int:
                 f"the server's widowx_envs.")
     print("WidowX connection established.")
 
-    # Collect-style reset: this is what puts the arm at the data-collection
-    # start pose. No explicit absolute move (the working reference calls that
-    # path "recommended false").
+    # Reset: move_to_neutral, then move_to_startstate -> env_params["start_state"],
+    # which --demo-start-state has set to the demo start pose. --i-traj never
+    # reaches the server (WidowXClient.reset takes no argument), so the itraj
+    # branch the collection used is unreachable from here.
     reset_status = reset_widowx_with_retry(client, WidowXStatus, args, args.i_traj)
     if reset_status != WidowXStatus.SUCCESS:
         raise RuntimeError(
