@@ -76,8 +76,8 @@ WORKSPACE_BOUNDS = [[0.1, -0.15, -0.01, -1.57, 0], [0.45, 0.25, 0.25, 1.57, 0]]
 # `--camera-topics /blue/image_raw --topic-camera-ids 1`).
 DATASET_CAMERA_TOPICS = ["/D435/color/image_raw", "/blue/image_raw"]
 CAMERA_TOPICS = list(DATASET_CAMERA_TOPICS)
-FIXED_Z_HEIGHT = 0.02
-NEUTRAL_Z_HEIGHT = 0.02
+FIXED_Z_HEIGHT = 0.022
+NEUTRAL_Z_HEIGHT = FIXED_Z_HEIGHT
 FIXED_GRIPPER = 0.0
 # The demo archive's actions are ±0.008 in x/y; the working script clips at the
 # same magnitude via vr_xy_step_clip.
@@ -326,9 +326,9 @@ def build_env_params(args, WidowXConfigs) -> Dict[str, Any]:
         "adaptive_wait": True,
         "fixed_z_height": float(args.fixed_z_height),
         "neutral_z_height": float(args.neutral_z_height),
-        "z_lock_feedback_gain": 0.2,
-        "z_lock_max_delta": 0.0015,
-        "z_lock_deadband": 0.002,
+        "z_lock_feedback_gain": 0.4,
+        "z_lock_max_delta": 0.02,
+        "z_lock_deadband": 0.001,
         "xy_action_deadband": 0.0015,
         "vr_vertical_reject_ratio": 0.6,
         "vr_xy_step_deadband": 0.0015,
