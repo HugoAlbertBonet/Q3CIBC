@@ -1203,6 +1203,24 @@ def main() -> int:
         if move_status != WidowXStatus.SUCCESS:
             print(f"[WARN] initial move not SUCCESS after {tries} tries "
                   f"(status={d.status_name(move_status, WidowXStatus)}); continuing.")
+        # z is owned by the SERVER: reset()'s move_to_startstate overwrites it
+        # with fixed_z_height while lock_z is on, and every 2trans step_action
+        # re-derives it from the z lock. So --start-z only survives until the
+        # first step. Show what the arm actually reports at each stage.
+        try:
+            reached_z = d.z_from_obs(client.get_observation())
+        except Exception:
+            reached_z = None
+        if reached_z is not None:
+            print(f"[z-trace] after the initial move: measured z={reached_z:.4f} m "
+                  f"(commanded {start_T[2, 3]:.4f}, "
+                  f"env fixed_z_height={args.fixed_z_height})")
+            if abs(reached_z - start_T[2, 3]) > 0.002:
+                print("          the move did NOT reach the commanded height -- "
+                      "the env's z lock is already driving z to fixed_z_height, "
+                      "so raising --start-z cannot help. Change "
+                      "--fixed-z-height (and re-init the server) or take z with "
+                      "--action-mode 3trans --z-hold.")
 
     # --- approach floor ------------------------------------------------------
     approach_floor_x = None
@@ -1370,6 +1388,10 @@ def main() -> int:
             # dragging on the table: everything after that is noise, and the
             # arm is loading the table, so stop rather than finish the episode.
             cur_z = d.z_from_obs(raw_obs)
+            if step == 0 and cur_z is not None:
+                print(f"[z-trace] at the first step_action: measured z="
+                      f"{cur_z:.4f} m. From here the env's z lock owns z; the "
+                      "client sends only (dx, dy) in 2trans.")
             if args.z_drop_abort > 0 and cur_z is not None:
                 if cur_z < args.fixed_z_height - args.z_drop_abort:
                     z_low += 1
