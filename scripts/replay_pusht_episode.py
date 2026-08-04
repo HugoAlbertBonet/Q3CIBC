@@ -321,10 +321,19 @@ def load_model(name: str, seed_dir: Path, policy: str, args, device) -> dict:
             f"{name}: checkpoint says in_channels={m['in_channels']} but its "
             f"camera_streams {cams} x frame_stack {m['frame_stack']} imply "
             f"{expected}.")
-    if m["act_min"].size != 2:
+    # Action chunking (--action-chunk K): the heads are 2*K wide and the trainer
+    # sized them from dataset.action_shape. Shadowing one is fine -- nothing is
+    # executed -- and we compare its FIRST predicted step against the expert,
+    # which is what an open-loop chunk would command at this timestep.
+    if m["act_min"].size % 2:
         raise SystemExit(
-            f"{name}: act_min has {m['act_min'].size} entries, i.e. this "
-            "checkpoint predicts an action chunk, which no deploy client executes.")
+            f"{name}: act_min has {m['act_min'].size} entries, which is not a "
+            "whole number of (dx, dy) pairs.")
+    m["action_chunk"] = int(m["act_min"].size // 2)
+    if m["action_chunk"] > 1 and backend == "dp":
+        raise SystemExit(
+            f"{name}: action_chunk={m['action_chunk']}, but the DP sampler "
+            "(deploy_pusht_real_dp.dp_sample_action) hardcodes action_dim=2.")
 
     # EEF (x, y) conditioning: Q3C runs trained with --cond-eef-xy carry it; the
     # DP client has no conditioned path (deploy_pusht_real_dp.build_dp_policy
@@ -344,6 +353,18 @@ def load_model(name: str, seed_dir: Path, policy: str, args, device) -> dict:
         m["cond_min"] = np.asarray(norm_stats["cond_min"], np.float32)
         m["cond_max"] = np.asarray(norm_stats["cond_max"], np.float32)
 
+    # Printed at startup so an encoder mismatch is visible before load_state_dict
+    # fails: these are exactly the knobs that must agree with training.
+    ek = norm_stats.get("encoder_kind", env_cfg.get("model", {}).get(
+        "encoder_kind", "conv_maxpool"))
+    m["encoder_desc"] = str(ek)
+    if str(ek) == "resnet18":
+        mm = env_cfg.get("model", {})
+        m["encoder_desc"] += (
+            f"(norm={norm_stats.get('encoder_norm_kind', mm.get('encoder_norm_kind', 'bn'))},"
+            f"kp={norm_stats.get('encoder_num_kp', mm.get('encoder_num_kp', 64))},"
+            f"pretrained={bool(norm_stats.get('encoder_pretrained', mm.get('encoder_pretrained', True)))})")
+
     suffix = "" if args.no_ema else "_ema"
     m["which"] = "raw" if args.no_ema else "EMA"
     if backend == "dp":
@@ -362,7 +383,7 @@ def load_model(name: str, seed_dir: Path, policy: str, args, device) -> dict:
                        f"T={dpar.get('num_train_timesteps')}")
     else:
         cp_gen, q_net = d.build_models(env_cfg, m["in_channels"], device,
-                                       cond_dim=cond_dim)
+                                       cond_dim=cond_dim, norm_stats=norm_stats)
         d.load_weights(cp_gen, seed_dir / f"control_point_generator{suffix}.pt",
                        device)
         d.load_weights(q_net, seed_dir / f"q_estimator{suffix}.pt", device)
@@ -921,7 +942,10 @@ def main() -> int:
             print(f"    {m['detail']}  frame_stack={m['frame_stack']} "
                   f"cameras={m['cams']} (ids {m['cam_ids']}) "
                   f"model_hw={m['image_hw']} in_channels={m['in_channels']} "
-                  f"cond_dim={m['cond_dim']}")
+                  f"cond_dim={m['cond_dim']} encoder={m['encoder_desc']}")
+            if m["action_chunk"] > 1:
+                print(f"    action_chunk={m['action_chunk']} -> comparing the "
+                      "FIRST predicted step against the expert")
             print(f"    act_min={m['act_min']} act_max={m['act_max']} "
                   f"norm_range={m['norm_range']}")
 
@@ -1198,8 +1222,10 @@ def main() -> int:
                     t0 = time.time()
                     na = sample(v, stacks[m["name"]], raw_obs)
                     sample_ms[vi].append((time.time() - t0) * 1000.0)
+                    # Chunked heads denormalize as a whole, then we keep the
+                    # first (dx, dy): the step this timestep would execute.
                     policy_log[step, vi] = d.unnormalize(
-                        na, m["act_min"], m["act_max"], m["norm_range"])
+                        na, m["act_min"], m["act_max"], m["norm_range"])[:2]
                     na_by_variant[v["label"]] = [float(x) for x in np.ravel(na)]
 
             # --- EXECUTED: the expert action, through the deploy pipeline ----

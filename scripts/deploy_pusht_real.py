@@ -632,22 +632,41 @@ def load_run_config(seed_dir: Path) -> dict:
     return config["environments"][config["active_env"]]
 
 
-def build_models(env: dict, in_channels: int, device, cond_dim: int = 0):
+def build_models(env: dict, in_channels: int, device, cond_dim: int = 0,
+                 norm_stats: dict | None = None):
     """Reconstruct CP generator + Q estimator exactly as the trainer did.
 
-    Reads the model block from the per-run config so any hyperparameter change
-    is picked up rather than hardcoded. `cond_dim` comes from norm_stats: 0 for
-    the pixels-only checkpoints, 2 when the run was trained with EEF (x, y)
-    conditioning (--cond-eef-xy). It MUST match what training used or the head's
-    input width is wrong and load_state_dict fails.
+    Mirrors combinedv2_cpascounter_training.py's pixel-model branch argument for
+    argument. Every knob it reads from the run config's `model` block must be
+    forwarded here or load_state_dict fails on a shape mismatch -- the ResNet-18
+    lines (batches/pushtWidowXlib*.txt: --encoder-kind resnet18 --encoder-norm-
+    kind gn --encoder-num-kp 128) differ from the conv_maxpool defaults in the
+    encoder stem, the norm layers AND the SpatialSoftmax keypoint count.
+
+    `cond_dim` comes from norm_stats: 0 for the pixels-only checkpoints, 2 when
+    the run was trained with EEF (x, y) conditioning (--cond-eef-xy).
+
+    `norm_stats`, when given, wins over the config for the encoder block and
+    fixes the action width: the trainer sizes both heads from
+    dataset.action_shape (= 2 * action_chunk), while the config's `action_dim`
+    stays 2 even for a chunked run.
     """
     from utils.models import PixelControlPointGenerator, PixelQEstimator
 
     m = env["model"]
-    enc_h = int(env.get("encoder_target_height", 180))
-    enc_w = int(env.get("encoder_target_width", 240))
-    action_dim = int(env.get("action_dim", 2))
+    ns = norm_stats or {}
+
+    def pick(key, default, cast=None):
+        v = ns.get(key, m.get(key, default))
+        return cast(v) if cast is not None else v
+
+    enc_h = int(ns.get("encoder_target_height", env.get("encoder_target_height", 180)))
+    enc_w = int(ns.get("encoder_target_width", env.get("encoder_target_width", 240)))
     a_lo, a_hi = env.get("action_bounds", [-1.0, 1.0])
+    # The head width is the ACTION SHAPE the trainer used, i.e. 2 * action_chunk.
+    action_dim = int(env.get("action_dim", 2))
+    if "act_min" in ns:
+        action_dim = int(np.asarray(ns["act_min"]).size)
 
     control_points = int(m.get("control_points", 50))
     num_neurons = int(m.get("num_neurons", 512))
@@ -655,9 +674,36 @@ def build_models(env: dict, in_channels: int, device, cond_dim: int = 0):
     cp_width = int(m.get("cp_width", num_neurons))
     cp_depth = int(m.get("cp_depth", num_hidden_layers))
     cp_network_kind = m.get("cp_network_kind", "mlp")
+    cp_use_spectral_norm = bool(m.get("cp_use_spectral_norm", False))
     value_width = int(m.get("value_width", 1024))
     value_num_blocks = int(m.get("value_num_blocks", 1))
-    encoder_kind = m.get("encoder_kind", "conv_maxpool")
+
+    # Encoder block -- the part that silently breaks a resnet18 checkpoint.
+    encoder_kind = pick("encoder_kind", "conv_maxpool", str)
+    encoder_feature_dim = pick("encoder_feature_dim", 256, int)
+    # Weights come from the state_dict; `pretrained` only affects train-time
+    # init, but it must still match because it selects the same module tree.
+    encoder_pretrained = pick("encoder_pretrained", True, bool)
+    encoder_num_kp = pick("encoder_num_kp", 64, int)
+    encoder_norm_kind = pick("encoder_norm_kind", "bn", str)
+    encoder_per_camera = pick("encoder_per_camera", False, bool)
+    cond_fusion = pick("cond_fusion", "concat", str)
+    goal_dim = int(ns.get("goal_emb_dim", 0))
+
+    shared = dict(
+        in_channels=in_channels,
+        encoder_target_height=enc_h,
+        encoder_target_width=enc_w,
+        encoder_feature_dim=encoder_feature_dim,
+        cond_dim=cond_dim,
+        encoder_kind=encoder_kind,
+        encoder_pretrained=encoder_pretrained,
+        encoder_num_kp=encoder_num_kp,
+        encoder_norm_kind=encoder_norm_kind,
+        encoder_per_camera=encoder_per_camera,
+        cond_fusion=cond_fusion,
+        goal_dim=goal_dim,
+    )
 
     cp_gen = PixelControlPointGenerator(
         output_dim=action_dim,
@@ -667,24 +713,15 @@ def build_models(env: dict, in_channels: int, device, cond_dim: int = 0):
         network_kind=cp_network_kind,
         width=cp_width,
         depth=cp_depth,
-        in_channels=in_channels,
-        encoder_target_height=enc_h,
-        encoder_target_width=enc_w,
-        cond_dim=cond_dim,
-        encoder_kind=encoder_kind,
-        goal_dim=0,
+        use_spectral_norm=cp_use_spectral_norm,
+        **shared,
     ).to(device).eval()
 
     q_net = PixelQEstimator(
         action_dim=action_dim,
-        in_channels=in_channels,
-        encoder_target_height=enc_h,
-        encoder_target_width=enc_w,
         value_width=value_width,
         value_num_blocks=value_num_blocks,
-        cond_dim=cond_dim,
-        encoder_kind=encoder_kind,
-        goal_dim=0,
+        **shared,
     ).to(device).eval()
 
     return cp_gen, q_net
@@ -922,7 +959,8 @@ def main() -> int:
 
     device = torch.device(args.device if (torch.cuda.is_available() or args.device == "cpu")
                           else "cpu")
-    cp_gen, q_net = build_models(env_cfg, in_channels, device, cond_dim=cond_dim)
+    cp_gen, q_net = build_models(env_cfg, in_channels, device, cond_dim=cond_dim,
+                                 norm_stats=norm_stats)
     suffix = "" if args.no_ema else "_ema"
     load_weights(cp_gen, seed_dir / f"control_point_generator{suffix}.pt", device)
     load_weights(q_net, seed_dir / f"q_estimator{suffix}.pt", device)
