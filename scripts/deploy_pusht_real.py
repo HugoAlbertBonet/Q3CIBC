@@ -418,11 +418,16 @@ def build_env_params(args, WidowXConfigs) -> Dict[str, Any]:
         "adaptive_wait": True,
         "fixed_z_height": float(args.fixed_z_height),
         "neutral_z_height": float(args.neutral_z_height),
-        # Collection values (conf_clam_pusht.py). max_delta is a RATE LIMIT on
-        # the z correction, not a strength knob: at 20 Hz, 0.02 authorises a
-        # 2 cm vertical jump in one step whenever the error is large (post-reset,
-        # after an IK failure), while changing nothing in steady state for any
-        # sag below ~5 mm.
+        # The COLLECTION values, read from the per-session config.json inside
+        # data/pusht_2026_07.zip -- NOT from conf_clam_pusht.py, which is the
+        # stale snapshot (it also claims move_duration 0.08 when the data
+        # measures 0.0503). 15 of 16 sessions ran gain 0.4 / max_delta 0.02 /
+        # deadband 0.001; only the first (2026-07-27) used 0.2 / 0.0015 / 0.002.
+        # Do not "restore" those older numbers.
+        #
+        # Note the correction does NOT accumulate: locked_z is rebuilt from
+        # fixed_z_height every step, so max_delta caps the TOTAL correction at
+        # fixed_z_height + max_delta, it is not a per-step rate limit.
         "z_lock_feedback_gain": 0.2,
         "z_lock_max_delta": 0.0015,
         "z_lock_deadband": 0.002,
