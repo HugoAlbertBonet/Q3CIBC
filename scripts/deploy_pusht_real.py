@@ -418,9 +418,14 @@ def build_env_params(args, WidowXConfigs) -> Dict[str, Any]:
         "adaptive_wait": True,
         "fixed_z_height": float(args.fixed_z_height),
         "neutral_z_height": float(args.neutral_z_height),
-        "z_lock_feedback_gain": 0.4,
-        "z_lock_max_delta": 0.02,
-        "z_lock_deadband": 0.001,
+        # Collection values (conf_clam_pusht.py). max_delta is a RATE LIMIT on
+        # the z correction, not a strength knob: at 20 Hz, 0.02 authorises a
+        # 2 cm vertical jump in one step whenever the error is large (post-reset,
+        # after an IK failure), while changing nothing in steady state for any
+        # sag below ~5 mm.
+        "z_lock_feedback_gain": 0.2,
+        "z_lock_max_delta": 0.0015,
+        "z_lock_deadband": 0.002,
         "xy_action_deadband": 0.0015,
         "vr_vertical_reject_ratio": 0.6,
         "vr_xy_step_deadband": 0.0015,
