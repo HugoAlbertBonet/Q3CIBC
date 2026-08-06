@@ -51,6 +51,19 @@ Usage (server already up):
     python scripts/deploy_pusht_real.py \
         --seed-dir checkpoints/pusht_real_combinedv2/seed_0011 \
         --device cpu --steps 200 --log-dir results/run_new
+
+Scoring: ``--measure`` reads the final frame of every registered camera through
+measure_target_coverage.py and appends one row per episode to
+``results/pusht/experiments.csv`` (``--results-csv``), recording the checkpoint,
+the inference settings, ``--start-position``, the coverage each camera saw, and
+the centroid error. Repeating a parameter combination adds a row with the next
+``trial`` number instead of overwriting the previous one. Scoring runs even if
+the episode is interrupted, and a failure there never fails the run::
+
+    python scripts/deploy_pusht_real.py \
+        --seed-dir checkpoints/pusht_real_combinedv2/seed_0011 \
+        --steps 200 --inference langevin --refine-iters 50 \
+        --measure --start-position top
 """
 
 from __future__ import annotations
@@ -110,6 +123,13 @@ START_EEP_NPY = ROOT / "scripts" / "assets" / "pusht_start_eep.npy"
 # every learned delta at half the demonstrated speed, so the default matches the
 # data.
 STEP_DURATION = 0.05
+# Where --measure appends its rows.
+RESULTS_CSV = ROOT / "results" / "pusht" / "experiments.csv"
+RESULTS_COLUMNS = ["seed_dir", "inference", "refine_iters", "start_position",
+                   "trial", "coverage_cam0", "coverage_cam1", "dist_centroid"]
+# A row's identity: another run with all four equal gets the next trial number
+# rather than overwriting the old one.
+RESULTS_KEY = ("seed_dir", "inference", "refine_iters", "start_position")
 
 
 def parse_args() -> argparse.Namespace:
@@ -301,6 +321,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dump-dir", type=Path, default=ROOT / "deploy_dryrun")
     p.add_argument("--log-dir", type=Path, default=None,
                    help="per-step forensic log: raw/*.npy, fed/*.png, steps.jsonl")
+    p.add_argument("--measure", action="store_true",
+                   help="after the episode, score the final frame with "
+                        "measure_target_coverage.py and append a row to "
+                        "--results-csv")
+    p.add_argument("--start-position", default="top",
+                   help="where the block started; recorded in the results CSV")
+    p.add_argument("--results-csv", type=Path, default=RESULTS_CSV,
+                   help="results table appended to by --measure (created, with "
+                        "its parent directories, if missing)")
     return p.parse_args()
 
 
@@ -657,6 +686,81 @@ def build_stack_frame(raw_obs: Dict[str, Any], cam_ids: List[int],
     per_cam = [preprocess(frame_for_camera(raw_obs, c, topic_camera_ids),
                           out_hw, gains=gains) for c in cam_ids]
     return np.concatenate(per_cam, axis=-1)
+
+
+# ---------------------------------------------------------------------------
+# end-of-episode scoring (--measure)
+# ---------------------------------------------------------------------------
+
+def score_final_frames(frames: Dict[int, np.ndarray]) -> Dict[str, Any]:
+    """Coverage per camera and centroid error, from measure_target_coverage.
+
+    ``frames`` maps DATASET camera id -> final RGB frame. That script carries
+    the target outline and the projection bias as compiled-in constants for
+    this rig, so nothing here needs a dataset or a calibration directory.
+    """
+    import cv2
+
+    if str(Path(__file__).resolve().parent) not in sys.path:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import measure_target_coverage as mtc
+
+    out: Dict[str, Any] = {"coverage_cam0": None, "coverage_cam1": None,
+                           "dist_centroid": None}
+    dists = []
+    for cam_id, rgb in sorted(frames.items()):
+        camera = f"images{cam_id}"
+        if camera not in mtc.TARGET_POLYGONS:
+            print(f"[measure] no target polygon for {camera}; skipping it")
+            continue
+        bgr = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2BGR)
+        target = mtc.builtin_mask(camera, bgr.shape[:2])
+        background = mtc.load_background(None, camera, bgr.shape[:2])
+        res, _ = mtc.measure_frame(
+            bgr, target, background=background,
+            goal_offset=mtc.load_goal_offset(None, camera))
+        out[f"coverage_cam{cam_id}"] = round(float(res["covered_frac"]), 4)
+        if background is not None:
+            shift = mtc.ShiftChecker(background, target)(bgr, mtc.red_mask(bgr))
+            if shift > 3.0:
+                print(f"[measure] WARNING {camera} has moved {shift:.1f} px since "
+                      f"the target was calibrated; the score is unreliable")
+        if "centroid_dist_px" in res:
+            dists.append(res["centroid_dist_px"])
+    if dists:
+        # Worst camera, matching measure_target_coverage's own combined figure:
+        # the two agree closely near the goal and diverge when the block is far,
+        # where each view foreshortens the error differently.
+        out["dist_centroid"] = round(float(max(dists)), 2)
+    return out
+
+
+def append_result_row(csv_path: Path, row: Dict[str, Any]) -> int:
+    """Append one experiment, numbering trials within its parameter combo."""
+    import csv as _csv
+
+    csv_path = Path(csv_path).expanduser()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    trial = 0
+    if csv_path.is_file():
+        with csv_path.open(newline="") as fh:
+            for old in _csv.DictReader(fh):
+                if all(str(old.get(k, "")) == str(row[k]) for k in RESULTS_KEY):
+                    try:
+                        trial = max(trial, int(old.get("trial", 0)) + 1)
+                    except (TypeError, ValueError):
+                        continue
+    row = dict(row, trial=trial)
+
+    write_header = not csv_path.is_file() or csv_path.stat().st_size == 0
+    with csv_path.open("a", newline="") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=RESULTS_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({k: ("" if row.get(k) is None else row.get(k))
+                         for k in RESULTS_COLUMNS})
+    return trial
 
 
 def save_fed_png(path_stem: Path, block: np.ndarray, cam_ids: List[int]) -> None:
@@ -1445,6 +1549,31 @@ def main() -> int:
     finally:
         if log_fh is not None:
             log_fh.close()
+        # Score before stopping the client: the observation stream is what the
+        # measurement reads, and it dies with the connection. An interrupted
+        # episode is still worth scoring, so this sits in the finally block --
+        # and it must never be the reason a run ends badly, hence the catch-all.
+        if args.measure:
+            try:
+                final_obs = grab_obs()
+                frames = {cam: frame_for_camera(final_obs, cam, topic_camera_ids)
+                          for cam in topic_camera_ids}
+                scores = score_final_frames(frames)
+                row = {
+                    "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
+                    "inference": args.inference,
+                    "refine_iters": args.refine_iters,
+                    "start_position": args.start_position,
+                    **scores,
+                }
+                trial = append_result_row(args.results_csv, row)
+                print(f"[measure] trial {trial}: "
+                      f"coverage cam0={scores['coverage_cam0']} "
+                      f"cam1={scores['coverage_cam1']} "
+                      f"centroid={scores['dist_centroid']} px "
+                      f"-> {args.results_csv}")
+            except Exception as exc:
+                print(f"[measure] FAILED, no row written: {exc!r}")
         try:
             client.stop()
         except Exception:
