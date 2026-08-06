@@ -31,21 +31,38 @@ and ``assets/pusht_target_bg_images{0,1}.jpg`` next to it.
 ``measure``
     For a frame (or a whole trajectory), segment the red block in HSV and
     report the fraction of the target mask it covers, plus the split of the
-    uncovered remainder into bare paper vs. other occlusion (gripper, arm).
+    uncovered remainder into bare paper vs. other occlusion (gripper, arm),
+    plus how far the block's centroid sits from where it belongs.
     With a reference image present, "bare paper" is decided per pixel against
     what that pixel looks like when empty -- so paper in the block's cast
     shadow still counts as uncovered paper instead of falling into "other" --
     and a drift check warns if the live view no longer matches the reference,
     which is the one way the fixed-rig assumption can silently break.
 
-Bias worth knowing before quoting the number: both cameras look at the table
+Bias worth knowing before quoting the numbers. Both cameras look at the table
 at an angle and the block is tall, so its *silhouette* strictly contains its
-footprint on the paper. Overlap measured from a silhouette is therefore an
-over-estimate of the true covered area, i.e. ``uncovered_frac`` is a lower
-bound on the real uncovered area. The per-camera numbers bracket the truth --
-``max(uncovered_frac)`` over cam0/cam1 is the tightest such bound, and that is
-what ``combined.uncovered_frac_lower_bound`` reports. Areas are pixel areas in
-each camera's own perspective, so the two cameras will not agree exactly.
+footprint on the paper. Two consequences:
+
+* Overlap measured from a silhouette over-estimates the covered area, so
+  ``uncovered_frac`` is a lower bound on the real uncovered area.
+  ``max(uncovered_frac)`` over cam0/cam1 is the tightest such bound, reported
+  as ``combined.uncovered_frac_lower_bound``. Areas are pixel areas in each
+  camera's own perspective, so the cameras will not agree exactly.
+* The silhouette's centroid is pulled off the footprint's centroid by a fixed
+  amount -- 26 px in cam0, 17 px in cam1, even for a block sitting perfectly in
+  the drawing. ``GOAL_CENTROID_OFFSET`` holds that bias and it is subtracted,
+  so ``centroid_dist_px`` is the placement error rather than the projection.
+  The check that this works: on well-placed demo finals the two cameras, which
+  share nothing but the block, independently agree to a few tenths of a px
+  (2.4/2.4, 2.1/2.2, 1.1/1.5). ``--raw-centroid`` skips the correction.
+
+That agreement holds while the block is near the goal. Once it is far away the
+error vector is foreshortened differently by each camera and the two diverge
+badly (52 px vs 96 px on one mid-episode frame), so treat a large centroid
+distance as "far, roughly this far" and only trust the small ones. Distances
+are in image px unless ``--target-length-mm`` is given, which scales by the
+drawn target's own long side -- good for a few cm around the goal, not a
+substitute for a homography.
 
 Examples
 --------
@@ -140,6 +157,18 @@ TARGET_POLYGONS: Dict[str, Tuple[Tuple[int, int], ...]] = {
     ),
 }
 POLYGON_IMAGE_SIZE = (480, 640)  # (h, w) the polygons were traced in
+
+# Where the block's *silhouette* centroid sits, relative to the drawn target's
+# centroid, when the block is correctly placed. It is not zero: the cameras
+# look at the table at an angle and the block is tall, so its visible side
+# faces drag the silhouette centroid away from the footprint -- 26 px in cam0,
+# 17 px in cam1. Measured over the well-placed final frames of 2026-07-30
+# (n=21 and n=29, +-2 px, which is the demos' own placement spread), it is a
+# fixed property of this rig, so subtracting it leaves the real error.
+GOAL_CENTROID_OFFSET: Dict[str, Tuple[float, float]] = {
+    "images0": (-1.8, -26.1),
+    "images1": (-8.3, -14.8),
+}
 
 # Under this rig's fixed lighting nothing belonging to the table is this dark:
 # the table sits around V ~ 140 and the pencil strokes around V ~ 100, so V
@@ -298,6 +327,7 @@ class Accumulation:
     clearest: np.ndarray          # single frame with the least red in it
     clearest_name: str
     n_frames: int
+    samples: List[np.ndarray]     # the frames the background median was built from
 
 
 def _masked_median(stack: np.ndarray, occluded: np.ndarray, rows: int = 60) -> np.ndarray:
@@ -380,7 +410,8 @@ def accumulate_line_votes(
     print(f"  accumulated {used} frames ({len(bg_stack)} into the background median)",
           file=sys.stderr)
     return Accumulation(ink_frac=frac, n_obs=obs, background=background,
-                        clearest=clearest, clearest_name=clearest_name, n_frames=used)
+                        clearest=clearest, clearest_name=clearest_name, n_frames=used,
+                        samples=bg_stack)
 
 
 def fill_outline(frac: np.ndarray, params: CalibParams,
@@ -461,6 +492,34 @@ def auto_mask(frac: np.ndarray, params: CalibParams,
     return best_mask, best_params
 
 
+def estimate_goal_offset(frames: Sequence[np.ndarray], target: np.ndarray,
+                         min_covered: float = 0.96) -> Optional[Tuple[float, float]]:
+    """Silhouette-centroid bias, from the frames where the block is on target.
+
+    Anything above ``min_covered`` is a block sitting in the drawing, so what
+    is left between the two centroids is the projection bias rather than a
+    placement error. Median over those frames; the spread across them is the
+    demos' own placement noise, a couple of px.
+    """
+    offsets = []
+    tgt = target > 0
+    n_target = int(tgt.sum())
+    if n_target == 0:
+        return None
+    goal = centroid(tgt)
+    for bgr in frames:
+        red = red_mask(bgr)
+        if int((tgt & (red > 0)).sum()) / n_target < min_covered:
+            continue
+        block = centroid(largest_component(red))
+        if block is not None:
+            offsets.append((block[0] - goal[0], block[1] - goal[1]))
+    if not offsets:
+        return None
+    arr = np.array(offsets)
+    return float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
+
+
 def polygon_mask(points: Sequence[Tuple[float, float]], shape: Tuple[int, int]) -> np.ndarray:
     mask = np.zeros(shape, np.uint8)
     pts = np.array(points, np.int32).reshape(-1, 1, 2)
@@ -480,8 +539,9 @@ def mask_to_polygon(mask: np.ndarray, epsilon: float = 2.0) -> List[Tuple[int, i
 
 
 def format_constants(polygons: Dict[str, List[Tuple[int, int]]],
-                     shape: Tuple[int, int]) -> str:
-    """The TARGET_POLYGONS literal, ready to replace the one in this file."""
+                     shape: Tuple[int, int],
+                     offsets: Optional[Dict[str, Tuple[float, float]]] = None) -> str:
+    """The calibration constants, ready to replace the ones in this file."""
     out = ["TARGET_POLYGONS = {"]
     for camera, pts in polygons.items():
         out.append(f'    "{camera}": (')
@@ -496,6 +556,12 @@ def format_constants(polygons: Dict[str, List[Tuple[int, int]]],
         out.append("    ),")
     out.append("}")
     out.append(f"POLYGON_IMAGE_SIZE = ({shape[0]}, {shape[1]})")
+    if offsets:
+        out.append("")
+        out.append("GOAL_CENTROID_OFFSET = {")
+        for camera, (dx, dy) in offsets.items():
+            out.append(f'    "{camera}": ({dx:.1f}, {dy:.1f}),')
+        out.append("}")
     return "\n".join(out)
 
 
@@ -548,6 +614,18 @@ def load_mask(masks_dir: Optional[str], camera: str, shape: Tuple[int, int]) -> 
     if mask.shape != shape:
         mask = cv2.resize(mask, (shape[1], shape[0]), interpolation=cv2.INTER_NEAREST)
     return mask
+
+
+def load_goal_offset(masks_dir: Optional[str], camera: str) -> Tuple[float, float]:
+    """Silhouette-centroid bias for a correctly placed block, in image px."""
+    meta_path = os.path.join(masks_dir, "targets.json") if masks_dir else ""
+    if meta_path and os.path.exists(meta_path):
+        with open(meta_path) as fh:
+            meta = json.load(fh).get(camera, {})
+        offset = meta.get("goal_centroid_offset")
+        if offset:
+            return float(offset[0]), float(offset[1])
+    return GOAL_CENTROID_OFFSET.get(camera, (0.0, 0.0))
 
 
 def load_background(masks_dir: Optional[str], camera: str,
@@ -618,8 +696,14 @@ class ShiftChecker:
         return float(np.hypot(dx, dy))
 
 
-def overlay(bgr: np.ndarray, target: np.ndarray, red: Optional[np.ndarray] = None) -> np.ndarray:
-    """Green = uncovered target, orange = covered target, blue outline = block."""
+def overlay(bgr: np.ndarray, target: np.ndarray, red: Optional[np.ndarray] = None,
+            goal_offset: Tuple[float, float] = (0.0, 0.0)) -> np.ndarray:
+    """Green = uncovered target, orange = covered target, blue outline = block.
+
+    The arrow runs from where the block's silhouette centroid *should* land to
+    where it does; its tail is the target centroid plus the projection bias,
+    which is why it is not on the drawing's centre.
+    """
     out = bgr.copy()
     if red is None:
         tint = out.copy()
@@ -633,15 +717,62 @@ def overlay(bgr: np.ndarray, target: np.ndarray, red: Optional[np.ndarray] = Non
     out = cv2.addWeighted(out, 0.55, tint, 0.45, 0)
     contours, _ = cv2.findContours(red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(out, contours, -1, (255, 0, 0), 1)
+
+    goal = centroid(target > 0)
+    block = centroid(largest_component(red))
+    if goal is not None and block is not None:
+        g = (int(round(goal[0] + goal_offset[0])), int(round(goal[1] + goal_offset[1])))
+        b = (int(round(block[0])), int(round(block[1])))
+        cv2.arrowedLine(out, g, b, (0, 0, 0), 2, tipLength=0.25)
+        cv2.drawMarker(out, g, (255, 255, 255), cv2.MARKER_CROSS, 13, 2)
+        cv2.drawMarker(out, b, (0, 0, 0), cv2.MARKER_TILTED_CROSS, 11, 2)
     return out
 
 
 # --------------------------------------------------------------------------
 # measurement
 # --------------------------------------------------------------------------
+def centroid(mask: np.ndarray) -> Optional[Tuple[float, float]]:
+    m = cv2.moments(mask.astype(np.uint8), binaryImage=True)
+    if m["m00"] <= 0:
+        return None
+    return m["m10"] / m["m00"], m["m01"] / m["m00"]
+
+
+def largest_component(mask: np.ndarray, min_px: int = 200) -> np.ndarray:
+    """Biggest blob, so a stray red speck cannot drag the block's centroid."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), 8)
+    if n <= 1:
+        return np.zeros_like(mask)
+    best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    if stats[best, cv2.CC_STAT_AREA] < min_px:
+        return np.zeros_like(mask)
+    return (labels == best).astype(np.uint8)
+
+
+def mm_per_px(target: np.ndarray, target_length_mm: Optional[float]) -> Optional[float]:
+    """Scale from the target's own long side, given its real length.
+
+    Only as good as the assumption that the drawing is planar and roughly
+    fronto-parallel over its own extent -- fine for a few centimetres of
+    table, not a substitute for a homography.
+    """
+    if not target_length_mm:
+        return None
+    contours, _ = cv2.findContours(target.astype(np.uint8), cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    (_, (w, h), _) = cv2.minAreaRect(max(contours, key=cv2.contourArea))
+    long_side = max(w, h)
+    return target_length_mm / long_side if long_side > 0 else None
+
+
 def measure_frame(bgr: np.ndarray, target: np.ndarray,
                   red_kw: Optional[Dict] = None,
-                  background: Optional[np.ndarray] = None) -> Dict:
+                  background: Optional[np.ndarray] = None,
+                  scale_mm_px: Optional[float] = None,
+                  goal_offset: Tuple[float, float] = (0.0, 0.0)) -> Dict:
     red = red_mask(bgr, **(red_kw or {}))
     paper = paper_mask(bgr, background)
     tgt = target > 0
@@ -651,7 +782,7 @@ def measure_frame(bgr: np.ndarray, target: np.ndarray,
     covered = int((tgt & (red > 0)).sum())
     uncovered = n_target - covered
     bare = int((tgt & (red == 0) & (paper > 0)).sum())
-    return {
+    res = {
         "target_px": n_target,
         "covered_px": covered,
         "uncovered_px": uncovered,
@@ -660,15 +791,35 @@ def measure_frame(bgr: np.ndarray, target: np.ndarray,
         "covered_frac": covered / n_target,
         "uncovered_frac": uncovered / n_target,
         "uncovered_paper_frac": bare / n_target,
-    }, red
+    }
+
+    goal = centroid(tgt)
+    block = centroid(largest_component(red))
+    if goal is not None and block is not None:
+        raw_dx, raw_dy = block[0] - goal[0], block[1] - goal[1]
+        dx, dy = raw_dx - goal_offset[0], raw_dy - goal_offset[1]
+        res.update({
+            "centroid_dx_px": dx,
+            "centroid_dy_px": dy,
+            "centroid_dist_px": float(np.hypot(dx, dy)),
+            "centroid_raw_dx_px": raw_dx,
+            "centroid_raw_dy_px": raw_dy,
+        })
+        if scale_mm_px:
+            res["centroid_dist_mm"] = res["centroid_dist_px"] * scale_mm_px
+    return res, red
 
 
 def _fmt(res: Dict) -> str:
-    return (f"uncovered {100 * res['uncovered_frac']:5.1f}%  "
+    text = (f"uncovered {100 * res['uncovered_frac']:5.1f}%  "
             f"(bare paper {100 * res['uncovered_paper_frac']:5.1f}%, "
             f"other {100 * (res['uncovered_frac'] - res['uncovered_paper_frac']):4.1f}%)  "
-            f"covered {100 * res['covered_frac']:5.1f}%  "
-            f"[{res['target_px']} target px]")
+            f"covered {100 * res['covered_frac']:5.1f}%")
+    if "centroid_dist_px" in res:
+        text += f"  centroid off by {res['centroid_dist_px']:5.1f} px"
+        if "centroid_dist_mm" in res:
+            text += f" ({res['centroid_dist_mm']:4.1f} mm)"
+    return text + f"  [{res['target_px']} target px]"
 
 
 # --------------------------------------------------------------------------
@@ -707,6 +858,7 @@ def cmd_calibrate(args) -> int:
     explicit_roi = parse_roi(args.roi)
     cameras = [args.camera] if args.camera else list(CAMERAS)
     polygons: Dict[str, List[Tuple[int, int]]] = {}
+    offsets: Dict[str, Tuple[float, float]] = {}
     poly_shape = POLYGON_IMAGE_SIZE
 
     os.makedirs(args.out, exist_ok=True)
@@ -723,12 +875,14 @@ def cmd_calibrate(args) -> int:
         meta = {"mode": args.mode, "reference_frame": ref_name,
                 "image_size": [int(shape[0]), int(shape[1])],
                 "roi": list(roi) if roi else None}
+        samples: List[np.ndarray] = []
 
         if args.mode == "auto":
             acc = accumulate_line_votes(source, params, stride=args.stride,
                                         max_frames=args.max_frames,
                                         bg_frames=args.bg_frames)
             mask, used = auto_mask(acc.ink_frac, params, roi, sweep=not args.no_sweep)
+            samples = acc.samples
             meta["params"] = asdict(used)
             meta["calibration_frames"] = acc.n_frames
             meta["clearest_frame"] = acc.clearest_name
@@ -760,6 +914,16 @@ def cmd_calibrate(args) -> int:
         area = int(mask.sum())
         meta["target_px"] = area
         meta["target_frac_of_image"] = area / float(shape[0] * shape[1])
+        if samples:
+            offset = estimate_goal_offset(samples, mask)
+            if offset is not None:
+                meta["goal_centroid_offset"] = list(offset)
+                offsets[camera] = offset
+                print(f"{camera}: goal centroid offset "
+                      f"({offset[0]:+.1f}, {offset[1]:+.1f}) px", file=sys.stderr)
+            else:
+                print(f"{camera}: no well-placed frame in the sample, goal centroid "
+                      f"offset left at the built-in value", file=sys.stderr)
         os.makedirs(args.out, exist_ok=True)
         cv2.imwrite(os.path.join(args.out, f"{camera}_target_overlay.png"),
                     overlay(ref, mask))
@@ -771,10 +935,17 @@ def cmd_calibrate(args) -> int:
               file=sys.stderr)
         print(f"{camera}: check {args.out}/{camera}_target_overlay.png before trusting it",
               file=sys.stderr)
+        if camera in TARGET_POLYGONS:
+            expected = int(builtin_mask(camera, shape).sum())
+            if expected and not 0.6 * expected <= area <= 1.4 * expected:
+                print(f"{camera}: WARNING mask is {area} px against {expected} px for the "
+                      f"built-in target -- a partly reconstructed outline looks exactly "
+                      f"like this; feed a session with more trajectories, or use "
+                      f"--mode manual", file=sys.stderr)
 
     if args.emit_constants and polygons:
-        print("\n# paste over TARGET_POLYGONS / POLYGON_IMAGE_SIZE in this script:\n")
-        print(format_constants(polygons, poly_shape))
+        print("\n# paste over the matching constants in this script:\n")
+        print(format_constants(polygons, poly_shape, offsets))
     return 0
 
 
@@ -807,12 +978,17 @@ def cmd_measure(args) -> int:
         rows = []
         drift_warned = False
         checker: Optional[ShiftChecker] = None
+        scale: Optional[float] = None
+        goal_offset = ((0.0, 0.0) if args.raw_centroid
+                       else load_goal_offset(args.masks, camera))
         for i in indices:
             name, bgr = source.get(i)
             target = load_mask(args.masks, camera, bgr.shape[:2])
             background = None if args.no_background else load_background(
                 args.masks, camera, bgr.shape[:2])
-            res, red = measure_frame(bgr, target, red_kw, background)
+            if scale is None:
+                scale = mm_per_px(target, args.target_length_mm)
+            res, red = measure_frame(bgr, target, red_kw, background, scale, goal_offset)
             res["frame"] = name
             res["camera"] = camera
             if background is not None:
@@ -829,7 +1005,7 @@ def cmd_measure(args) -> int:
                 os.makedirs(args.save_overlay, exist_ok=True)
                 out_path = os.path.join(args.save_overlay,
                                         f"{camera}_{_frame_index(name):05d}_overlay.png")
-                cv2.imwrite(out_path, overlay(bgr, target, red))
+                cv2.imwrite(out_path, overlay(bgr, target, red, goal_offset))
         per_camera[camera] = rows
         if args.all_frames:
             last = rows[-1]
@@ -843,15 +1019,21 @@ def cmd_measure(args) -> int:
         return 1
 
     finals = {cam: rows[-1] for cam, rows in per_camera.items()}
+    dists = {c: r["centroid_dist_px"] for c, r in finals.items() if "centroid_dist_px" in r}
     combined = {
         "uncovered_frac_lower_bound": max(r["uncovered_frac"] for r in finals.values()),
         "uncovered_frac_per_camera": {c: r["uncovered_frac"] for c, r in finals.items()},
+        "centroid_dist_px_per_camera": dists,
+        "centroid_dist_px_max": max(dists.values()) if dists else None,
         "note": ("silhouette overlap over-estimates coverage for a tall block, so "
                  "the per-camera uncovered fractions are lower bounds; the max is "
                  "the tightest one"),
     }
     print(f"combined: uncovered >= {100 * combined['uncovered_frac_lower_bound']:.1f}% "
           f"of the drawn target", file=sys.stderr)
+    if dists:
+        print(f"combined: centroid off by {max(dists.values()):.1f} px "
+              f"(worst camera)", file=sys.stderr)
 
     payload = {"per_camera": per_camera if args.all_frames else finals,
                "combined": combined}
@@ -934,6 +1116,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     m.add_argument("--val-min", type=int, default=10,
                    help="block HSV value floor; low so shaded faces still count as block")
     m.add_argument("--hue-tol", type=int, default=12, help="block hue half-width around 0")
+    m.add_argument("--raw-centroid", action="store_true",
+                   help="report the centroid offset without subtracting the calibrated "
+                        "projection bias (what the pixels literally show)")
+    m.add_argument("--target-length-mm", type=float,
+                   help="real length of the drawn T's long side; turns the centroid "
+                        "offset into mm using the target's own extent as the ruler")
     m.add_argument("--no-background", action="store_true",
                    help="ignore the calibrated reference image (absolute brightness "
                         "test for bare paper, no drift check)")
