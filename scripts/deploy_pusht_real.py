@@ -56,7 +56,8 @@ Scoring: ``--measure`` reads the final frame of every registered camera through
 measure_target_coverage.py and appends one row per episode to
 ``results/pusht/experiments.csv`` (``--results-csv``), recording the algorithm
 (``q3c``, the one this script deploys), the checkpoint, the inference settings,
-``--start-position``, the coverage each camera saw, and the centroid error.
+whether ``--control-z`` was on, ``--start-position``, the coverage each camera
+saw, and the centroid error.
 Repeating a parameter combination adds a row with the next ``trial`` number
 instead of overwriting the previous one. Scoring runs even if the episode is
 interrupted, and a failure there never fails the run::
@@ -127,12 +128,16 @@ STEP_DURATION = 0.05
 # Where --measure appends its rows.
 RESULTS_CSV = ROOT / "results" / "pusht" / "experiments.csv"
 RESULTS_COLUMNS = ["algorithm", "seed_dir", "inference", "refine_iters",
-                   "start_position", "trial", "coverage_cam0", "coverage_cam1",
-                   "dist_centroid"]
-# A row's identity: another run with all five equal gets the next trial number
+                   "control_z", "start_position", "trial", "coverage_cam0",
+                   "coverage_cam1", "dist_centroid"]
+# A row's identity: another run with all six equal gets the next trial number
 # rather than overwriting the old one.
-RESULTS_KEY = ("algorithm", "seed_dir", "inference", "refine_iters",
+RESULTS_KEY = ("algorithm", "seed_dir", "inference", "refine_iters", "control_z",
                "start_position")
+# What to write into a column that a pre-existing table has never heard of.
+# Every row already in such a table was written before the flag was recorded,
+# by this script, with the z loop off.
+RESULTS_LEGACY_DEFAULTS: Dict[str, Any] = {"algorithm": "q3c", "control_z": False}
 # This script deploys Q3C. The IBC variant lives in deploy_pusht_real_ibc.py,
 # so the column exists to keep both readable from one table.
 ALGORITHM = "q3c"
@@ -799,6 +804,11 @@ def score_final_frames(frames: Dict[int, np.ndarray]) -> Dict[str, Any]:
     return out
 
 
+def csv_text(value: Any) -> str:
+    """CSV form of one cell. ``None`` is blank; ``False`` is "False", not blank."""
+    return "" if value is None else str(value)
+
+
 def append_result_row(csv_path: Path, row: Dict[str, Any]) -> int:
     """Append one experiment, numbering trials within its parameter combo.
 
@@ -821,16 +831,18 @@ def append_result_row(csv_path: Path, row: Dict[str, Any]) -> int:
 
     stale_header = bool(header) and header != RESULTS_COLUMNS
     if stale_header:
-        # Backfill BEFORE counting trials: an old row is missing `algorithm`,
-        # so without this it matches nothing and the trial counter restarts,
-        # silently producing two rows numbered 0 for the same combination.
+        # Backfill BEFORE counting trials: a row from an older table is missing
+        # the newer key columns, so without this it matches nothing and the
+        # trial counter restarts, silently producing two rows numbered 0 for
+        # the same combination.
         for old in existing:
-            if not old.get("algorithm"):
-                old["algorithm"] = ALGORITHM
+            for column, fallback in RESULTS_LEGACY_DEFAULTS.items():
+                if not old.get(column):
+                    old[column] = fallback
 
     trial = 0
     for old in existing:
-        if all(str(old.get(k) or "") == str(row[k]) for k in RESULTS_KEY):
+        if all(csv_text(old.get(k)) == csv_text(row[k]) for k in RESULTS_KEY):
             try:
                 trial = max(trial, int(old.get("trial", 0)) + 1)
             except (TypeError, ValueError):
@@ -838,8 +850,7 @@ def append_result_row(csv_path: Path, row: Dict[str, Any]) -> int:
     row = dict(row, trial=trial)
 
     def as_text(record: Dict[str, Any]) -> Dict[str, str]:
-        return {k: ("" if record.get(k) is None else str(record.get(k)))
-                for k in RESULTS_COLUMNS}
+        return {k: csv_text(record.get(k)) for k in RESULTS_COLUMNS}
 
     if stale_header:
         with csv_path.open("w", newline="") as fh:
@@ -1754,6 +1765,7 @@ def main() -> int:
                     "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
                     "inference": args.inference,
                     "refine_iters": args.refine_iters,
+                    "control_z": bool(args.control_z),
                     "start_position": args.start_position,
                     **scores,
                 }
