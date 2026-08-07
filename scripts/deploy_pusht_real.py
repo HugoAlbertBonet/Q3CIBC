@@ -234,8 +234,19 @@ def parse_args() -> argparse.Namespace:
                         "1.0. Simulated at gain 1.0 this rings at 11 mm "
                         "peak-to-peak forever; 0.5 settles clean. Do not raise "
                         "this above ~0.8.")
-    p.add_argument("--control-z-max-dz", type=float, default=0.01,
-                   help="metres, per-step |dz| clip for --control-z (rate limit).")
+    p.add_argument("--control-z-max-dz", type=float, default=0.001,
+                   help="metres, per-step |dz| clip for --control-z. A true rate "
+                        "limit, not a cap on the achievable correction: the "
+                        "target accumulates, so this only sets how FAST z can "
+                        "climb (0.001 at 20 Hz = 20 mm/s). Sizing: the measured "
+                        "droop is ~82 mm per metre of x, so an arm crossing "
+                        "x=0.117->0.47 at the max demo rate (8 mm/step) needs "
+                        "0.64 mm/step just to keep up -- below ~0.0007 the loop "
+                        "falls behind during a fast traverse and never catches "
+                        "up while moving. 0.002 doubles the margin at no cost; "
+                        "0.001 tracks with the rate limit active ~53% of a "
+                        "worst-case traverse. Recovering 34 mm from a standing "
+                        "start takes 67 steps (3.4 s) at 0.001, 1.7 s at 0.002.")
     p.add_argument("--control-z-windup", type=float, default=0.04,
                    help="metres. Anti-windup: the commanded z target is clamped "
                         "to --control-z +/- this, which also caps the largest "
