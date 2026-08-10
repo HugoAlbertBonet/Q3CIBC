@@ -1,0 +1,29 @@
+# Push-T WidowX — libero_goal_pixels IBC recipe, image1 ONLY (single view),
+# new pusht_2026_07 dataset. IBC counterpart of pushtWidowXlib1cam (Q3C).
+#
+# Controlled single-view ablation of pushtWidowXlibIbc2cam: identical recipe and
+# sweep, camera 1 (fixed blue scene camera) only.
+#
+# Recipe = libero_goal_pixels IBC: Langevin counter-examples (100 train iters),
+# Langevin inference 1024x100, value 1024x1, lr 1e-3, 100k steps (defaults).
+#
+# SWEEP (4 jobs): counter-examples {8, 256} x encoder {conv_maxpool,
+# resnet18-imagenet}. action_chunk FIXED at 1.
+#
+# Fixed on every line: --action-chunk 1, --idle-filter drop_zero, --val-frac 0.1
+# --val-seed 0, --aug-photometric, new dataset, project2 paths, prebuilt cam1
+# cache (shared), distinct --output-root from the Q3C runs.
+#
+# --workers 4 matches submit_experiments.sh --cpus-per-task=4.
+
+# ── Ibc1c_c8_conv: 8 counter-examples, ConvMaxpool (libero-faithful)
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc1c_c8_conv --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 1 --action-chunk 1 --counter-examples 8 --encoder-kind conv_maxpool --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── Ibc1c_c8_imnet: 8 counter-examples, ResNet-18 ImageNet
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc1c_c8_imnet --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 1 --action-chunk 1 --counter-examples 8 --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── Ibc1c_c256_conv: 256 counter-examples, ConvMaxpool
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc1c_c256_conv --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 1 --action-chunk 1 --counter-examples 256 --encoder-kind conv_maxpool --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── Ibc1c_c256_imnet: 256 counter-examples, ResNet-18 ImageNet
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc1c_c256_imnet --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 1 --action-chunk 1 --counter-examples 256 --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric
