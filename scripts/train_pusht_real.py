@@ -225,6 +225,11 @@ def parse_args() -> argparse.Namespace:
     hp.add_argument("--mse-weight", type=float, default=10.0)
     hp.add_argument("--info-nce-weight", type=float, default=0.5)
     hp.add_argument("--generator-infonce-weight", type=float, default=0.05)
+    hp.add_argument("--noisy-expert-count", type=int, default=0,
+                    help="Add N Gaussian-jittered copies of the expert action as "
+                         "estimator negatives (regularizer; helped sim pushing).")
+    hp.add_argument("--noisy-expert-sigma-start", type=float, default=0.1)
+    hp.add_argument("--noisy-expert-sigma-final", type=float, default=0.02)
     hp.add_argument("--sep-weight", type=float, default=0.1)
     hp.add_argument("--entropy-bandwidth", type=float, default=0.01)
     hp.add_argument("--uniform-negatives", type=int, default=0)
@@ -346,7 +351,9 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "num_uniform_negatives": args.uniform_negatives,
             "num_langevin_negatives": args.langevin_negatives,
             "langevin_num_iterations": args.langevin_iters,
-            "noisy_expert_count": 0,
+            "noisy_expert_count": args.noisy_expert_count,
+            "noisy_expert_sigma_start": args.noisy_expert_sigma_start,
+            "noisy_expert_sigma_final": args.noisy_expert_sigma_final,
             "top_k_control_points": args.top_k_cps,
             "separation_epsilon": 0.02,
             "entropy_bandwidth": args.entropy_bandwidth,

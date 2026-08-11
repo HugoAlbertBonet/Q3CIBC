@@ -905,6 +905,7 @@ def main():
         print(f"Best-checkpoint selection: ON (every {best_ckpt_eval_interval} steps, "
               f"{best_ckpt_eval_seeds} seeds, keep max reward)")
     best_reward = float("-inf")
+    best_val_mae = float("inf")  # tracked + logged to wandb for model selection
 
     # ── Held-out validation helpers (action-MAE via the deploy-matching
     #    argmax-Q-over-CP-cloud selection). No-ops unless val_loader is set. ──
@@ -1243,10 +1244,19 @@ def main():
                 )
                 if not use_ema_eval:
                     control_point_generator.train(); estimator.train()
+                best_val_mae = min(best_val_mae, val_mae)
                 print(
                     f"[val] step {step}: action_MAE train={train_mae:.4f} "
-                    f"val={val_mae:.4f} gap={val_mae - train_mae:+.4f}"
+                    f"val={val_mae:.4f} gap={val_mae - train_mae:+.4f} "
+                    f"best_val={best_val_mae:.4f}"
                 )
+                wandb.log({
+                    "step": step,
+                    "val/action_mae": val_mae,
+                    "val/action_mae_train": train_mae,
+                    "val/action_mae_gap": val_mae - train_mae,
+                    "val/action_mae_best": best_val_mae,
+                })
 
             # Logging
             if step % log_interval == 0:

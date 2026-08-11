@@ -1,0 +1,47 @@
+# Push-T WidowX — Q3C 2cam v2, evidence-corrected from the sim hyperparam
+# history + the real-robot experiments.csv (L2c_ch16_scratch: top/bottom/
+# turned_right partial, turned_left/upside_down 0%; refinement HURTS at deploy).
+#
+# Base (runs 1-4) = the proven real config: resnet18 SCRATCH, chunk16, 2cam,
+# cp100/topk30, cp512x4, value 1024x1, lr/est 2e-4, GN, drop_zero, cosine t0 75k,
+# 150k, val 0.1, --aug-photometric. Two fixed evidence-backed changes:
+#   * --infonce-clamp 10  (pushing_pixels: clamp 10 -> 0.87 vs 20 -> 0.47)
+#   * --encoder-num-kp 256 (libero: 128 -> 0.68 vs 64 -> 0.24; orientation detail)
+#
+# SWEEP (runs 1-4): langevin-negatives {0, 8} x noisy-expert {off, on}.
+#   * langevin 0 vs 8: the pushing_pixels WINNER (sr 0.99) used 0 negatives, and
+#     langevin negatives HURT that env (0 -> 0.82 vs 8 -> 0.23). The real batch
+#     copied libero's 8 -- test whether removing them helps on real too.
+#   * noisy-expert: jittered-expert estimator regularizer; sim state-pushing hit
+#     1.00 with it vs 0.74 without. Smooths the energy landscape (the "refinement
+#     hurts / spurious basins" defect) -> aimed at OOD-orientation robustness.
+#
+# Run 5 = the EXACT best pushing_pixels recipe (trial 95, sr 0.99): conv_maxpool,
+# single-step, cp 20 (256x2), ZERO negatives, mse 10 / sep 0.1 / entropy 0.01,
+# clamp 10, lr 3e-4, cosine_warm_restarts t0 50k, NO aug (faithful). Tests
+# whether the actual sim winner transfers to real.
+#
+# Dropped per the history: imagenet (no real gain), encoder-per-camera
+# (libero True -> 0.16), more/CP-anchored langevin negatives (pixels want fewer).
+# SELECT the winner by ROBOT eval per position, NOT val-MAE (blind to OOD).
+#
+# 2cam -> --batch-size 64 (resnet OOMs 44-48 GB at 128). Run 5 is conv (lighter);
+# keeps batch 128 per the recipe -- drop to 64 if it OOMs.
+# --workers 4 matches submit_experiments.sh --cpus-per-task=4.
+
+# ── v2_ln0_ne0: base, langevin 0, noisy-expert off
+uv run python scripts/train_pusht_real.py --seed 11 --tag v2_ln0_ne0 --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07_v2 --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 256 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 10 --langevin-negatives 0 --langevin-iters 0 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── v2_ln0_ne1: base, langevin 0, noisy-expert ON
+uv run python scripts/train_pusht_real.py --seed 11 --tag v2_ln0_ne1 --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07_v2 --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 256 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 10 --langevin-negatives 0 --langevin-iters 0 --noisy-expert-count 8 --noisy-expert-sigma-start 0.05 --noisy-expert-sigma-final 0.005 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── v2_ln8_ne0: base, langevin 8, noisy-expert off
+uv run python scripts/train_pusht_real.py --seed 11 --tag v2_ln8_ne0 --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07_v2 --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 256 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 10 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── v2_ln8_ne1: base, langevin 8, noisy-expert ON
+uv run python scripts/train_pusht_real.py --seed 11 --tag v2_ln8_ne1 --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07_v2 --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 256 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 10 --langevin-negatives 8 --langevin-iters 100 --noisy-expert-count 8 --noisy-expert-sigma-start 0.05 --noisy-expert-sigma-final 0.005 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── v2_pushingpixels_exact: EXACT best pushing_pixels recipe (trial 95, sr 0.99).
+#    conv_maxpool, single-step, cp 20 (256x2), zero negatives, warm-restarts,
+#    NO aug (faithful). batch 128 (conv is light); drop to 64 if OOM.
+uv run python scripts/train_pusht_real.py --seed 11 --tag v2_pushingpixels_exact --workers 4 --batch-size 128 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07_v2 --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind conv_maxpool --control-points 20 --top-k-cps 8 --cp-width 256 --cp-depth 2 --value-width 1024 --value-num-blocks 1 --lr 3e-4 --est-lr 3e-4 --mse-weight 10.0 --sep-weight 0.1 --entropy-bandwidth 0.01 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 10 --langevin-negatives 0 --langevin-iters 0 --uniform-negatives 0 --scheduler cosine_warm_restarts --cosine-t0 50000 --steps 150000 --val-frac 0.1 --val-seed 0

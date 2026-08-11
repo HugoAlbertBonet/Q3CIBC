@@ -40,10 +40,10 @@ measure_target_coverage.py and appends one row per episode to
 ``results/pusht/experiments.csv`` (``--results-csv``) -- the SAME table the Q3C
 and IBC clients write, which is what the ``algorithm`` column is for. This
 script always records ``dp``; the ``inference`` column records the sampler
-schedule (``ddpm`` or ``ddim``). Repeating a parameter combination adds a row
-with the next ``trial`` number instead of overwriting the previous one. Scoring
-runs even if the episode is interrupted, and a failure there never fails the
-run::
+schedule (``ddpm`` or ``ddim``), and ``control_z`` records whether the
+integrating z loop was on. Repeating a parameter combination adds a row with the
+next ``trial`` number instead of overwriting the previous one. Scoring runs even
+if the episode is interrupted, and a failure there never fails the run::
 
     python scripts/deploy_pusht_real_dp.py \
         --seed-dir checkpoints/pusht_real_dp_2026_07/g01_resnet18_s11_350k \
@@ -144,6 +144,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-lock-z", dest="lock_z", action="store_false")
     p.add_argument("--fixed-z-height", type=float, default=d.FIXED_Z_HEIGHT)
     p.add_argument("--neutral-z-height", type=float, default=d.NEUTRAL_Z_HEIGHT)
+    p.add_argument("--control-z", type=float, nargs="?", const=d.FIXED_Z_HEIGHT,
+                   default=None, metavar="HEIGHT",
+                   help="hold the MEASURED EEF z at HEIGHT metres (bare flag = "
+                        "--fixed-z-height) with a client-side integrating loop. "
+                        "Implies action_mode=3trans and lock_z=False, and forces "
+                        "a fresh server init. Recorded in the results CSV's "
+                        "`control_z` column. See deploy_pusht_real.py for the "
+                        "full rationale.")
+    p.add_argument("--control-z-gain", type=float, default=0.5,
+                   help="gain on (target - measured z) for --control-z. STABLE "
+                        "ONLY BELOW 1.0 (|lambda| = sqrt(gain) with one step of "
+                        "measurement lag); do not raise above ~0.8.")
+    p.add_argument("--control-z-max-dz", type=float, default=0.001,
+                   help="metres, per-step |dz| clip for --control-z. A rate "
+                        "limit, not a cap on the achievable correction: the "
+                        "target accumulates (0.001 at 20 Hz = 20 mm/s).")
+    p.add_argument("--control-z-windup", type=float, default=0.04,
+                   help="metres. Anti-windup: the commanded z target is clamped "
+                        "to --control-z +/- this, which also caps the largest "
+                        "droop the loop can cancel.")
     p.add_argument("--z-hold", type=float, default=0.0,
                    help="metres. If >0, inject a per-step dz to hold EEF z "
                         "(needs a z-carrying action_mode). See deploy_pusht_real.py.")
@@ -327,6 +347,30 @@ def dp_sample_action(diffusion, denoiser, obs_u8, inference, ddim_steps, ddim_et
 
 def main() -> int:
     args = parse_args()
+    if args.control_z is not None:
+        if args.z_hold > 0:
+            raise SystemExit(
+                "--control-z and --z-hold both inject dz; pick one. "
+                "--control-z is the integrating version and supersedes --z-hold.")
+        if args.control_z <= 0:
+            raise SystemExit("--control-z HEIGHT must be > 0")
+        args.action_mode = "3trans"
+        args.lock_z = False
+        # A cached server env keeps the action_mode it was FIRST built with, and
+        # the env asserts action.shape[0] == _base_adim -- reusing a 2trans env
+        # would reject our 4-dim action outright.
+        args.reuse_existing_env = False
+        if args.control_z_gain >= 1.0:
+            raise SystemExit(
+                f"--control-z-gain {args.control_z_gain} is at or past the "
+                "stability limit. The loop integrates through the env's target z "
+                "with one step of measurement lag, so |lambda| = sqrt(gain); at "
+                "1.0 it rings indefinitely (~11 mm peak-to-peak in simulation). "
+                "Use <= 0.8.")
+        print(f"[control-z] target={args.control_z:.4f} m "
+              f"gain={args.control_z_gain} max_dz={args.control_z_max_dz} "
+              f"windup=+/-{args.control_z_windup} -> action_mode=3trans, "
+              f"lock_z=False, fresh server init forced.")
     if args.z_hold > 0 and args.action_mode == "2trans":
         raise SystemExit(
             "--z-hold needs an action_mode that sends z "
@@ -494,6 +538,12 @@ def main() -> int:
                 f"--start-eep-npy not found: {start_path}. Pass "
                 "--no-move-to-demo-start to skip (arm then starts ~17cm OOD).")
         start_T = np.load(start_path).astype(np.float32)
+        if args.control_z is not None:
+            # Same reason as in demo_start_state: with lock_z off nothing lifts
+            # this to the hold height, and __move re-syncs the env's target z to
+            # wherever this leaves the arm.
+            start_T = start_T.copy()
+            start_T[2, 3] = float(args.control_z)
         print(f"[INFO] Moving EEF to demo start pose (x={start_T[0,3]:.3f}, "
               f"y={start_T[1,3]:.3f}, z={start_T[2,3]:.3f})...")
         move_status, tries = None, 0
@@ -647,6 +697,12 @@ def main() -> int:
     pending: list[np.ndarray] = []   # unexecuted (dx,dy) tail of the chunk
     pending_norm: list[np.ndarray] = []
     chunk_idx = 0
+    # Mirror of the server's target z for --control-z. _reset_previous_qpos sets
+    # that target to the MEASURED state in 3trans (it only forces z to
+    # fixed_z_height in 2trans), so seeding from the first observation below is
+    # exact. dz stays 0 until then.
+    z_cmd: float | None = None
+    dz = 0.0
     try:
         for step in range(args.steps):
             raw_obs = grab_obs()
@@ -683,10 +739,26 @@ def main() -> int:
             action_7d = d.to_action_7d(act_xy, args.fixed_gripper)
             action_7d = d.safety_clip_action(action_7d, args.action_mode,
                                              args.safety_max_xy_delta)
-            # G4 z-droop compensation: inject dz AFTER safety_clip (which zeros
+            # The env applies xy_action_deadband only in 2trans
+            # (robot_base_env.py:246-247), so outside 2trans the client has to
+            # apply it or the xy contract silently differs from collection.
+            deadband = float(env_params.get("xy_action_deadband", 0.0))
+            if args.action_mode != "2trans" and deadband > 0:
+                small = np.abs(action_7d[:2]) < deadband
+                action_7d[:2] = np.where(small, 0.0, action_7d[:2])
+            # z-droop compensation: inject dz AFTER safety_clip (which zeros
             # dims 2-6 in 2trans) so it survives, and only when the mode carries
-            # z. Startup guard already rejects --z-hold with action_mode=2trans.
-            if args.z_hold > 0:
+            # z. Startup guards reject both flags with action_mode=2trans.
+            if args.control_z is not None:
+                cur_z = d.z_from_obs(raw_obs)
+                if z_cmd is None and cur_z is not None:
+                    z_cmd = cur_z
+                if z_cmd is not None:
+                    dz, z_cmd = d.control_z_step(
+                        z_cmd, cur_z, args.control_z, args.control_z_gain,
+                        args.control_z_max_dz, args.control_z_windup)
+                    action_7d[2] = dz
+            elif args.z_hold > 0:
                 dz = d.z_hold_dz(d.z_from_obs(raw_obs), args.z_hold,
                                  args.z_hold_gain, args.z_hold_max)
                 action_7d[2] = dz
@@ -705,9 +777,15 @@ def main() -> int:
                     f"{d.status_name(step_status, WidowXStatus)}, "
                     f"env_action={np.asarray(env_action).tolist()}")
 
+            zmsg = ""
+            if args.control_z is not None:
+                mz = d.z_from_obs(raw_obs)
+                zmsg = (f" z={'n/a' if mz is None else f'{mz:.4f}'}"
+                        f" cmd={'n/a' if z_cmd is None else f'{z_cmd:.4f}'}"
+                        f" dz={dz:+.5f}")
             print(f"[{step:03d}] chunk[{chunk_idx}/{exec_horizon - 1}] "
                   f"norm={np.round(na, 3)} -> "
-                  f"env_action={np.round(env_action, 5)}")
+                  f"env_action={np.round(env_action, 5)}{zmsg}")
 
             if log_fh is not None:
                 np.save(args.log_dir / "raw" / f"{step:04d}.npy",
@@ -725,6 +803,8 @@ def main() -> int:
                     "env_action": [float(x) for x in np.ravel(env_action)],
                     "state": (np.ravel(np.asarray(st, dtype=np.float64)).tolist()
                               if st is not None else None),
+                    **({"z_cmd": z_cmd, "dz": dz}
+                       if args.control_z is not None else {}),
                 }) + "\n")
                 log_fh.flush()
 
@@ -749,6 +829,7 @@ def main() -> int:
                     "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
                     "inference": args.inference,     # ddpm | ddim
                     "refine_iters": refine_iters,
+                    "control_z": bool(args.control_z),
                     "start_position": args.start_position,
                     **scores,
                 }
