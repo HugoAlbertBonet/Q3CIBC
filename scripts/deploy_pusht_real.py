@@ -198,7 +198,7 @@ def parse_args() -> argparse.Namespace:
                         f"{[WORKSPACE_BOUNDS[0][:3], WORKSPACE_BOUNDS[1][:3]]} = "
                         "the measured demo envelope + margin. The legacy box "
                         f"was {[LEGACY_WORKSPACE_BOUNDS[0][:3], LEGACY_WORKSPACE_BOUNDS[1][:3]]}, "
-                        "which excluded 23% of the demo steps and let z sag "
+                        "which excluded 23%% of the demo steps and let z sag "
                         "30 mm below the working height. Only applied on init().")
     p.add_argument("--min-step-xy", type=float, default=0.0,
                    help="metres. If >0, any nonzero |dx|/|dy| below this is "
@@ -249,7 +249,7 @@ def parse_args() -> argparse.Namespace:
                         "0.64 mm/step just to keep up -- below ~0.0007 the loop "
                         "falls behind during a fast traverse and never catches "
                         "up while moving. 0.002 doubles the margin at no cost; "
-                        "0.001 tracks with the rate limit active ~53% of a "
+                        "0.001 tracks with the rate limit active ~53%% of a "
                         "worst-case traverse. Recovering 34 mm from a standing "
                         "start takes 67 steps (3.4 s) at 0.001, 1.7 s at 0.002.")
     p.add_argument("--control-z-windup", type=float, default=0.04,
