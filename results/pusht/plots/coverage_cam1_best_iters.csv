@@ -1,0 +1,13 @@
+algorithm,inference,refine_iters,metric,mean,std,n_runs,is_best
+dp,ddim,5,cam1,0.6517,0.2724,16,
+dp,ddim,10,cam1,0.6358,0.2823,16,
+dp,ddim,25,cam1,0.7069,0.2168,19,yes
+q3c,argmax,0,cam1,0.6449,0.2058,22,yes
+q3c,dfo,5,cam1,0.7534,0.2437,35,
+q3c,dfo,10,cam1,0.7906,0.2273,36,yes
+q3c,dfo,20,cam1,0.7234,0.2045,16,
+q3c,dfo,50,cam1,0.7094,0.2554,16,
+q3c,langevin,5,cam1,0.6633,0.3047,17,
+q3c,langevin,10,cam1,0.618,0.301,17,
+q3c,langevin,20,cam1,0.7271,0.2794,17,yes
+q3c,langevin,50,cam1,0.6872,0.2811,16,
