@@ -327,9 +327,9 @@ ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c_c256_imnet,dfo,5,F
 ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c_c256_imnet,dfo,5,False,bottom_right,2,0.9747,0.9772,1.14
 q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,0,False,top_right,0,0.6975,0.5089,65.65
 q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,0,False,top_right,1,0.4218,0.419,78.09
-q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,0,False,top_right,2,0.9498,0.957,3.87
-q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,0,False,top_right,3,0.9967,0.9617,1.07
-q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,0,False,top_right,4,0.784,0.9396,39.47
+q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,5,False,top_right,2,0.9498,0.957,3.87
+q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,5,False,top_right,3,0.9967,0.9617,1.07
+q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,5,False,top_right,4,0.784,0.9396,39.47
 q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,0,False,bottom_right,0,0.2605,0.4598,77.06
 q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,0,False,bottom_right,1,0.3592,0.508,73.86
 q3c,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07/L2c_ch16_scratch,argmax,5,False,bottom_right,0,0.7523,0.9166,18.1

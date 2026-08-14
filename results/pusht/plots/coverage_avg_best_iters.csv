@@ -2,7 +2,8 @@ algorithm,inference,refine_iters,metric,mean,std,n_runs,is_best
 dp,ddim,5,avg_cov,0.6855,0.2382,16,
 dp,ddim,10,avg_cov,0.6801,0.2558,16,
 dp,ddim,25,avg_cov,0.7235,0.1927,19,yes
-q3c,argmax,0,avg_cov,0.6288,0.2086,22,yes
+q3c,argmax,0,avg_cov,0.602,0.2049,26,yes
+q3c,argmax_fallback,5,avg_cov,0.7673,0.2168,20,yes
 q3c,dfo,5,avg_cov,0.7194,0.2603,35,
 q3c,dfo,10,avg_cov,0.7478,0.2298,36,yes
 q3c,dfo,20,avg_cov,0.6944,0.1849,16,

@@ -31,6 +31,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+matplotlib.rcParams["hatch.linewidth"] = 0.9
+
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,11 +55,24 @@ SERIES_COLORS = {
     ("dp", "ddim"): "#eb6834",  # orange, mid
     ("dp", "ddpm"): "#c94908",  # orange, dark
     ("q3c", "argmax"): "#86b6ef",  # blue 250
+    ("q3c", "argmax_fallback"): "#86b6ef",  # blue 250 + hatch
     ("q3c", "dfo"): "#2a78d6",  # blue 450
     ("q3c", "langevin"): "#104281",  # blue 650
     ("ibc", "dfo"): "#1baf7a",  # aqua, mid
     ("ibc", "langevin"): "#00582b",  # aqua, dark
 }
+
+# argmax and its DFO-fallback variant share a step and separate by texture. A
+# fourth blue step is not available: the ramp's usable range cannot hold four
+# steps that all clear the normal-vision floor while the light end still clears
+# 2:1 on the surface (widest 4-step spread measures dE 9.8, against a floor of
+# 15). Texture is the documented channel for exactly this case, and it carries
+# the meaning better anyway - fallback is a variant of argmax, not a peer.
+SERIES_HATCH = {("q3c", "argmax_fallback"): "///"}
+HATCH_EDGE = "#104281"
+
+# Inference labels that differ from the raw CSV value.
+INFERENCE_LABEL = {"argmax_fallback": "argmax/fallback"}
 
 SURFACE = "#fcfcfb"
 TEXT_PRIMARY = "#0b0b0b"
@@ -70,6 +86,7 @@ SERIES_ORDER = [
     ("dp", "ddim"),
     ("dp", "ddpm"),
     ("q3c", "argmax"),
+    ("q3c", "argmax_fallback"),
     ("q3c", "dfo"),
     ("q3c", "langevin"),
     ("ibc", "dfo"),
@@ -104,7 +121,7 @@ POSITION_ORDER = [
 
 
 def series_label(alg: str, inf: str) -> str:
-    return f"{alg.upper()} / {inf}"
+    return f"{alg.upper()} · {INFERENCE_LABEL.get(inf, inf)}"
 
 
 def load_rows() -> list[dict]:
@@ -116,6 +133,11 @@ def load_rows() -> list[dict]:
         r["min_cov"] = min(r["cam0"], r["cam1"])
         r["avg_cov"] = 0.5 * (r["cam0"] + r["cam1"])
         r["dist"] = float(r["dist_centroid"])
+        # Q3C argmax runs with refinement iterations are the DFO-fallback
+        # variant (argmax, with DFO taking over when the argmax action stalls),
+        # so they get their own series rather than being averaged into argmax.
+        if (r["algorithm"], r["inference"]) == ("q3c", "argmax") and int(r["refine_iters"]) > 0:
+            r["inference"] = "argmax_fallback"
     return rows
 
 
@@ -237,6 +259,9 @@ def grouped_plot(
             width=bar_w * 0.88,  # 2px-equivalent surface gap between adjacent bars
             color=series_color((alg, inf)),
             label=series_label(alg, inf),
+            hatch=SERIES_HATCH.get((alg, inf)),
+            edgecolor=HATCH_EDGE if (alg, inf) in SERIES_HATCH else "none",
+            linewidth=0,
             zorder=2,
         )
         ax.errorbar(
@@ -340,11 +365,16 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
         best_iters.append(best_it)
         ns.append(len(vals))
 
-    fig, ax = plt.subplots(figsize=(8.5, 5.2), facecolor=SURFACE)
+    fig, ax = plt.subplots(figsize=(10, 5.2), facecolor=SURFACE)
     style_axes(ax)
     x = np.arange(len(labels))
 
-    ax.bar(x, means, width=0.56, color=[series_color(s) for s in series], zorder=2)
+    bars = ax.bar(x, means, width=0.56, color=[series_color(s) for s in series], zorder=2)
+    for bar, s in zip(bars, series):
+        if s in SERIES_HATCH:
+            bar.set_hatch(SERIES_HATCH[s])
+            bar.set_edgecolor(HATCH_EDGE)
+            bar.set_linewidth(0)
     ax.errorbar(
         x, means, yerr=stds, fmt="none", ecolor=TEXT_SECONDARY, elinewidth=1.4, capsize=4, zorder=3
     )
@@ -361,7 +391,7 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
         )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, color=TEXT_SECONDARY)
+    ax.set_xticklabels([lb.replace(" · ", "\n") for lb in labels], color=TEXT_SECONDARY)
     ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
     ax.set_title(
         title,
