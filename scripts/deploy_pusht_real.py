@@ -67,6 +67,16 @@ interrupted, and a failure there never fails the run::
         --steps 200 --inference langevin --refine-iters 50 \
         --measure --start-position top
 
+Stall escape: ``--inference argmax`` ranks a finite candidate cloud, so when it
+locks onto a fixed point it proposes the identical action every call and has no
+way out -- the arm stops, the observation stops changing, and the same candidate
+keeps winning. ``--refine-iters`` is therefore NOT ignored under argmax: once the
+proposal has repeated ``--argmax-stall-steps`` times (10, within
+``--argmax-stall-tol``), that many DFO iterations run on top of the cloud and
+keep running until argmax proposes something else. Every other call costs exactly
+what plain argmax costs. ``--argmax-stall-steps 0`` or ``--refine-iters 0``
+restores the old behaviour.
+
 Inference cost: every run also times the policy call itself -- just the call, so
 robot I/O and camera reads stay out of it, with a CUDA synchronize on each side
 when the model is on the GPU -- and appends one row per episode to
@@ -380,9 +390,22 @@ def parse_args() -> argparse.Namespace:
                         "(default). langevin = refine the CP cloud with Langevin "
                         "MCMC, matching TRAINING inference (closes the train/deploy "
                         "gap; argmax over discrete CPs can miss the energy min). "
-                        "dfo = derivative-free iterative refinement (cheaper).")
+                        "dfo = derivative-free iterative refinement (cheaper). "
+                        "argmax also uses --refine-iters as a stall escape, see "
+                        "--argmax-stall-steps.")
     p.add_argument("--refine-iters", type=int, default=50,
-                   help="langevin/dfo refinement iterations (train used 50).")
+                   help="langevin/dfo refinement iterations (train used 50). "
+                        "Under --inference argmax this is the number of DFO "
+                        "iterations the stall escape runs; 0 disables it.")
+    p.add_argument("--argmax-stall-steps", type=int, default=10,
+                   help="--inference argmax only: how many consecutive calls the "
+                        "argmax proposal may repeat before --refine-iters DFO "
+                        "iterations are run on top of it to break the fixed "
+                        "point. Refinement stays on until argmax moves again. "
+                        "0 disables the escape and restores plain argmax.")
+    p.add_argument("--argmax-stall-tol", type=float, default=1e-3,
+                   help="max-abs difference in NORMALIZED action below which two "
+                        "consecutive argmax proposals count as the same one.")
     p.add_argument("--langevin-lr-init", type=float, default=0.1)
     p.add_argument("--langevin-lr-final", type=float, default=1e-5)
     p.add_argument("--dfo-noise-init", type=float, default=0.1)
@@ -1331,10 +1354,55 @@ def _refine_langevin(q_net, features, init_cps, amin, amax, iters, lr0, lr1):
     return refined[0, best]
 
 
+class ArgmaxStallDetector:
+    """Detects the CP-cloud argmax locking onto one action and staying there.
+
+    The cloud is a finite candidate set, so a stuck policy does not drift: it
+    returns the SAME vector call after call while the arm sits at a fixed point.
+    That is the freeze mode this deploy has hit before, and pure argmax has no
+    way out of it -- the observation barely changes because the arm is not
+    moving, so the same candidate keeps winning.
+
+    What is tracked is the RAW argmax proposal, never the action finally
+    returned. DFO is stochastic and returns something different every call, so
+    scoring the returned action would zero the counter the instant the escape
+    fired and drop straight back to the frozen argmax on the next step -- a
+    stall/kick sawtooth rather than an escape. Watching the proposal keeps
+    refinement latched for as long as argmax is still proposing the fixed point.
+    """
+
+    def __init__(self, patience: int, tol: float) -> None:
+        self.patience = int(patience)
+        self.tol = float(tol)
+        self.repeats = 0        # consecutive calls whose argmax proposal held still
+        self.kicks = 0          # calls that ran the escape, for the cost accounting
+        self._last: np.ndarray | None = None
+
+    def update(self, action: np.ndarray) -> bool:
+        """Feed one raw argmax proposal.
+
+        True once the proposal has been unchanged for `patience` consecutive
+        calls after the one that set it, i.e. the action has been static that
+        many timesteps (at the default --exec-horizon 1 a call IS a timestep).
+        """
+        act = np.asarray(action, dtype=np.float64).ravel().copy()
+        if (self._last is not None and self._last.shape == act.shape
+                and float(np.max(np.abs(act - self._last))) <= self.tol):
+            self.repeats += 1
+        else:
+            self.repeats = 0
+        self._last = act
+        fired = self.patience > 0 and self.repeats >= self.patience
+        if fired:
+            self.kicks += 1
+        return fired
+
+
 def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
                   cond: "torch.Tensor | None" = None, inference: str = "argmax",
                   refine_iters: int = 50, langevin_lr=(0.1, 1e-5),
-                  dfo_noise=(0.1, 0.8)):
+                  dfo_noise=(0.1, 0.8),
+                  stall: "ArgmaxStallDetector | None" = None):
     """Pick an action from the energy model.
 
     `inference`:
@@ -1344,21 +1412,31 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
         inference gap — argmax-over-discrete-CPs can miss the true energy min).
       - "dfo": derivative-free iterative refinement (cheaper, no grads).
     `cond` is the (1, cond_dim) conditioning vector; both nets read it off `_cond`.
+    `stall` (argmax only) turns `refine_iters` from an ignored argument into a
+    stall escape: while the argmax proposal is frozen, that many DFO iterations
+    run on top of it. Every other call stays exactly as cheap as plain argmax.
     """
     cp_gen._cond = cond
     q_net._cond = cond
     features = q_net.encode(obs_u8)                   # (1, feat)
     cps = cp_gen(obs_u8)                              # (1, P, action_dim)
-    if inference in ("langevin", "dfo"):
+
+    def refine_dfo():
         A = cps.shape[-1]
         amin = torch.full((A,), -1.0, device=cps.device)
         amax = torch.full((A,), 1.0, device=cps.device)   # normalized action bounds
+        return _refine_dfo(q_net, features, cps, amin, amax,
+                           refine_iters, dfo_noise[0], dfo_noise[1])
+
+    if inference in ("langevin", "dfo"):
         if inference == "langevin":
+            A = cps.shape[-1]
+            amin = torch.full((A,), -1.0, device=cps.device)
+            amax = torch.full((A,), 1.0, device=cps.device)
             act = _refine_langevin(q_net, features, cps, amin, amax,
                                    refine_iters, langevin_lr[0], langevin_lr[1])
         else:
-            act = _refine_dfo(q_net, features, cps, amin, amax,
-                              refine_iters, dfo_noise[0], dfo_noise[1])
+            act = refine_dfo()
         return act.detach().cpu().numpy()
     logits = q_net.score(features, cps).squeeze(-1)   # (1, P)
     if cp_selection == "sample":
@@ -1366,7 +1444,15 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
         idx = int(torch.multinomial(probs, 1).item())
     else:
         idx = int(logits.squeeze(0).argmax().item())
-    return cps[0, idx].detach().cpu().numpy()         # normalized action
+    act_np = cps[0, idx].detach().cpu().numpy()       # normalized action
+    if stall is None or not stall.update(act_np) or refine_iters <= 0:
+        return act_np
+    if stall.repeats == stall.patience:
+        # Only the transition, so a long stall does not flood the step log.
+        print(f"[stall] argmax static for {stall.patience} step(s) at "
+              f"{np.round(act_np, 4)}; refining with {refine_iters} DFO "
+              f"iteration(s) until it moves")
+    return refine_dfo().detach().cpu().numpy()
 
 
 def unnormalize(norm_action, act_min, act_max, norm_range):
@@ -1850,15 +1936,31 @@ def main() -> int:
           f"(re-predict every {exec_horizon} step(s))")
     input("Press [Enter] to start.")
 
+    # argmax on its own cannot leave a fixed point, so --refine-iters doubles as
+    # its escape hatch instead of being silently ignored. The other inference
+    # modes already refine on every call and need no detector.
+    stall_detector = None
+    if args.inference == "argmax" and args.argmax_stall_steps > 0:
+        if args.refine_iters > 0:
+            stall_detector = ArgmaxStallDetector(args.argmax_stall_steps,
+                                                 args.argmax_stall_tol)
+            print(f"[stall] argmax escape armed: {args.refine_iters} DFO "
+                  f"iteration(s) once the proposal repeats "
+                  f"{args.argmax_stall_steps} time(s) within "
+                  f"{args.argmax_stall_tol}")
+        else:
+            print("[stall] --refine-iters 0: argmax stall escape disabled")
+
     # One entry point for the policy so the control loop, the timer and the
     # post-episode FLOP count all measure the identical call.
-    def predict(obs_u8, raw_obs):
+    def predict(obs_u8, raw_obs, stall=None):
         return select_action(
             cp_gen, q_net, obs_u8, cp_selection, cp_temp,
             cond=make_cond(raw_obs), inference=args.inference,
             refine_iters=args.refine_iters,
             langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
-            dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
+            dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay),
+            stall=stall)
 
     timer = InferenceTimer(device)
     last_obs_u8 = None
@@ -1885,7 +1987,7 @@ def main() -> int:
 
             if not pending:
                 with timer.measure():
-                    na_full = predict(obs_u8, raw_obs)
+                    na_full = predict(obs_u8, raw_obs, stall_detector)
                 act_full = unnormalize(na_full, act_min, act_max, norm_range)
                 pending = list(np.asarray(act_full).reshape(-1, 2)[:exec_horizon])
                 pending_norm = list(np.asarray(na_full).reshape(-1, 2)[:exec_horizon])
@@ -2023,13 +2125,25 @@ def main() -> int:
                 if not args.no_flops and last_obs_u8 is not None:
                     # The arm is already idle here, so the extra policy call the
                     # counter needs cannot perturb the episode it is measuring.
+                    # No detector is passed: this measures the ordinary path, and
+                    # feeding it one more proposal would also skew the kick count.
                     gflops = count_gflops(
                         lambda: predict(last_obs_u8, last_raw_obs))
+                net_evals = energy_net_evals(args.inference, args.refine_iters)
+                if stall_detector is not None and timer.samples_ms:
+                    # argmax costs one pass; the stall escape adds refine_iters
+                    # more on the calls where it fires, so the per-call figure is
+                    # only honest as the average over the episode.
+                    net_evals = round(
+                        1 + args.refine_iters * stall_detector.kicks
+                        / len(timer.samples_ms), 3)
+                    print(f"[stall] escape fired on {stall_detector.kicks} of "
+                          f"{len(timer.samples_ms)} inference(s)")
                 report_inference_cost(
                     args.speed_csv, timer, dict(key, trial=trial,
                                                 device=str(device)),
                     n_steps=step + 1, exec_horizon=exec_horizon,
-                    net_evals=energy_net_evals(args.inference, args.refine_iters),
+                    net_evals=net_evals,
                     gflops=gflops,
                     params_m=count_params_m(cp_gen, q_net))
             except Exception as exc:
