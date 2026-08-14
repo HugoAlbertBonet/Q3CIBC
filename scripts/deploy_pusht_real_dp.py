@@ -49,6 +49,20 @@ if the episode is interrupted, and a failure there never fails the run::
         --seed-dir checkpoints/pusht_real_dp_2026_07/g01_resnet18_s11_350k \
         --steps 700 --inference ddim --ddim-steps 10 \
         --measure --start-position top
+
+Inference cost: every run also times the policy call itself -- just the call, so
+robot I/O and camera reads stay out of it, with a CUDA synchronize on each side
+when the model is on the GPU -- and appends one row per episode to
+``results/pusht/inference_speed.csv`` (``--speed-csv``, off with
+``--no-speed-csv``). The row carries the ms/inference distribution (mean, median,
+p95, std, warm-up call reported separately), the amortized ms per control step,
+the sequential net evaluations behind one action, GFLOPs per action
+(``--no-flops`` skips the one extra call this costs, after the arm has stopped)
+and the parameter count. It is a separate table from experiments.csv on purpose:
+that one is keyed by start position and its existing rows predate any timing, so
+speed columns there would be blank everywhere and only a full re-run could fill
+them. These rows repeat the six key columns plus ``trial``, so a join puts a
+timing back next to the episode that produced it.
 """
 
 from __future__ import annotations
@@ -284,6 +298,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--results-csv", type=Path, default=d.RESULTS_CSV,
                    help="results table appended to by --measure (created, with "
                         "its parent directories, if missing)")
+    p.add_argument("--speed-csv", type=Path, default=d.SPEED_CSV,
+                   help="inference-cost table: one row per episode with the "
+                        "ms/inference distribution, ms/control-step, GFLOPs and "
+                        "parameter count. Joins to --results-csv on the six key "
+                        "columns plus trial")
+    p.add_argument("--no-speed-csv", action="store_true",
+                   help="time the policy for the console line but do not append "
+                        "a row to --speed-csv")
+    p.add_argument("--no-flops", action="store_true",
+                   help="skip the FLOP count, which costs one extra policy call "
+                        "after the episode ends")
     return p.parse_args()
 
 
@@ -692,6 +717,10 @@ def main() -> int:
           f"(re-predict every {exec_horizon} step(s))")
     input("Press [Enter] to start.")
 
+    timer = d.InferenceTimer(device)
+    last_obs_u8 = None
+    last_raw_obs = None
+
     step = 0
     last_exec = time.time()
     pending: list[np.ndarray] = []   # unexecuted (dx,dy) tail of the chunk
@@ -709,9 +738,11 @@ def main() -> int:
             raw = raw_frame(raw_obs)
             frame_buf.append(policy_frames(raw_obs))
             obs_u8 = d.stack_to_tensor(frame_buf, device)
+            last_obs_u8, last_raw_obs = obs_u8, raw_obs
 
             if not pending:
-                na_full = sample(obs_u8, raw_obs)
+                with timer.measure():
+                    na_full = sample(obs_u8, raw_obs)
                 act_full = d.unnormalize(na_full, act_min, act_max, norm_range)
                 pending = list(np.asarray(act_full).reshape(-1, 2)[:exec_horizon])
                 pending_norm = list(np.asarray(na_full).reshape(-1, 2)[:exec_horizon])
@@ -817,23 +848,23 @@ def main() -> int:
         # measurement reads, and it dies with the connection. An interrupted
         # episode is still worth scoring, so this sits in the finally block --
         # and it must never be the reason a run ends badly, hence the catch-all.
+        key = {
+            # Always dp: this file only ever deploys a diffusion policy.
+            "algorithm": ALGORITHM,
+            "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
+            "inference": args.inference,     # ddpm | ddim
+            "refine_iters": refine_iters,
+            "control_z": bool(args.control_z),
+            "start_position": args.start_position,
+        }
+        trial = None
         if args.measure:
             try:
                 final_obs = grab_obs()
                 frames = {cam: d.frame_for_camera(final_obs, cam, topic_camera_ids)
                           for cam in topic_camera_ids}
                 scores = d.score_final_frames(frames)
-                row = {
-                    # Always dp: this file only ever deploys a diffusion policy.
-                    "algorithm": ALGORITHM,
-                    "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
-                    "inference": args.inference,     # ddpm | ddim
-                    "refine_iters": refine_iters,
-                    "control_z": bool(args.control_z),
-                    "start_position": args.start_position,
-                    **scores,
-                }
-                trial = d.append_result_row(args.results_csv, row)
+                trial = d.append_result_row(args.results_csv, dict(key, **scores))
                 print(f"[measure] trial {trial}: "
                       f"coverage cam0={scores['coverage_cam0']} "
                       f"cam1={scores['coverage_cam1']} "
@@ -841,6 +872,27 @@ def main() -> int:
                       f"-> {args.results_csv}")
             except Exception as exc:
                 print(f"[measure] FAILED, no row written: {exc!r}")
+        # Inference cost. Runs whether or not the episode was scored, and never
+        # takes the run down with it -- a timing is not worth losing a rollout.
+        if timer.samples_ms and not args.no_speed_csv:
+            try:
+                gflops = None
+                if not args.no_flops and last_obs_u8 is not None:
+                    # The arm is already idle here, so the extra policy call the
+                    # counter needs cannot perturb the episode it is measuring.
+                    gflops = d.count_gflops(
+                        lambda: sample(last_obs_u8, last_raw_obs))
+                d.report_inference_cost(
+                    args.speed_csv, timer, dict(key, trial=trial,
+                                                device=str(device)),
+                    n_steps=step + 1, exec_horizon=exec_horizon,
+                    # DDPM/DDIM are strictly sequential: one denoiser forward per
+                    # scheduler step, which is exactly what refine_iters holds.
+                    net_evals=int(refine_iters),
+                    gflops=gflops,
+                    params_m=d.count_params_m(denoiser))
+            except Exception as exc:
+                print(f"[speed] FAILED, no row written: {exc!r}")
         try:
             client.stop()
         except Exception:

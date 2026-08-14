@@ -37,8 +37,26 @@ ROOT = Path(__file__).resolve().parents[1]
 CSV_PATH = ROOT / "results" / "pusht" / "experiments.csv"
 OUT_DIR = ROOT / "results" / "pusht" / "plots"
 
-# Categorical slots 1-5 of the validated palette, assigned in fixed order.
-SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"]
+# Composite encoding: hue = algorithm, lightness step = inference method within
+# that algorithm. So the three Q3C variants read as one family at a glance, and
+# DP and IBC read as separate algorithms rather than as two more variants.
+#
+# The three family hues validate as a categorical set on all pairs (worst CVD
+# dE 9.2, aqua vs orange). Each family's steps validate as an ordinal ramp
+# (monotone L, adjacent dL >= 0.06, light end clears 2:1 on the light surface).
+# The blue steps are 250/450/650 of the documented blue ramp; the orange and
+# aqua steps are that ramp's lightness levels re-hued onto each family anchor.
+# Categorical checks flag the ramp ends for lightness/chroma by design — those
+# bounds govern standalone slots, not steps inside an ordinal ramp.
+SERIES_COLORS = {
+    ("dp", "ddim"): "#eb6834",  # orange, mid
+    ("dp", "ddpm"): "#c94908",  # orange, dark
+    ("q3c", "argmax"): "#86b6ef",  # blue 250
+    ("q3c", "dfo"): "#2a78d6",  # blue 450
+    ("q3c", "langevin"): "#104281",  # blue 650
+    ("ibc", "dfo"): "#1baf7a",  # aqua, mid
+    ("ibc", "langevin"): "#00582b",  # aqua, dark
+}
 
 SURFACE = "#fcfcfb"
 TEXT_PRIMARY = "#0b0b0b"
@@ -54,14 +72,23 @@ SERIES_ORDER = [
     ("q3c", "argmax"),
     ("q3c", "dfo"),
     ("q3c", "langevin"),
+    ("ibc", "dfo"),
+    ("ibc", "langevin"),
 ]
 
 # Series dropped from the figures (still present in experiments.csv).
 EXCLUDED_INFERENCE = {"ddpm"}
 
+# IBC has two checkpoints in the CSV and they are far apart (cam1 0.75 for
+# Ibc2c_c256_imnet over all 9 positions vs 0.43 for Ibc2c_c256_conv over 5), so
+# the figures keep only its best one. dp and q3c also have a second checkpoint
+# each, but those are 2 and 14 rows against 52 and 178 and score within 0.06
+# cam1 of the main one, so they stay pooled.
+KEEP_CHECKPOINT = {"ibc": "Ibc2c_c256_imnet"}
+
 
 def series_color(series: tuple[str, str]) -> str:
-    return SERIES_COLORS[SERIES_ORDER.index(series)]
+    return SERIES_COLORS[series]
 
 POSITION_ORDER = [
     "top",
@@ -372,7 +399,13 @@ def write_table(path: Path, table: list[dict]) -> None:
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    rows = [r for r in load_rows() if r["inference"] not in EXCLUDED_INFERENCE]
+    def keep(r: dict) -> bool:
+        if r["inference"] in EXCLUDED_INFERENCE:
+            return False
+        wanted = KEEP_CHECKPOINT.get(r["algorithm"])
+        return wanted is None or r["seed_dir"].rsplit("/", 1)[-1] == wanted
+
+    rows = [r for r in load_rows() if keep(r)]
 
     pooled = "mean over trials and refinement iterations; error bars 1 std over that pool"
     grouped_plot(

@@ -66,14 +66,30 @@ interrupted, and a failure there never fails the run::
         --seed-dir checkpoints/pusht_real_combinedv2/seed_0011 \
         --steps 200 --inference langevin --refine-iters 50 \
         --measure --start-position top
+
+Inference cost: every run also times the policy call itself -- just the call, so
+robot I/O and camera reads stay out of it, with a CUDA synchronize on each side
+when the model is on the GPU -- and appends one row per episode to
+``results/pusht/inference_speed.csv`` (``--speed-csv``, off with
+``--no-speed-csv``). The row carries the ms/inference distribution (mean, median,
+p95, std, warm-up call reported separately), the amortized ms per control step,
+the sequential net evaluations behind one action, GFLOPs per action
+(``--no-flops`` skips the one extra call this costs, after the arm has stopped)
+and the parameter count. It is a separate table from experiments.csv on purpose:
+that one is keyed by start position and its existing rows predate any timing, so
+speed columns there would be blank everywhere and only a full re-run could fill
+them. These rows repeat the six key columns plus ``trial``, so a join puts a
+timing back next to the episode that produced it.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import json
 import math
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -141,6 +157,23 @@ RESULTS_LEGACY_DEFAULTS: Dict[str, Any] = {"algorithm": "q3c", "control_z": Fals
 # This script deploys Q3C. The IBC variant lives in deploy_pusht_real_ibc.py,
 # so the column exists to keep both readable from one table.
 ALGORITHM = "q3c"
+
+# Where --measure appends the cost of the policy call. Deliberately NOT more
+# columns on experiments.csv: that table is one row per scored rollout and its
+# 300+ existing rows were all written before any clock ran here, so new columns
+# there would be blank for every one of them and could only be filled by
+# re-running the entire sweep -- to recover a number that does not depend on the
+# start position or on the block ending up in the goal. Speed rows carry the
+# full RESULTS_KEY plus `trial`, so joining on those seven columns reattaches a
+# timing to the episode that produced it whenever both were written.
+SPEED_CSV = ROOT / "results" / "pusht" / "inference_speed.csv"
+SPEED_COLUMNS = ["algorithm", "seed_dir", "inference", "refine_iters",
+                 "control_z", "start_position", "trial", "device",
+                 "n_infer", "n_steps", "exec_horizon",
+                 "ms_per_infer_mean", "ms_per_infer_median", "ms_per_infer_p95",
+                 "ms_per_infer_std", "ms_first_infer", "ms_per_step",
+                 "infer_hz", "net_evals_per_infer", "gflops_per_infer",
+                 "params_m"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -392,6 +425,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--results-csv", type=Path, default=RESULTS_CSV,
                    help="results table appended to by --measure (created, with "
                         "its parent directories, if missing)")
+    p.add_argument("--speed-csv", type=Path, default=SPEED_CSV,
+                   help="inference-cost table: one row per episode with the "
+                        "ms/inference distribution, ms/control-step, GFLOPs and "
+                        "parameter count. Joins to --results-csv on the six key "
+                        "columns plus trial")
+    p.add_argument("--no-speed-csv", action="store_true",
+                   help="time the policy for the console line but do not append "
+                        "a row to --speed-csv")
+    p.add_argument("--no-flops", action="store_true",
+                   help="skip the FLOP count, which costs one extra policy call "
+                        "after the episode ends")
     return p.parse_args()
 
 
@@ -869,6 +913,189 @@ def append_result_row(csv_path: Path, row: Dict[str, Any]) -> int:
             writer.writeheader()
         writer.writerow(as_text(row))
     return trial
+
+
+class InferenceTimer:
+    """Wall clock around the policy call only -- no camera read, no robot I/O.
+
+    CUDA queues kernels asynchronously, so a bare ``perf_counter`` around a GPU
+    forward measures how long it took to *launch* the work, not to do it. Every
+    sample therefore brackets the region with a synchronize when the model is on
+    the GPU, which is the difference between a plausible-looking sub-millisecond
+    number and the truth.
+    """
+
+    def __init__(self, device: Any) -> None:
+        self.cuda = str(getattr(device, "type", device)) == "cuda"
+        self.samples_ms: List[float] = []
+
+    @contextlib.contextmanager
+    def measure(self):
+        if self.cuda:
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            if self.cuda:
+                torch.cuda.synchronize()
+            self.samples_ms.append((time.perf_counter() - t0) * 1e3)
+
+    def summary(self, n_steps: int, exec_horizon: int,
+                warmup: int = 1) -> Dict[str, Any]:
+        """Per-call and per-control-step cost of the samples collected so far.
+
+        The first call pays for cuDNN autotuning and lazy kernel loading and can
+        run an order of magnitude slow. It is reported on its own as
+        ``ms_first_infer`` and dropped from the distribution rather than left to
+        inflate the mean of a short episode.
+        """
+        out: Dict[str, Any] = {"n_infer": len(self.samples_ms),
+                               "n_steps": int(n_steps),
+                               "exec_horizon": int(exec_horizon)}
+        if not self.samples_ms:
+            return out
+        out["ms_first_infer"] = round(self.samples_ms[0], 3)
+        warm = self.samples_ms[warmup:] or self.samples_ms
+        mean = statistics.fmean(warm)
+        ordered = sorted(warm)
+        # Nearest-rank p95, which is defined for the handful of samples a short
+        # episode yields; statistics.quantiles needs more points than that.
+        rank = min(len(ordered) - 1, int(math.ceil(0.95 * len(ordered))) - 1)
+        out["ms_per_infer_mean"] = round(mean, 3)
+        out["ms_per_infer_median"] = round(statistics.median(warm), 3)
+        out["ms_per_infer_p95"] = round(ordered[max(0, rank)], 3)
+        out["ms_per_infer_std"] = round(
+            statistics.stdev(warm) if len(warm) > 1 else 0.0, 3)
+        # What control actually pays per step: one inference is amortized over
+        # the exec_horizon steps that consume its chunk, so a policy 8x slower
+        # per call than another can still be cheaper per step.
+        out["ms_per_step"] = round(mean * len(self.samples_ms) / max(1, n_steps), 3)
+        out["infer_hz"] = round(1000.0 / mean, 2) if mean > 0 else None
+        return out
+
+
+def count_params_m(*modules: Any) -> float | None:
+    """Millions of distinct parameters across `modules`, or None if given none.
+
+    De-duplicated by identity: Q3C's CP generator and energy net share an image
+    encoder, so summing their ``parameters()`` naively counts the bulk twice.
+    """
+    seen: set = set()
+    total = 0
+    found = False
+    for module in modules:
+        if module is None or not hasattr(module, "parameters"):
+            continue
+        found = True
+        for p in module.parameters():
+            if id(p) in seen:
+                continue
+            seen.add(id(p))
+            total += int(p.numel())
+    return round(total / 1e6, 4) if found else None
+
+
+def count_gflops(call) -> float | None:
+    """GFLOPs of one policy call, or None when they cannot be counted.
+
+    Wall time only compares runs on the same machine under the same load; FLOPs
+    compare Q3C, IBC and DP anywhere, which is what makes "how much computation"
+    answerable rather than rig-specific. Langevin refinement backprops through
+    the energy net on every iteration and the counter includes those backward
+    kernels -- that is the honest cost of the mode, not an artifact.
+    """
+    try:
+        from torch.utils.flop_counter import FlopCounterMode
+    except Exception as exc:                        # torch < 2.0
+        print(f"[speed] this torch has no FLOP counter: {exc!r}")
+        return None
+    try:
+        counter = FlopCounterMode(display=False)
+        with counter:
+            call()
+        return round(counter.get_total_flops() / 1e9, 4)
+    except Exception as exc:
+        print(f"[speed] FLOP count failed, leaving the column blank: {exc!r}")
+        return None
+
+
+def energy_net_evals(inference: str, refine_iters: int) -> int:
+    """Sequential energy-net passes behind one action, for Q3C and IBC.
+
+    However many candidates the cloud holds they are scored in ONE batched pass,
+    so what separates the inference modes is the number of refinement rounds
+    stacked on top of it, not the candidate count. argmax/sample do none.
+    """
+    return 1 + (int(refine_iters) if inference in ("langevin", "dfo") else 0)
+
+
+def append_speed_row(csv_path: Path, row: Dict[str, Any]) -> None:
+    """Append one inference-cost row, rewriting a stale header in place.
+
+    Same contract as append_result_row, minus the trial counter: the trial
+    number is copied from the results table so the two join, and a run scored
+    without --measure simply leaves it blank.
+    """
+    import csv as _csv
+
+    csv_path = Path(csv_path).expanduser()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: List[Dict[str, str]] = []
+    header: List[str] = []
+    if csv_path.is_file() and csv_path.stat().st_size > 0:
+        with csv_path.open(newline="") as fh:
+            reader = _csv.DictReader(fh)
+            header = list(reader.fieldnames or [])
+            existing = [dict(old) for old in reader]
+
+    def as_text(record: Dict[str, Any]) -> Dict[str, str]:
+        return {k: csv_text(record.get(k)) for k in SPEED_COLUMNS}
+
+    if header and header != SPEED_COLUMNS:
+        with csv_path.open("w", newline="") as fh:
+            writer = _csv.DictWriter(fh, fieldnames=SPEED_COLUMNS)
+            writer.writeheader()
+            writer.writerows(as_text(old) for old in existing)
+            writer.writerow(as_text(row))
+        print(f"[speed] {csv_path} predates the "
+              f"{sorted(set(SPEED_COLUMNS) - set(header))} column(s); rewrote it "
+              f"with the current header")
+        return
+
+    with csv_path.open("a", newline="") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=SPEED_COLUMNS)
+        if not header:
+            writer.writeheader()
+        writer.writerow(as_text(row))
+
+
+def report_inference_cost(csv_path: Path, timer: InferenceTimer,
+                          key: Dict[str, Any], n_steps: int, exec_horizon: int,
+                          net_evals: int | None = None,
+                          gflops: float | None = None,
+                          params_m: float | None = None) -> None:
+    """Print the inference-cost line and append it to `csv_path`.
+
+    `key` supplies the join columns (RESULTS_KEY plus trial and device); the
+    measured fields are filled in from `timer`.
+    """
+    stats = timer.summary(n_steps, exec_horizon)
+    append_speed_row(csv_path, dict(key, **stats,
+                                    net_evals_per_infer=net_evals,
+                                    gflops_per_infer=gflops,
+                                    params_m=params_m))
+    if "ms_per_infer_mean" not in stats:
+        print(f"[speed] no inference was timed; wrote an empty row -> {csv_path}")
+        return
+    print(f"[speed] {stats['ms_per_infer_mean']} ms/inference "
+          f"(median {stats['ms_per_infer_median']}, "
+          f"p95 {stats['ms_per_infer_p95']}, n={stats['n_infer']}), "
+          f"{stats['ms_per_step']} ms/control-step, {stats['infer_hz']} Hz"
+          + (f", {net_evals} net evals" if net_evals is not None else "")
+          + (f", {gflops} GFLOPs/inference" if gflops is not None else "")
+          + f" -> {csv_path}")
 
 
 def save_fed_png(path_stem: Path, block: np.ndarray, cam_ids: List[int]) -> None:
@@ -1623,6 +1850,20 @@ def main() -> int:
           f"(re-predict every {exec_horizon} step(s))")
     input("Press [Enter] to start.")
 
+    # One entry point for the policy so the control loop, the timer and the
+    # post-episode FLOP count all measure the identical call.
+    def predict(obs_u8, raw_obs):
+        return select_action(
+            cp_gen, q_net, obs_u8, cp_selection, cp_temp,
+            cond=make_cond(raw_obs), inference=args.inference,
+            refine_iters=args.refine_iters,
+            langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
+            dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
+
+    timer = InferenceTimer(device)
+    last_obs_u8 = None
+    last_raw_obs = None
+
     step = 0
     last_exec = time.time()
     pending: list[np.ndarray] = []   # unexecuted (dx,dy) tail of the chunk
@@ -1640,14 +1881,11 @@ def main() -> int:
             raw = raw_frame(raw_obs)
             frame_buf.append(policy_frames(raw_obs))
             obs_u8 = stack_to_tensor(frame_buf, device)
+            last_obs_u8, last_raw_obs = obs_u8, raw_obs
 
             if not pending:
-                na_full = select_action(
-                    cp_gen, q_net, obs_u8, cp_selection, cp_temp,
-                    cond=make_cond(raw_obs), inference=args.inference,
-                    refine_iters=args.refine_iters,
-                    langevin_lr=(args.langevin_lr_init, args.langevin_lr_final),
-                    dfo_noise=(args.dfo_noise_init, args.dfo_noise_decay))
+                with timer.measure():
+                    na_full = predict(obs_u8, raw_obs)
                 act_full = unnormalize(na_full, act_min, act_max, norm_range)
                 pending = list(np.asarray(act_full).reshape(-1, 2)[:exec_horizon])
                 pending_norm = list(np.asarray(na_full).reshape(-1, 2)[:exec_horizon])
@@ -1754,22 +1992,22 @@ def main() -> int:
         # measurement reads, and it dies with the connection. An interrupted
         # episode is still worth scoring, so this sits in the finally block --
         # and it must never be the reason a run ends badly, hence the catch-all.
+        key = {
+            "algorithm": args.algorithm,
+            "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
+            "inference": args.inference,
+            "refine_iters": args.refine_iters,
+            "control_z": bool(args.control_z),
+            "start_position": args.start_position,
+        }
+        trial = None
         if args.measure:
             try:
                 final_obs = grab_obs()
                 frames = {cam: frame_for_camera(final_obs, cam, topic_camera_ids)
                           for cam in topic_camera_ids}
                 scores = score_final_frames(frames)
-                row = {
-                    "algorithm": args.algorithm,
-                    "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
-                    "inference": args.inference,
-                    "refine_iters": args.refine_iters,
-                    "control_z": bool(args.control_z),
-                    "start_position": args.start_position,
-                    **scores,
-                }
-                trial = append_result_row(args.results_csv, row)
+                trial = append_result_row(args.results_csv, dict(key, **scores))
                 print(f"[measure] trial {trial}: "
                       f"coverage cam0={scores['coverage_cam0']} "
                       f"cam1={scores['coverage_cam1']} "
@@ -1777,6 +2015,25 @@ def main() -> int:
                       f"-> {args.results_csv}")
             except Exception as exc:
                 print(f"[measure] FAILED, no row written: {exc!r}")
+        # Inference cost. Runs whether or not the episode was scored, and never
+        # takes the run down with it -- a timing is not worth losing a rollout.
+        if timer.samples_ms and not args.no_speed_csv:
+            try:
+                gflops = None
+                if not args.no_flops and last_obs_u8 is not None:
+                    # The arm is already idle here, so the extra policy call the
+                    # counter needs cannot perturb the episode it is measuring.
+                    gflops = count_gflops(
+                        lambda: predict(last_obs_u8, last_raw_obs))
+                report_inference_cost(
+                    args.speed_csv, timer, dict(key, trial=trial,
+                                                device=str(device)),
+                    n_steps=step + 1, exec_horizon=exec_horizon,
+                    net_evals=energy_net_evals(args.inference, args.refine_iters),
+                    gflops=gflops,
+                    params_m=count_params_m(cp_gen, q_net))
+            except Exception as exc:
+                print(f"[speed] FAILED, no row written: {exc!r}")
         try:
             client.stop()
         except Exception:

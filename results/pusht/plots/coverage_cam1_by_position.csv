@@ -29,3 +29,12 @@ q3c,langevin,right,cam1,0.5321,0.0,1
 q3c,langevin,turned_left,cam1,0.7021,0.0332,11
 q3c,langevin,turned_right,cam1,0.7333,0.4188,13
 q3c,langevin,upside_down,cam1,0.4503,0.0865,12
+ibc,dfo,top,cam1,0.8546,0.2177,3
+ibc,dfo,bottom,cam1,0.6955,0.2779,3
+ibc,dfo,left,cam1,0.9295,0.0741,3
+ibc,dfo,right,cam1,0.5127,0.0055,2
+ibc,dfo,top_right,cam1,0.9702,0.01,3
+ibc,dfo,bottom_right,cam1,0.8952,0.1191,3
+ibc,dfo,turned_left,cam1,0.6025,0.1479,2
+ibc,dfo,turned_right,cam1,0.8228,0.1056,2
+ibc,dfo,upside_down,cam1,0.1773,0.0255,2

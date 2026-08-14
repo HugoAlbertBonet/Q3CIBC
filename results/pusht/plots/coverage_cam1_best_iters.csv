@@ -11,3 +11,4 @@ q3c,langevin,5,cam1,0.6633,0.3047,17,
 q3c,langevin,10,cam1,0.618,0.301,17,
 q3c,langevin,20,cam1,0.7271,0.2794,17,yes
 q3c,langevin,50,cam1,0.6872,0.2811,16,
+ibc,dfo,5,cam1,0.7507,0.2605,23,yes

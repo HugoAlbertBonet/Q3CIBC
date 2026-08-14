@@ -11,3 +11,4 @@ q3c,langevin,5,avg_cov,0.655,0.2931,17,
 q3c,langevin,10,avg_cov,0.5659,0.2794,17,
 q3c,langevin,20,avg_cov,0.6992,0.263,17,yes
 q3c,langevin,50,avg_cov,0.6286,0.2634,16,
+ibc,dfo,5,avg_cov,0.7398,0.2537,23,yes
