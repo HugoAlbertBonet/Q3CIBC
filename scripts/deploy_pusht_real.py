@@ -68,12 +68,14 @@ interrupted, and a failure there never fails the run::
         --measure --start-position top
 
 Stall escape: ``--inference argmax`` ranks a finite candidate cloud, so when it
-locks onto a fixed point it proposes the identical action every call and has no
-way out -- the arm stops, the observation stops changing, and the same candidate
-keeps winning. ``--refine-iters`` is therefore NOT ignored under argmax: once the
-proposal has repeated ``--argmax-stall-steps`` times (10, within
-``--argmax-stall-tol``), that many DFO iterations run on top of the cloud and
-keep running until argmax proposes something else. Every other call costs exactly
+settles on commands too small to move the arm it has no way out -- the arm stops,
+the observation stops changing, and the same tiny candidates keep winning.
+``--refine-iters`` is therefore NOT ignored under argmax: once
+``--argmax-stall-steps`` actions in a row (10) have come back with every
+executed component under ``--argmax-stall-action`` (0.19, normalized), that many
+DFO iterations run on top of the cloud, and they keep running until a returned
+action reaches 0.19 on some component. Both the trip and the release read the
+action finally returned, refined ones included. Every other call costs exactly
 what plain argmax costs. ``--argmax-stall-steps 0`` or ``--refine-iters 0``
 restores the old behaviour.
 
@@ -398,14 +400,15 @@ def parse_args() -> argparse.Namespace:
                         "Under --inference argmax this is the number of DFO "
                         "iterations the stall escape runs; 0 disables it.")
     p.add_argument("--argmax-stall-steps", type=int, default=10,
-                   help="--inference argmax only: how many consecutive calls the "
-                        "argmax proposal may repeat before --refine-iters DFO "
-                        "iterations are run on top of it to break the fixed "
-                        "point. Refinement stays on until argmax moves again. "
-                        "0 disables the escape and restores plain argmax.")
-    p.add_argument("--argmax-stall-tol", type=float, default=1e-3,
-                   help="max-abs difference in NORMALIZED action below which two "
-                        "consecutive argmax proposals count as the same one.")
+                   help="--inference argmax only: how many consecutive idle "
+                        "actions (see --argmax-stall-action) are returned before "
+                        "--refine-iters DFO iterations are run on top of the "
+                        "cloud. Refinement stays on until a returned action is "
+                        "no longer idle. 0 disables the escape.")
+    p.add_argument("--argmax-stall-action", type=float, default=0.19,
+                   help="an action is idle when every component it will execute "
+                        "is below this in absolute value (NORMALIZED units, so "
+                        "the same scale as the [-1,1] action bounds).")
     p.add_argument("--langevin-lr-init", type=float, default=0.1)
     p.add_argument("--langevin-lr-final", type=float, default=1e-5)
     p.add_argument("--dfo-noise-init", type=float, default=0.1)
@@ -1355,47 +1358,55 @@ def _refine_langevin(q_net, features, init_cps, amin, amax, iters, lr0, lr1):
 
 
 class ArgmaxStallDetector:
-    """Detects the CP-cloud argmax locking onto one action and staying there.
+    """Detects argmax settling into actions too small to move the arm.
 
-    The cloud is a finite candidate set, so a stuck policy does not drift: it
-    returns the SAME vector call after call while the arm sits at a fixed point.
-    That is the freeze mode this deploy has hit before, and pure argmax has no
-    way out of it -- the observation barely changes because the arm is not
-    moving, so the same candidate keeps winning.
+    Magnitude, not repetition: a run of *near-zero* commands is the freeze mode
+    this deploy actually hits, and it does not require the argmax to be
+    bit-identical each time -- a cloud of slightly different tiny deltas leaves
+    the arm just as stuck. So an action counts as idle when every component it
+    will execute is below `threshold` in absolute value, and `patience`
+    consecutive idle actions arm the escape.
 
-    What is tracked is the RAW argmax proposal, never the action finally
-    returned. DFO is stochastic and returns something different every call, so
-    scoring the returned action would zero the counter the instant the escape
-    fired and drop straight back to the frozen argmax on the next step -- a
-    stall/kick sawtooth rather than an escape. Watching the proposal keeps
-    refinement latched for as long as argmax is still proposing the fixed point.
+    Both the trip and the release read the action FINALLY RETURNED, refined ones
+    included. That is what makes the latch correct: DFO keeps running until one
+    of its own outputs is big enough to actually move, rather than being retried
+    from scratch every step.
     """
 
-    def __init__(self, patience: int, tol: float) -> None:
+    def __init__(self, patience: int, threshold: float,
+                 n_exec: int | None = None) -> None:
         self.patience = int(patience)
-        self.tol = float(tol)
-        self.repeats = 0        # consecutive calls whose argmax proposal held still
+        self.threshold = float(threshold)
+        # A chunked checkpoint returns 2 * chunk_len components but only the
+        # leading 2 * exec_horizon of them are ever sent to the arm. Judging the
+        # whole chunk would call a stall "moving" on the strength of a sub-action
+        # that gets discarded before it is executed.
+        self.n_exec = int(n_exec) if n_exec else None
+        self.idle = 0           # consecutive returned actions that were all-small
+        self.active = False     # escape latched on
         self.kicks = 0          # calls that ran the escape, for the cost accounting
-        self._last: np.ndarray | None = None
 
-    def update(self, action: np.ndarray) -> bool:
-        """Feed one raw argmax proposal.
+    def _is_idle(self, action: np.ndarray) -> bool:
+        act = np.asarray(action, dtype=np.float64).ravel()
+        if self.n_exec:
+            act = act[:self.n_exec]
+        return act.size > 0 and float(np.max(np.abs(act))) < self.threshold
 
-        True once the proposal has been unchanged for `patience` consecutive
-        calls after the one that set it, i.e. the action has been static that
-        many timesteps (at the default --exec-horizon 1 a call IS a timestep).
-        """
-        act = np.asarray(action, dtype=np.float64).ravel().copy()
-        if (self._last is not None and self._last.shape == act.shape
-                and float(np.max(np.abs(act - self._last))) <= self.tol):
-            self.repeats += 1
-        else:
-            self.repeats = 0
-        self._last = act
-        fired = self.patience > 0 and self.repeats >= self.patience
-        if fired:
+    def refine_now(self) -> bool:
+        """Whether THIS call should refine, from the actions already returned."""
+        if self.active:
             self.kicks += 1
-        return fired
+        return self.active
+
+    def observe(self, action: np.ndarray) -> None:
+        """Record the action actually being returned; arms or releases the latch."""
+        if self._is_idle(action):
+            self.idle += 1
+            if self.patience > 0 and self.idle >= self.patience:
+                self.active = True
+        else:
+            self.idle = 0
+            self.active = False
 
 
 def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
@@ -1413,8 +1424,9 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
       - "dfo": derivative-free iterative refinement (cheaper, no grads).
     `cond` is the (1, cond_dim) conditioning vector; both nets read it off `_cond`.
     `stall` (argmax only) turns `refine_iters` from an ignored argument into a
-    stall escape: while the argmax proposal is frozen, that many DFO iterations
-    run on top of it. Every other call stays exactly as cheap as plain argmax.
+    stall escape: once the returned actions have gone idle, that many DFO
+    iterations run on top of the cloud until one of them is big enough to move
+    the arm. Every other call stays exactly as cheap as plain argmax.
     """
     cp_gen._cond = cond
     q_net._cond = cond
@@ -1445,14 +1457,19 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
     else:
         idx = int(logits.squeeze(0).argmax().item())
     act_np = cps[0, idx].detach().cpu().numpy()       # normalized action
-    if stall is None or not stall.update(act_np) or refine_iters <= 0:
+    if stall is None or refine_iters <= 0:
         return act_np
-    if stall.repeats == stall.patience:
-        # Only the transition, so a long stall does not flood the step log.
-        print(f"[stall] argmax static for {stall.patience} step(s) at "
-              f"{np.round(act_np, 4)}; refining with {refine_iters} DFO "
-              f"iteration(s) until it moves")
-    return refine_dfo().detach().cpu().numpy()
+    if stall.refine_now():
+        if stall.kicks == 1 or stall.idle == stall.patience:
+            # Only the transition, so a long stall does not flood the step log.
+            print(f"[stall] {stall.patience} action(s) with every executed "
+                  f"component under {stall.threshold}; refining with "
+                  f"{refine_iters} DFO iteration(s) until one reaches it")
+        act_np = refine_dfo().detach().cpu().numpy()
+    # Judge what is actually returned, refined or not: the latch releases only
+    # when a command large enough to move the arm goes out.
+    stall.observe(act_np)
+    return act_np
 
 
 def unnormalize(norm_action, act_min, act_max, norm_range):
@@ -1943,11 +1960,12 @@ def main() -> int:
     if args.inference == "argmax" and args.argmax_stall_steps > 0:
         if args.refine_iters > 0:
             stall_detector = ArgmaxStallDetector(args.argmax_stall_steps,
-                                                 args.argmax_stall_tol)
+                                                 args.argmax_stall_action,
+                                                 n_exec=2 * exec_horizon)
             print(f"[stall] argmax escape armed: {args.refine_iters} DFO "
-                  f"iteration(s) once the proposal repeats "
-                  f"{args.argmax_stall_steps} time(s) within "
-                  f"{args.argmax_stall_tol}")
+                  f"iteration(s) after {args.argmax_stall_steps} action(s) with "
+                  f"every executed component under "
+                  f"{args.argmax_stall_action} (normalized)")
         else:
             print("[stall] --refine-iters 0: argmax stall escape disabled")
 
