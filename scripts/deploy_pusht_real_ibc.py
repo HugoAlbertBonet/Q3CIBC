@@ -86,7 +86,7 @@ the sequential net evaluations behind one action, GFLOPs per action
 and the parameter count. It is a separate table from experiments.csv on purpose:
 that one is keyed by start position and its existing rows predate any timing, so
 speed columns there would be blank everywhere and only a full re-run could fill
-them. These rows repeat the six key columns plus ``trial``, so a join puts a
+them. These rows repeat the seven key columns plus ``trial``, so a join puts a
 timing back next to the episode that produced it.
 """
 
@@ -152,16 +152,21 @@ STEP_DURATION = 0.05
 # Where --measure appends its rows.
 RESULTS_CSV = ROOT / "results" / "pusht" / "experiments.csv"
 RESULTS_COLUMNS = ["algorithm", "seed_dir", "inference", "refine_iters",
-                   "control_z", "start_position", "trial", "coverage_cam0",
-                   "coverage_cam1", "dist_centroid"]
-# A row's identity: another run with all six equal gets the next trial number
-# rather than overwriting the old one.
-RESULTS_KEY = ("algorithm", "seed_dir", "inference", "refine_iters", "control_z",
-               "start_position")
+                   "exec_horizon", "control_z", "start_position", "trial",
+                   "coverage_cam0", "coverage_cam1", "dist_centroid"]
+# A row's identity: another run with all seven equal gets the next trial number
+# rather than overwriting the old one. exec_horizon belongs here because a
+# re-predict every step and a re-predict every 8 steps are different control
+# policies over the same weights, not repeats of one condition.
+RESULTS_KEY = ("algorithm", "seed_dir", "inference", "refine_iters",
+               "exec_horizon", "control_z", "start_position")
 # What to write into a column that a pre-existing table has never heard of.
 # Every row already in such a table was written before the flag was recorded,
-# by this script, with the z loop off.
-RESULTS_LEGACY_DEFAULTS: Dict[str, Any] = {"algorithm": "q3c", "control_z": False}
+# by this script, with the z loop off and one action executed per prediction
+# (--exec-horizon's default, and the only value an unchunked checkpoint allows
+# since chunk_len is then 1 and the flag is clamped to it).
+RESULTS_LEGACY_DEFAULTS: Dict[str, Any] = {"algorithm": "q3c", "control_z": False,
+                                           "exec_horizon": 1}
 # This script deploys IBC. The Q3C variant lives in deploy_pusht_real.py, so
 # the column exists to keep both readable from one table.
 ALGORITHM = "ibc"
@@ -172,7 +177,7 @@ ALGORITHM = "ibc"
 # there would be blank for every one of them and could only be filled by
 # re-running the entire sweep -- to recover a number that does not depend on the
 # start position or on the block ending up in the goal. Speed rows carry the
-# full RESULTS_KEY plus `trial`, so joining on those seven columns reattaches a
+# full RESULTS_KEY plus `trial`, so joining on those eight columns reattaches a
 # timing to the episode that produced it whenever both were written.
 SPEED_CSV = ROOT / "results" / "pusht" / "inference_speed.csv"
 SPEED_COLUMNS = ["algorithm", "seed_dir", "inference", "refine_iters",
@@ -450,7 +455,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--speed-csv", type=Path, default=SPEED_CSV,
                    help="inference-cost table: one row per episode with the "
                         "ms/inference distribution, ms/control-step, GFLOPs and "
-                        "parameter count. Joins to --results-csv on the six key "
+                        "parameter count. Joins to --results-csv on the seven key "
                         "columns plus trial")
     p.add_argument("--no-speed-csv", action="store_true",
                    help="time the policy for the console line but do not append "
@@ -2095,6 +2100,10 @@ def main() -> int:
             "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
             "inference": args.inference,
             "refine_iters": args.refine_iters,
+            # The RESOLVED horizon, not args.exec_horizon: an unchunked
+            # checkpoint clamps it to chunk_len, and the table has to record
+            # what ran rather than what was asked for.
+            "exec_horizon": exec_horizon,
             "control_z": bool(args.control_z),
             "start_position": args.start_position,
         }

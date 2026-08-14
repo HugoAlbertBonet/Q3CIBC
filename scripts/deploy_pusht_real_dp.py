@@ -61,7 +61,7 @@ the sequential net evaluations behind one action, GFLOPs per action
 and the parameter count. It is a separate table from experiments.csv on purpose:
 that one is keyed by start position and its existing rows predate any timing, so
 speed columns there would be blank everywhere and only a full re-run could fill
-them. These rows repeat the six key columns plus ``trial``, so a join puts a
+them. These rows repeat the seven key columns plus ``trial``, so a join puts a
 timing back next to the episode that produced it.
 """
 
@@ -301,7 +301,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--speed-csv", type=Path, default=d.SPEED_CSV,
                    help="inference-cost table: one row per episode with the "
                         "ms/inference distribution, ms/control-step, GFLOPs and "
-                        "parameter count. Joins to --results-csv on the six key "
+                        "parameter count. Joins to --results-csv on the seven key "
                         "columns plus trial")
     p.add_argument("--no-speed-csv", action="store_true",
                    help="time the policy for the console line but do not append "
@@ -854,6 +854,10 @@ def main() -> int:
             "seed_dir": str(Path(args.seed_dir).expanduser().resolve()),
             "inference": args.inference,     # ddpm | ddim
             "refine_iters": refine_iters,
+            # The RESOLVED horizon, not args.exec_horizon: an unchunked
+            # checkpoint clamps it to chunk_len, and the table has to record
+            # what ran rather than what was asked for.
+            "exec_horizon": exec_horizon,
             "control_z": bool(args.control_z),
             "start_position": args.start_position,
         }
