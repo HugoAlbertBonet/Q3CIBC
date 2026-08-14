@@ -170,6 +170,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-stack", type=int, default=2,
                         help="Matches the Q3C/IBC real-robot runs")
     parser.add_argument(
+        "--action-chunk",
+        type=int,
+        default=1,
+        help="Predict K planar deltas per step (open-loop action chunking), so "
+             "the denoiser's action_dim becomes 2*K. K=1 is single-step "
+             "(default); K=16 matches the libero_goal_pixels recipe. "
+             "deploy_pusht_real_dp.py already executes chunks -- it reads the "
+             "chunk length off act_min and --exec-horizon picks how many of the "
+             "K deltas run open-loop before re-predicting. zarr_video only.",
+    )
+    parser.add_argument(
         "--cameras",
         nargs="+",
         default=["images1"],
@@ -333,7 +344,9 @@ def build_run_config(args: argparse.Namespace, run_dir: Path) -> dict:
             args.image_height,
             args.image_width,
         ],
-        "action_dim": 2,
+        # 2 planar deltas per chunk entry; K=1 keeps the old 2-D action exactly.
+        "action_dim": 2 * args.action_chunk,
+        "action_chunk": args.action_chunk,
         "frame_stack": args.frame_stack,
         "camera_streams": (
             [f"video{c}" for c in video_cameras]
@@ -482,6 +495,7 @@ def main() -> int:
             cond_eef_xy=args.cond_eef_xy,
             val_frac=args.val_frac,
             val_seed=args.val_seed,
+            action_chunk=args.action_chunk,
         )
         dataset = PushTWidowXVideoDataset(
             augment=args.aug,
@@ -498,6 +512,12 @@ def main() -> int:
 
         if args.cond_eef_xy:
             raise ValueError("--cond-eef-xy requires --data-format zarr_video")
+        if args.action_chunk > 1:
+            # PushTRealPixelsDataset pins self.action_chunk = 1, so asking for a
+            # chunk here would silently train a single-step model under a
+            # chunked config -- the deploy client would then read chunk_len from
+            # act_min, see 1, and clamp --exec-horizon back to 1.
+            raise ValueError("--action-chunk > 1 requires --data-format zarr_video")
         if args.val_frac > 0.0:
             raise ValueError("--val-frac is only wired for --data-format zarr_video")
         dataset = PushTRealPixelsDataset(
@@ -543,6 +563,19 @@ def main() -> int:
         "denoiser_depth": DP_BEST["denoiser_depth"],
         "denoiser_use_spectral_norm": DP_BEST["denoiser_use_spectral_norm"],
     }
+    # Width of one training target. Read off the dataset rather than recomputed
+    # from --action-chunk so the model can never disagree with the chunked
+    # vector the loader actually yields (or with act_min, which the deploy
+    # client divides by 2 to recover the chunk length).
+    action_dim = int(np.asarray(dataset.act_min).size)
+    if action_dim != 2 * args.action_chunk:
+        raise RuntimeError(
+            f"dataset action width {action_dim} != 2 * --action-chunk "
+            f"{args.action_chunk}; the chunking did not reach the dataset")
+    if args.action_chunk > 1:
+        print(f"Action chunking: K={args.action_chunk} -> action_dim={action_dim} "
+              f"(deploy executes the first --exec-horizon of the K deltas)")
+
     if cond_dim:
         # Local subclass — pixels-only, conv_maxpool-only (the resnet18 encoder
         # is not wired through the cond head).
@@ -550,7 +583,7 @@ def main() -> int:
             raise ValueError(
                 "--cond-eef-xy is only supported with --encoder-kind conv_maxpool")
         denoiser = CondPixelDiffusionDenoiser(
-            2,
+            action_dim,
             in_channels=dataset.in_channels,
             cond_dim=cond_dim,
             encoder_target_height=DP_BEST["encoder_target_height"],
@@ -560,7 +593,7 @@ def main() -> int:
         ).to(device)
     else:
         denoiser = build_pixel_denoiser(
-            2, dataset.in_channels, dp,
+            action_dim, dataset.in_channels, dp,
             encoder_target_height=DP_BEST["encoder_target_height"],
             encoder_target_width=DP_BEST["encoder_target_width"],
             encoder_feature_dim=DP_BEST["encoder_feature_dim"],
@@ -653,7 +686,7 @@ def main() -> int:
             va = vb["action"].float().to(device, non_blocking=True)
             if cond_dim:
                 ema_denoiser._cond = vb["cond"].float().to(device, non_blocking=True)
-            pred = diffusion.ddim_sample(ema_denoiser, vs, action_dim=2,
+            pred = diffusion.ddim_sample(ema_denoiser, vs, action_dim=action_dim,
                                          num_steps=val_ddim_steps, eta=0.0)
             tot += (pred - va).abs().mean().item() * vs.shape[0]
             n += vs.shape[0]

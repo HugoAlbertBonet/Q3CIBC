@@ -1,0 +1,49 @@
+# Push-T WidowX Diffusion-Policy — ACTION CHUNKING K=16 on the 2026-07 dataset.
+#
+# Single-variable A/B against g01/g02 in batches/pushtWidowXdp2026_07.txt: same
+# archive, same cache, same encoder, same seeds, same 350k budget, same val
+# split. The ONLY difference is --action-chunk 16.
+#
+# Why: the g-series was trained unchunked, so norm_stats["act_min"] has size 2,
+# deploy_pusht_real_dp.py computes chunk_len = act_min.size // 2 = 1, and
+# --exec-horizon is silently clamped back to 1 ("[WARN] --exec-horizon 8 >
+# chunk length 1; clipped to 1"). Chunking is a TRAINING decision — the deploy
+# client has always executed chunks, there was just never a chunked DP
+# checkpoint to feed it. scripts/train_pusht_real_dp.py now takes
+# --action-chunk (it plumbs into PushTWidowXVideoDataset, which has supported
+# chunking all along for the Q3C trainer); the denoiser's action_dim becomes
+# 2*K = 32 and act_min/act_max cover the whole chunk vector.
+#
+# At deploy: --exec-horizon N executes the first N of the 16 predicted deltas
+# open-loop before re-predicting, so one DDPM call (100 sequential denoiser
+# passes) amortizes over N control steps. Expect ms_per_step in
+# results/pusht/inference_speed.csv to drop ~Nx while ms_per_infer_mean is
+# unchanged. Observations still append to frame_buf every control step, so the
+# frame stack stays a run of adjacent env steps as in training.
+#
+# STEP BUDGET 350k, same as g01/g02: chunking widens only the denoiser head's
+# output (2 -> 32) and the DenseResnet 1024x1 head is a rounding error against
+# the ResNet-18 trunk, so the 2.29 steps/s measured in
+# batches/pushtWidowXdpCam1_resnet350k.txt still holds (~42.4h, inside the 48h
+# cap with the cosine fully annealed).
+#
+# THE "[val] ..." MAE IS NOT COMPARABLE TO THE g-SERIES. Held-out action MAE is
+# averaged over the whole target vector, which is 32-D here and 2-D there. A
+# 16-step chunk includes deltas up to 15 steps into the future, which are
+# genuinely harder to predict, so this number will read WORSE than g01's
+# without meaning the policy is worse. Compare chunked runs to each other, and
+# compare chunked vs unchunked on the robot (results/pusht/experiments.csv).
+#
+# PREREQUISITE: the camera-1 frame cache for this archive is already built by
+# the g-series (same --dataset and --frame-cache-dir), so nothing to rebuild.
+#
+# --workers 4 matches submit_experiments.sh's --cpus-per-task=4.
+#
+# Submit:  ./submit_experiments.sh batches/pushtWidowXdpChunk16.txt
+
+# ── h01 PRIMARY: g01 + --action-chunk 16. Camera 1, ImageNet ResNet-18, seed 11.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag h01_resnet18_k16_s11_350k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --action-chunk 16 --steps 350000
+
+# ── h02 seed repeat of h01, mirroring g02. DP single-seed success bounces
+#    (pushingPixelsDPD showed 83-95%), so one seed is not a number.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag h02_resnet18_k16_s29_350k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-camera 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --action-chunk 16 --steps 350000
