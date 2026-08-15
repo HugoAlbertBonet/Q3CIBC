@@ -1,0 +1,125 @@
+# Push-T WidowX — DP+Q3C (dpq3c), BOTH cameras (video0 + video1).
+#
+# Trains the hybrid: a diffusion policy proposes the control-point cloud, the Q
+# estimator ranks it. One run produces BOTH halves, so deploy with the same
+# directory on both flags:
+#
+#   python scripts/deploy_pusht_real_dpq3c.py --dp-dir RUN --q-dir RUN \
+#       --cp 64 --dp-method ddim --dp-iters 10 --steps 700 --measure
+#
+# Submit with:  bash submit_experiments.sh batches/pushtWidowXdpq3c2cam.txt
+#
+# ── Fixed recipe (all lines) ────────────────────────────────────────────────
+# Deliberately the SAME non-algorithmic recipe as batches/pushtWidowXlib2cam.txt
+# — resnet18 + GroupNorm + 128 SpatialSoftmax kp, lr = est_lr = 2e-4, batch 64,
+# info_nce 0.5 / infonce_clamp 20, 8 Langevin negatives x 100 iters, cosine t0
+# 75k, 150k steps, idle_filter drop_zero, frame_stack 2, both cameras,
+# --val-frac 0.1 --val-seed 0, --aug-photometric — so a dpq3c-vs-q3c comparison
+# is a comparison of the ALGORITHM and not of the data pipeline or the encoder.
+# The q3c CP-generator knobs have no counterpart here; the diffusion actor uses
+# the pushing_pixels DP recipe (T=100 cosine/epsilon, dense_resnet 1024x1 head),
+# which is capacity-matched to the Q value head.
+#
+# Langevin negatives are KEPT alongside the DP negatives on purpose: they cover
+# the rest of the action box, the DP samples cover the behavior manifold. They
+# answer different questions and the estimator wants both.
+#
+# ── SWEEP AXES (8 grid jobs + 2 controls) ───────────────────────────────────
+#
+#   --action-chunk {1, 16}
+#       Open-loop chunking. The established anti-stall fix on this rig, and the
+#       axis with the largest known effect. 16 is the libero recipe's value.
+#
+#   --progress-weight {0, 0.1}          ← the most interesting axis
+#       0    the critic is trained by InfoNCE alone. InfoNCE constrains only
+#            score DIFFERENCES, so Q is identified up to a per-state shift: a
+#            density model with a Q-shaped API. Ranking DP samples by an
+#            estimate of the density that generated them is mode-seeking BC —
+#            it can suppress mode dithering but cannot beat the demonstrator.
+#       0.1  adds the REWARD-FREE value anchor: Q at the expert action is
+#            regressed toward the Monte-Carlo time-to-go return
+#            (-remaining_steps / mean_episode_length), a label the archive
+#            already contains. This is what pins an absolute scale and makes Q
+#            a progress estimator rather than a likelihood estimator.
+#       This axis is the whole "is the critic a ranker or a value function"
+#       question, run as an experiment.
+#
+#   --dp-negatives {16, 64}
+#       How many diffusion samples the critic ranks per state during training.
+#       This is the alignment a separately-trained DP + Q3C pair cannot have:
+#       the critic learns on the distribution it will face at deploy. Note the
+#       score gaps inside a cloud grow with N, so DEPLOY WITH --cp EQUAL TO
+#       THIS (the run config records it as model.control_points, which is what
+#       the deploy client's --cp defaults to).
+#
+#   CONTROLS (--dp-negatives 0): the critic never sees a diffusion sample and
+#       falls back to uniform + Langevin negatives — i.e. a Q3C-style estimator
+#       bolted onto a DP actor, which is what the two separately-trained
+#       checkpoints already give you. If the grid does not beat these, the
+#       joint training is not buying anything and the answer is the objective,
+#       not the sweep.
+#
+# Held at their defaults, one axis at a time: --margin-weight 0 (the DQfD hinge)
+# and --q-actor-weight 0 (the training-time analogue of deploy --q-guidance).
+# Both are worth a follow-up batch once this one has a winner; turning them on
+# now would confound the two axes above.
+#
+# ── What to read off, in order ──────────────────────────────────────────────
+# 1. `[val] action_MAE` — the trainer evaluates with the SAME DP-cloud +
+#    argmax-Q selection the deploy client uses, so it is a like-for-like signal.
+# 2. `metric/q_pick_closest_frac` — how often Q's argmax IS the
+#    closest-to-expert candidate. This is the ranking quality, and it is the
+#    number that decides whether the critic is contributing at all. Same wandb
+#    key the q3c runs log, so the two plot together.
+# 3. `metric/cp_ranking_gap` — the part the critic gets wrong, separated from
+#    what the actor simply failed to propose (`metric/cp_to_expert_min`).
+# Only take the top one or two to the arm. Rollouts are hours; these are free.
+#
+# At deploy, run the `--cp` ablation FIRST: --cp 1 IS plain diffusion policy, so
+# the curve over --cp {1, 4, 16, 64} tells you whether the critic adds anything
+# before any temperature/guidance/cascade tuning is worth doing.
+#
+# ── PREREQUISITE ────────────────────────────────────────────────────────────
+# Build the camera-0 frame cache once (camera-1 is already cached):
+#   python scripts/prepare_pusht_video_cache.py --camera 0
+# Otherwise every job blocks decoding the ~17 GB cam-0 memmap.
+#
+# --workers 4 matches submit_experiments.sh --cpus-per-task=4.
+# --batch-size 64: two cameras x frame_stack 2 = 4 sub-images through the
+# ResNet. The dpq3c step also draws --dp-negatives samples, but those run
+# through the small denoiser head on CACHED encoder features, so they add
+# almost nothing to peak memory.
+
+# ── D2c_ch1_p0_n16: single-step, ranker critic, 16 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch1_p0_n16 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 16 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.0 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch1_p0_n64: single-step, ranker critic, 64 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch1_p0_n64 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 64 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.0 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch1_p01_n16: single-step, VALUE-anchored critic, 16 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch1_p01_n16 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 16 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.1 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch1_p01_n64: single-step, VALUE-anchored critic, 64 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch1_p01_n64 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 64 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.1 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch16_p0_n16: 16-step chunks, ranker critic, 16 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch16_p0_n16 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 16 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.0 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch16_p0_n64: 16-step chunks, ranker critic, 64 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch16_p0_n64 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 64 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.0 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch16_p01_n16: 16-step chunks, VALUE-anchored critic, 16 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch16_p01_n16 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 16 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.1 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch16_p01_n64: 16-step chunks, VALUE-anchored critic, 64 DP negatives
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch16_p01_n64 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 64 --dp-negative-iters 4 --dp-negative-warmup 5000 --progress-weight 0.1 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch1_ctrl: CONTROL — single-step, critic never sees a diffusion sample
+#    (uniform + Langevin negatives only). Equivalent to bolting a Q3C-style
+#    estimator onto a DP actor, i.e. what two separately-trained checkpoints
+#    already give you. --deploy-control-points 64 so the deploy --cp default
+#    matches the grid runs rather than collapsing to 1.
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch1_ctrl --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 0 --uniform-negatives 32 --deploy-control-points 64 --progress-weight 0.0 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── D2c_ch16_ctrl: CONTROL — 16-step chunks, no DP negatives (see above)
+uv run python scripts/train_pusht_real_dpq3c.py --seed 11 --tag D2c_ch16_ctrl --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dpq3c_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --num-train-timesteps 100 --beta-schedule cosine --prediction-type epsilon --denoiser-network-kind dense_resnet --denoiser-width 1024 --denoiser-depth 1 --ddim-eval-steps 10 25 --dp-negatives 0 --uniform-negatives 32 --deploy-control-points 64 --progress-weight 0.0 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --info-nce-weight 0.5 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric

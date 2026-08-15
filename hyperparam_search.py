@@ -564,6 +564,116 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env_training",
     },
+    # ── dpq3c (dpq3c_training.py) ────────────────────────────────────────────
+    # apply_params_to_config SILENTLY DROPS any key missing from SEARCH_SPACE,
+    # so every knob a dpq3c batch passes through --fixed-params must be declared
+    # here or it is ignored and the trial trains the default recipe.
+    #
+    # Actor — the diffusion process.
+    "num_train_timesteps": {
+        "values": [50, 100, 200],
+        "type": "int",
+        "location": "env_training",
+    },
+    "beta_schedule": {
+        "values": ["cosine", "linear"],
+        "type": "str",
+        "location": "env_training",
+    },
+    "prediction_type": {
+        "values": ["epsilon", "v"],
+        "type": "str",
+        "location": "env_training",
+    },
+    "time_emb_dim": {
+        "values": [64, 128],
+        "type": "int",
+        "location": "env_training",
+    },
+    "denoiser_network_kind": {
+        "values": ["mlp", "dense_resnet"],
+        "type": "str",
+        "location": "env_training",
+    },
+    "denoiser_width": {
+        "values": [256, 512, 1024],
+        "type": "int",
+        "location": "env_training",
+    },
+    "denoiser_depth": {
+        "values": [1, 2, 4],
+        "type": "int",
+        "location": "env_training",
+    },
+    "denoiser_use_spectral_norm": {
+        "values": [False, True],
+        "type": "bool",
+        "location": "env_training",
+    },
+    # Critic — negatives drawn from the diffusion policy itself. This is the
+    # alignment a separately-trained DP + Q3C pair cannot have; 0 disables it
+    # and gives the "trained apart" control.
+    "dp_negatives": {
+        "values": [0, 16, 64],
+        "type": "int",
+        "location": "env_training",
+    },
+    "dp_negative_iters": {
+        "values": [2, 4, 8],
+        "type": "int",
+        "location": "env_training",
+    },
+    "dp_negative_method": {
+        "values": ["ddim", "ddpm"],
+        "type": "str",
+        "location": "env_training",
+    },
+    "dp_negative_warmup_steps": {
+        "values": [0, 5000, 20000],
+        "type": "int",
+        "location": "env_training",
+    },
+    # Critic — objective terms. progress_weight is the reward-free absolute-scale
+    # anchor (Monte-Carlo time-to-go); without it InfoNCE and the margin only
+    # constrain score differences and Q stays a ranker.
+    "progress_weight": {
+        "values": [0.0, 0.1, 0.5],
+        "type": "float",
+        "location": "env_training",
+    },
+    "margin_weight": {
+        "values": [0.0, 0.5, 1.0],
+        "type": "float",
+        "location": "env_training",
+    },
+    "margin": {
+        "values": [0.05, 0.1, 0.5],
+        "type": "float",
+        "location": "env_training",
+    },
+    # Actor <- critic feedback (training-time analogue of deploy --q-guidance).
+    "q_actor_weight": {
+        "values": [0.0, 0.01, 0.05],
+        "type": "float",
+        "location": "env_training",
+    },
+    # Eval-time sampler for the DiffusionControlPointGenerator. The cloud SIZE
+    # at eval is `control_points` (env_model), shared with q3c.
+    "inference_dp_iters": {
+        "values": [5, 10, 25],
+        "type": "int",
+        "location": "env_training",
+    },
+    "inference_dp_method": {
+        "values": ["ddim", "ddpm"],
+        "type": "str",
+        "location": "env_training",
+    },
+    "inference_dp_eta": {
+        "values": [0.0, 0.5, 1.0],
+        "type": "float",
+        "location": "env_training",
+    },
 }
 
 
@@ -860,6 +970,73 @@ def extract_final_metrics(stdout: str) -> dict:
 
 # ─── Evaluation ──────────────────────────────────────────────────────────────
 
+def _build_dpq3c_generator(weights_path, env_config, norm_stats, action_dim,
+                           control_points, action_bounds, device, *, pixel,
+                           in_channels=None, cond_dim=0, state_dim=None,
+                           encoder_target_height=180, encoder_target_width=240,
+                           encoder_feature_dim=256, encoder_kind="conv_maxpool",
+                           encoder_num_kp=64, encoder_norm_kind="bn",
+                           encoder_per_camera=False):
+    """Load a dpq3c denoiser and expose it as a control-point generator.
+
+    dpq3c swaps only WHERE the candidate cloud comes from, so the diffusion
+    policy is wrapped in the `cp_gen(state) -> (B, N, A)` signature the whole
+    evaluation stack already speaks. Every simulation class, plus the CP-DFO and
+    Langevin refinement wrappers below, then works on a dpq3c checkpoint
+    unchanged.
+
+    norm_stats is the authority on the sampler that was trained (it is what the
+    trainer actually used), falling back to the config's training block.
+    """
+    from utils.diffusion import (build_denoiser, build_diffusion,
+                                 build_dpq3c_denoiser, resolve_dp_params,
+                                 DiffusionControlPointGenerator)
+
+    dp = resolve_dp_params(env_config)
+    for key in ("num_train_timesteps", "beta_schedule", "prediction_type",
+                "time_emb_dim", "denoiser_network_kind", "denoiser_width",
+                "denoiser_depth", "denoiser_use_spectral_norm"):
+        if key in norm_stats:
+            dp[key] = norm_stats[key]
+
+    if pixel:
+        denoiser = build_dpq3c_denoiser(
+            action_dim, in_channels, dp, cond_dim=cond_dim,
+            encoder_target_height=encoder_target_height,
+            encoder_target_width=encoder_target_width,
+            encoder_feature_dim=encoder_feature_dim,
+            encoder_kind=encoder_kind,
+            # Weights come from the state_dict; never fetch ImageNet on a
+            # compute node that may have no network.
+            encoder_pretrained=False,
+            encoder_num_kp=encoder_num_kp,
+            encoder_norm_kind=encoder_norm_kind,
+            encoder_per_camera=encoder_per_camera,
+            device=device)
+    else:
+        denoiser = build_denoiser(state_dim, action_dim, dp, device=device)
+    denoiser.load_state_dict(
+        torch.load(weights_path, map_location=device, weights_only=True))
+    denoiser.to(device).eval()
+
+    et = env_config.get("training", {})
+    # Eval sampler knobs. Default the step count to the first entry the trainer
+    # recorded in ddim_eval_steps, so a trial evaluates at the schedule it was
+    # set up for rather than a hardcoded guess.
+    ddim_default = norm_stats.get("ddim_eval_steps", dp.get("ddim_eval_steps", [10]))
+    num_steps = int(et.get("inference_dp_iters",
+                           (ddim_default[0] if ddim_default else 10)))
+    method = str(et.get("inference_dp_method", "ddim"))
+    eta = float(et.get("inference_dp_eta",
+                       norm_stats.get("ddim_eta", dp.get("ddim_eta", 0.0))))
+    print(f"dpq3c: diffusion CP generator — {control_points} candidates via "
+          f"{method} x{num_steps} (eta={eta}), action_dim={action_dim}")
+    gen = DiffusionControlPointGenerator(
+        denoiser, build_diffusion(dp, device, action_bounds),
+        control_points, action_dim, num_steps=num_steps, eta=eta, method=method)
+    return gen.to(device).eval()
+
+
 def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     """Load Q3C models from *checkpoint_dir* and measure success rate."""
     from utils.models import ControlPointGenerator, QEstimator
@@ -976,9 +1153,20 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         env_config.get("training", {}).get("inference_langevin_top_k", 0)
     )
 
-    cp_raw_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
+    # dpq3c (dpq3c_training.py) writes a diffusion denoiser where q3c writes a
+    # control-point generator. Everything else about the evaluation is
+    # unchanged, so detect it by which proposal file is on disk and swap only
+    # the generator build below.
+    dpq3c_raw_path = os.path.join(checkpoint_dir, "denoiser.pt")
+    dpq3c_ema_path = os.path.join(checkpoint_dir, "denoiser_ema.pt")
+    is_dpq3c = os.path.exists(dpq3c_raw_path) or os.path.exists(dpq3c_ema_path)
+
+    if is_dpq3c:
+        cp_raw_path, cp_ema_path = dpq3c_raw_path, dpq3c_ema_path
+    else:
+        cp_raw_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
+        cp_ema_path = os.path.join(checkpoint_dir, "control_point_generator_ema.pt")
     q_raw_path = os.path.join(checkpoint_dir, "q_estimator.pt")
-    cp_ema_path = os.path.join(checkpoint_dir, "control_point_generator_ema.pt")
     q_ema_path = os.path.join(checkpoint_dir, "q_estimator_ema.pt")
     eval_ema_decay = float(env_config.get("training", {}).get("ema_decay", 0.0))
     use_ema = (
@@ -1041,29 +1229,41 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         # Action chunking: model output = action_dim * K per CP.
         action_chunk = int(_ns.get("action_chunk", 1) or 1)
         action_dim_eff = action_dim * action_chunk
-        cp_gen = PixelControlPointGenerator(
-            output_dim=action_dim_eff,
-            control_points=control_points,
-            hidden_dims=[cp_width] * cp_depth,
-            action_bounds=action_bounds,
-            network_kind=cp_network_kind,
-            width=cp_width,
-            depth=cp_depth,
-            use_spectral_norm=cp_use_spectral_norm,
-            in_channels=in_channels,
-            encoder_target_height=enc_h,
-            encoder_target_width=enc_w,
-            cond_dim=cond_dim,
-            encoder_kind=encoder_kind,
-            encoder_pretrained=encoder_pretrained,
-            encoder_num_kp=encoder_num_kp,
-            encoder_norm_kind=encoder_norm_kind,
-            encoder_per_camera=encoder_per_camera,
-            cond_fusion=cond_fusion,
-            goal_dim=goal_dim,
-        )
-        cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
-        cp_gen.to(device).eval()
+        if is_dpq3c:
+            cp_gen = _build_dpq3c_generator(
+                cp_path, env_config, norm_stats or {}, action_dim_eff,
+                control_points, action_bounds, device,
+                pixel=True, in_channels=in_channels, cond_dim=cond_dim,
+                encoder_target_height=enc_h, encoder_target_width=enc_w,
+                encoder_feature_dim=int(_ns.get("encoder_feature_dim", 256)),
+                encoder_kind=encoder_kind, encoder_num_kp=encoder_num_kp,
+                encoder_norm_kind=encoder_norm_kind,
+                encoder_per_camera=encoder_per_camera,
+            )
+        else:
+            cp_gen = PixelControlPointGenerator(
+                output_dim=action_dim_eff,
+                control_points=control_points,
+                hidden_dims=[cp_width] * cp_depth,
+                action_bounds=action_bounds,
+                network_kind=cp_network_kind,
+                width=cp_width,
+                depth=cp_depth,
+                use_spectral_norm=cp_use_spectral_norm,
+                in_channels=in_channels,
+                encoder_target_height=enc_h,
+                encoder_target_width=enc_w,
+                cond_dim=cond_dim,
+                encoder_kind=encoder_kind,
+                encoder_pretrained=encoder_pretrained,
+                encoder_num_kp=encoder_num_kp,
+                encoder_norm_kind=encoder_norm_kind,
+                encoder_per_camera=encoder_per_camera,
+                cond_fusion=cond_fusion,
+                goal_dim=goal_dim,
+            )
+            cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
+            cp_gen.to(device).eval()
 
         q_est = PixelQEstimator(
             action_dim=action_dim_eff,
@@ -1096,21 +1296,28 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         # its output/action dim is action_dim*K (norm_stats carries K).
         flat_action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
         flat_action_dim = action_dim * flat_action_chunk
-        cp_gen = ControlPointGenerator(
-            input_dim=flat_input_dim,
-            output_dim=flat_action_dim,
-            control_points=control_points,
-            hidden_dims=[cp_width] * cp_depth,
-            action_bounds=action_bounds,
-            network_kind=cp_network_kind,
-            width=cp_width,
-            depth=cp_depth,
-            use_spectral_norm=cp_use_spectral_norm,
-        )
-        cp_gen.load_state_dict(
-            torch.load(cp_path, map_location=device, weights_only=True)
-        )
-        cp_gen.to(device).eval()
+        if is_dpq3c:
+            cp_gen = _build_dpq3c_generator(
+                cp_path, env_config, norm_stats or {}, flat_action_dim,
+                control_points, action_bounds, device,
+                pixel=False, state_dim=flat_input_dim,
+            )
+        else:
+            cp_gen = ControlPointGenerator(
+                input_dim=flat_input_dim,
+                output_dim=flat_action_dim,
+                control_points=control_points,
+                hidden_dims=[cp_width] * cp_depth,
+                action_bounds=action_bounds,
+                network_kind=cp_network_kind,
+                width=cp_width,
+                depth=cp_depth,
+                use_spectral_norm=cp_use_spectral_norm,
+            )
+            cp_gen.load_state_dict(
+                torch.load(cp_path, map_location=device, weights_only=True)
+            )
+            cp_gen.to(device).eval()
 
         q_est = QEstimator(
             state_dim=flat_input_dim,

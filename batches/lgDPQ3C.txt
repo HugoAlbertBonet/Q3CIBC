@@ -1,0 +1,101 @@
+# libero_goal_pixels — DP+Q3C (dpq3c) first sweep.
+#
+# Submit with:  bash submit_experiments.sh batches/lgDPQ3C.txt
+#
+# PREREQUISITE: the .venv must already carry the libero extra BEFORE submitting
+# (submit_experiments.sh runs every job read-only against the shared venv):
+#   uv sync --extra libero
+#
+# WHY THIS ENV. libero_goal_pixels is the closest simulated analogue of the
+# Push-T real setup — two camera streams, frame_stack 2, 16-step action chunks,
+# ResNet-18 + GroupNorm encoder, and per-state conditioning — and it has a
+# simulator, so trials are scored automatically. batches/pushtWidowXlib2cam.txt
+# exists precisely because the best q3c recipe here was ported to the real arm;
+# this batch is the dpq3c version of that step. Run it alongside ppDPQ3C.txt:
+# pushing_pixels answers "does the algorithm work at all", this one answers
+# "does it survive the chunked, conditioned, 2-camera regime".
+#
+# CONDITIONING. libero_goal_pixels conditions on proprio + goal embedding
+# (cond_dim > 0), so the actor is built as CondPixelDiffusionDenoiser — the
+# denoiser head sees the same extra vector PixelQEstimator does. Both training
+# and evaluate_q3c route through utils.diffusion.build_dpq3c_denoiser, so the
+# module tree is identical on both sides. (The Push-T deploy client does NOT yet
+# rebuild a conditioned denoiser; that only matters when porting to the arm.)
+#
+# HOW IT RUNS. hyperparam_search.py drives dpq3c_training.py exactly as it
+# drives combinedv2_cpascounter_training.py. dpq3c writes `denoiser[_ema].pt`
+# where q3c writes `control_point_generator[_ema].pt`; evaluate_q3c detects that
+# and wraps the diffusion policy in DiffusionControlPointGenerator, which speaks
+# the `cp_gen(state) -> (B, N, A)` interface LiberoGoalPixelsSimulation already
+# calls — so eval works unmodified.
+#
+# NOTE every knob below must exist in hyperparam_search.SEARCH_SPACE —
+# apply_params_to_config SILENTLY DROPS unknown keys, so a typo trains the
+# default recipe and looks like a null result. The dpq3c keys were added there.
+#
+# ── Fixed recipe (all lines) ───────────────────────────────────────────────
+# Deliberately the same non-algorithmic recipe as the best libero_goal_pixels
+# q3c trial (success_rate 0.96) and as batches/pushtWidowXlib2cam.txt:
+# ResNet-18 from scratch + GroupNorm + 128 SpatialSoftmax keypoints,
+# lr = est_lr = 2e-4, batch 128, info_nce 0.5, infonce_clamp 20, 8 Langevin
+# negatives x 100 iters, gradient penalty hinge 1.0/1.0, cosine to 150k steps,
+# frame_stack 2, action_chunk 16 — so a dpq3c-vs-q3c comparison is a comparison
+# of the ALGORITHM. The CP-generator-only terms (mse, separation/entropy,
+# generator_infonce, top_k_control_points) have no counterpart in dpq3c and are
+# simply absent. The actor uses the DP recipe: T=100 cosine/epsilon,
+# dense_resnet 1024x1, which is capacity-matched to the Q value head.
+#
+# Langevin negatives are KEPT alongside the DP negatives on purpose: they cover
+# the rest of the action box, the DP samples cover the behavior manifold. They
+# answer different questions and the estimator wants both.
+#
+# `control_points` is the cloud size AT EVAL and is set equal to `dp_negatives`
+# on every line: the score gaps inside a cloud grow with N, so a critic
+# calibrated at one N is not calibrated at another. The control line, which has
+# no DP negatives to calibrate on, evaluates at 64 to match the grid.
+#
+# ── SWEEP (7 jobs) ─────────────────────────────────────────────────────────
+#   progress_weight {0, 0.1}  x  dp_negatives {16, 64}        -> 4 grid jobs
+#   + 1 control (dp_negatives 0)
+#   + 1 margin_weight probe, + 1 q_actor_weight probe (both on the p01_n64 cell)
+#
+#   progress_weight 0 leaves the critic a pure ranker: InfoNCE constrains only
+#   score DIFFERENCES, so Q is identified up to a per-state shift and ranking DP
+#   samples by it is mode-seeking BC. 0.1 adds the reward-free Monte-Carlo
+#   time-to-go anchor, pinning an absolute scale. The anchor reads episode
+#   boundaries off the dataset: LiberoGoalPixelsDataset exposes an
+#   `_episode_starts` boolean mask (the Push-T dataset instead exposes
+#   `_episode_ends` + a filtered `_samples` list); build_progress_targets
+#   handles both, and raises a clear SystemExit if a dataset has neither rather
+#   than training something silently wrong.
+#
+#   dp_negatives is the alignment: negatives drawn from the diffusion policy
+#   mean the critic learns to rank the distribution it will actually face. 0 is
+#   the "trained apart" control and falls back to uniform + Langevin negatives.
+#
+# Read `success_rate` from trials.jsonl. Raise --num-reps above 1 once a cell
+# looks like a winner — one seed is not a result.
+
+# ── p0_n16: ranker critic, 16 DP negatives
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":2,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":16,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":16,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── p0_n64: ranker critic, 64 DP negatives
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":2,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── p01_n16: VALUE-anchored critic, 16 DP negatives
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":2,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":16,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":16,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── p01_n64: VALUE-anchored critic, 64 DP negatives  (expected best cell)
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":2,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── ctrl: CONTROL — critic never sees a diffusion sample (uniform + Langevin
+#    negatives only). Equivalent to bolting a Q3C-style estimator onto a DP
+#    actor, i.e. two separately-trained checkpoints. If the grid does not beat
+#    this, joint training is buying nothing and the objective needs changing.
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":2,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":0,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":0,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":32,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── p01_n64_margin: + DQfD large-margin hinge on the expert chunk
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":2,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── p01_n64_qactor: + actor pulled toward high Q (training-time --q-guidance)
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":2,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.0,"q_actor_weight":0.05,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'

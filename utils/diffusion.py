@@ -454,3 +454,146 @@ def build_diffusion(
         action_high=float(action_bounds[1]),
         prediction_type=dp.get("prediction_type", "epsilon"),
     )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# DP+Q3C (dpq3c): a diffusion policy standing in for the control-point generator
+# ────────────────────────────────────────────────────────────────────────────
+
+class CondPixelDiffusionDenoiser(nn.Module):
+    """PixelDiffusionDenoiser widened by a per-state conditioning vector.
+
+    `PixelDiffusionDenoiser` is pixels-only. Conditioned runs (libero_goal_pixels
+    proprio+goal, pusht --cond-eef-xy) need the denoiser head to see the same
+    extra vector `PixelQEstimator` gets, handed over via `._cond` per batch.
+
+    Submodule names match `PixelDiffusionDenoiser` exactly (`.encoder` /
+    `.denoiser`), so at cond_dim == 0 the two produce interchangeable
+    state_dicts — which is what lets an unconditioned checkpoint be rebuilt with
+    either class.
+    """
+
+    def __init__(self, action_dim: int, *, in_channels: int, cond_dim: int,
+                 encoder_target_height: int = 180, encoder_target_width: int = 240,
+                 encoder_feature_dim: int = 256, encoder_kind: str = "conv_maxpool",
+                 encoder_pretrained: bool | str = False, encoder_num_kp: int = 64,
+                 encoder_norm_kind: str = "bn", encoder_per_camera: bool = False,
+                 dp: dict | None = None) -> None:
+        super().__init__()
+        from utils.models import _build_pixel_encoder
+
+        dp = dp or {}
+        self.cond_dim = int(cond_dim)
+        self._cond: torch.Tensor | None = None
+        self.encoder, feat_dim = _build_pixel_encoder(
+            encoder_kind, in_channels, encoder_target_height, encoder_target_width,
+            encoder_feature_dim, encoder_pretrained, encoder_num_kp,
+            encoder_norm_kind, encoder_per_camera,
+        )
+        self.denoiser = DiffusionDenoiser(
+            state_dim=feat_dim + self.cond_dim,
+            action_dim=action_dim,
+            time_emb_dim=dp.get("time_emb_dim", 128),
+            network_kind=dp.get("denoiser_network_kind", "mlp"),
+            width=dp.get("denoiser_width"),
+            depth=dp.get("denoiser_depth"),
+            use_spectral_norm=dp.get("denoiser_use_spectral_norm", False),
+        )
+
+    def encode(self, images: torch.Tensor) -> torch.Tensor:
+        feat = self.encoder(images)
+        if self.cond_dim:
+            if self._cond is None:
+                raise RuntimeError("cond_dim > 0 but ._cond not set")
+            feat = torch.cat([feat, self._cond], dim=-1)
+        return feat
+
+    def forward(self, images: torch.Tensor, noisy_action: torch.Tensor,
+                t: torch.Tensor) -> torch.Tensor:
+        return self.denoiser(self.encode(images), noisy_action, t)
+
+
+def build_dpq3c_denoiser(action_dim: int, in_channels: int, dp: dict, *,
+                         cond_dim: int = 0, encoder_target_height: int = 180,
+                         encoder_target_width: int = 240,
+                         encoder_feature_dim: int = 256,
+                         encoder_kind: str = "conv_maxpool",
+                         encoder_pretrained: bool | str = False,
+                         encoder_num_kp: int = 64, encoder_norm_kind: str = "bn",
+                         encoder_per_camera: bool = False,
+                         device: str | torch.device = "cpu") -> nn.Module:
+    """One builder for the dpq3c actor, conditioned or not.
+
+    Training, hyperparameter-search evaluation and deployment must all rebuild
+    the same module tree, so they share this rather than each choosing a class.
+    cond_dim == 0 routes to the shared `build_pixel_denoiser` so an
+    unconditioned checkpoint stays byte-compatible with the plain DP tooling.
+    """
+    common = dict(
+        encoder_target_height=encoder_target_height,
+        encoder_target_width=encoder_target_width,
+        encoder_feature_dim=encoder_feature_dim,
+        encoder_kind=encoder_kind,
+        encoder_pretrained=encoder_pretrained,
+        encoder_num_kp=encoder_num_kp,
+        encoder_norm_kind=encoder_norm_kind,
+        encoder_per_camera=encoder_per_camera,
+    )
+    if int(cond_dim) > 0:
+        return CondPixelDiffusionDenoiser(
+            action_dim, in_channels=in_channels, cond_dim=int(cond_dim),
+            dp=dp, **common).to(device)
+    return build_pixel_denoiser(action_dim, in_channels, dp, device=device, **common)
+
+
+class DiffusionControlPointGenerator(nn.Module):
+    """A diffusion policy behind the ControlPointGenerator interface.
+
+    Q3C's whole evaluation stack — `hyperparam_search.evaluate_q3c` and every
+    class in `simulations/` — reaches the proposal distribution through exactly
+    one call, `control_point_generator(state) -> (B, N, A)`. dpq3c changes where
+    that cloud comes from and nothing downstream, so wrapping the denoiser in
+    that signature lets the entire stack (plain argmax, CP-DFO refinement,
+    Langevin refinement, the sampled-CP selection) evaluate a dpq3c checkpoint
+    without a single change to the simulations.
+
+    The conv tower runs ONCE per call and its features are broadcast over the N
+    draws, so N is width, not sequential depth: the wall clock is set by
+    `num_steps`, and a large cloud is nearly free on GPU.
+
+    `._cond` mirrors the convention the pixel nets use; it is forwarded to the
+    denoiser so conditioned checkpoints (libero_goal_pixels proprio+goal) work.
+    """
+
+    def __init__(self, denoiser: nn.Module, diffusion: GaussianDiffusion,
+                 control_points: int, action_dim: int, *, num_steps: int = 10,
+                 eta: float = 0.0, method: str = "ddim") -> None:
+        super().__init__()
+        if method not in ("ddim", "ddpm"):
+            raise ValueError(f"method must be ddim|ddpm, got {method!r}")
+        self.denoiser = denoiser
+        self.diffusion = diffusion
+        self.control_points = int(control_points)
+        self.action_dim = int(action_dim)
+        self.num_steps = int(num_steps)
+        self.eta = float(eta)
+        self.method = method
+        self._cond: torch.Tensor | None = None
+
+    @torch.no_grad()
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
+        if self._cond is not None and int(getattr(self.denoiser, "cond_dim", 0)) > 0:
+            self.denoiser._cond = self._cond
+        # Pixels encode once; flat states ARE the conditioning vector.
+        feats = (self.denoiser.encode(states) if hasattr(self.denoiser, "encode")
+                 else states)
+        head = getattr(self.denoiser, "denoiser", self.denoiser)
+        B, F = feats.shape
+        N = self.control_points
+        flat = feats.unsqueeze(1).expand(B, N, F).reshape(B * N, F)
+        if self.method == "ddim":
+            x = self.diffusion.ddim_sample(head, flat, action_dim=self.action_dim,
+                                           num_steps=self.num_steps, eta=self.eta)
+        else:
+            x = self.diffusion.ddpm_sample(head, flat, action_dim=self.action_dim)
+        return x.view(B, N, self.action_dim)
