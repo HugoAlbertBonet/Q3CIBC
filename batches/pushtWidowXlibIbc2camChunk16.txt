@@ -1,0 +1,80 @@
+# Push-T WidowX — libero_goal_pixels IBC recipe, BOTH cameras (image0 + image1),
+# ACTION CHUNKING K=16, new pusht_2026_07 dataset.
+#
+# Single-variable A/B against batches/pushtWidowXlibIbc2cam.txt (Ibc2c_*): same
+# archive, same cache, same encoder arms, same seed, same counter-example sweep,
+# same val split. The ONLY difference is --action-chunk 16. IBC counterpart of
+# batches/pushtWidowXdpChunk16.txt (h01/h02).
+#
+# Recipe = libero_goal_pixels IBC (results/hyperparam_search/
+# ibc_dfo_libero_goal_pixels, best sr 0.46): Langevin-refined counter-examples
+# (100 train iters, schedule 0.1->1e-5), Langevin inference 1024x100, value
+# 1024x1, lr 1e-3 decay 0.99/100, 100k steps. All defaults in
+# train_pusht_real_ibc.py.
+#
+# SWEEP (4 jobs): counter-examples {8, 256} x encoder {conv_maxpool,
+# resnet18-imagenet}, mirroring the K=1 sweep line for line.
+#
+# WHY THIS IS A REAL EXPERIMENT AND NOT A FREE WIN. The K=1 batch fixed
+# --action-chunk 1 on the argument that IBC's action sampling degenerates in the
+# K*2-D chunked space. That concern is unchanged and is exactly what these runs
+# measure: the search space goes from 2-D to 32-D while the sample budget stays
+# put (n counter-examples during training, 1024 Langevin samples x 100
+# iterations at inference), so the effective coverage per dimension collapses.
+# Langevin is gradient-guided, not a grid, so it does not need exponential
+# samples the way uniform DFO would — but the argmax it lands on in 32-D is a
+# far weaker approximation of the true energy mode than in 2-D. Expect the
+# 8-counter-example arms to suffer most; c256 is the arm with a chance.
+#
+# No trainer change was needed: --action-chunk already plumbs into
+# PushTWidowXVideoDataset (targets become the next K planar deltas flattened to
+# K*2, act_min/act_max cover the whole chunk vector), PixelQEstimator takes
+# action_dim=dataset.action_shape=32, and the Langevin bounds/sampler are
+# dimension-agnostic. norm_stats["act_min"] therefore has size 32, so
+# deploy_pusht_real_ibc.py computes chunk_len = act_min.size // 2 = 16 and
+# --exec-horizon N is no longer clamped to 1.
+#
+# WHY CHUNKING MATTERS MORE FOR IBC THAN FOR DP. Langevin inference is 100
+# sequential score+grad passes per action; it is the slowest policy on the rig
+# (results/pusht/inference_speed.csv). --exec-horizon N amortizes one inference
+# over N control steps, so ms_per_step should drop ~Nx with ms_per_infer_mean
+# unchanged. Observations still append every control step, so the frame stack
+# stays a run of adjacent env steps as in training.
+#
+# THE "[val] ..." MAE IS NOT COMPARABLE TO THE Ibc2c_* K=1 RUNS. Held-out MAE is
+# averaged over the whole target vector, 32-D here vs 2-D there, and includes
+# deltas up to 15 steps into the future. It will read WORSE without meaning the
+# policy is worse. Compare chunked runs to each other, and chunked vs unchunked
+# on the robot (results/pusht/experiments.csv). Note also that the val proxy
+# samples 1024 UNIFORM candidates in 32-D (not Langevin), so it is a looser
+# lower bound on quality here than at K=1 — treat it as a relative signal
+# between these four lines only.
+#
+# Fixed on every line: --action-chunk 16, --idle-filter drop_zero (idle filtering
+# still keys off the single-step |a_t|, so the kept-sample set matches the K=1
+# runs), --val-frac 0.1 --val-seed 0, --aug-photometric, the new dataset, and
+# project2 paths (home is full). Caches are the prebuilt cam0/cam1 memmaps
+# (archive-name-keyed, shared with the Q3C and Ibc2c_* runs). Same --output-root
+# as the K=1 IBC sweep; the Ibc2c16_ tag prefix keeps the run dirs distinct.
+#
+# --workers 4 matches submit_experiments.sh --cpus-per-task=4.
+# --batch-size 64 (vs 128 for 1cam): two cameras x frame_stack 2 = 4 sub-images
+# through the encoder, ~2x activation memory -> OOMs a 44-48 GB card at 128.
+# Chunking widens only the value head's input (feat+2 -> feat+32) against a
+# 1024x1 DenseResnet, so step time and memory are effectively unchanged from the
+# K=1 runs and 64 still fits.
+#
+# Submit:  ./submit_experiments.sh batches/pushtWidowXlibIbc2camChunk16.txt
+# Deploy:  python scripts/deploy_pusht_real_ibc.py --seed-dir <run> --exec-horizon 8
+
+# ── Ibc2c16_c8_conv: 8 counter-examples, ConvMaxpool (libero-faithful)
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc2c16_c8_conv --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 0 1 --action-chunk 16 --counter-examples 8 --encoder-kind conv_maxpool --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── Ibc2c16_c8_imnet: 8 counter-examples, ResNet-18 ImageNet
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc2c16_c8_imnet --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 0 1 --action-chunk 16 --counter-examples 8 --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── Ibc2c16_c256_conv: 256 counter-examples, ConvMaxpool
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc2c16_c256_conv --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 0 1 --action-chunk 16 --counter-examples 256 --encoder-kind conv_maxpool --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── Ibc2c16_c256_imnet: 256 counter-examples, ResNet-18 ImageNet
+uv run python scripts/train_pusht_real_ibc.py --seed 11 --tag Ibc2c16_c256_imnet --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_ibc_2026_07 --video-cameras 0 1 --action-chunk 16 --counter-examples 256 --encoder-kind resnet18 --encoder-pretrained imagenet --encoder-norm-kind gn --encoder-num-kp 128 --idle-filter drop_zero --val-frac 0.1 --val-seed 0 --aug-photometric

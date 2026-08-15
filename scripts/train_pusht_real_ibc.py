@@ -122,8 +122,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--action-chunk", type=int, default=1,
-        help="Predict K planar deltas per step. Kept at 1 for IBC: uniform/"
-             "Langevin action sampling degenerates in the K*2-D chunked space.",
+        help="Predict K planar deltas per step (open-loop action chunking). The "
+             "EBM's action_dim becomes K*2 and Langevin sampling runs in that "
+             "space; deploy_pusht_real_ibc.py reads the chunk length back from "
+             "norm_stats['act_min'].size // 2 and honours --exec-horizon. "
+             "Default 1 is the paper-faithful setting AND the safe one: the "
+             "sample budget (counter-examples at train, 1024x100 Langevin at "
+             "inference) is fixed, so per-dimension coverage degrades as K "
+             "grows. K=16 matches the libero_goal_pixels recipe and is swept in "
+             "batches/pushtWidowXlibIbc2camChunk16.txt.",
     )
     parser.add_argument(
         "--frame-cache-dir",

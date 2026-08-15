@@ -38,6 +38,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 CSV_PATH = ROOT / "results" / "pusht" / "experiments.csv"
+SPEED_PATH = ROOT / "results" / "pusht" / "inference_speed.csv"
+DEVICE = "cuda"
 OUT_DIR = ROOT / "results" / "pusht" / "plots"
 
 # Composite encoding: hue = algorithm, lightness step = inference method within
@@ -106,6 +108,11 @@ KEEP_CHECKPOINT = {"ibc": "Ibc2c_c256_imnet"}
 
 def series_color(series: tuple[str, str]) -> str:
     return SERIES_COLORS[series]
+
+
+def checkpoint_kept(r: dict) -> bool:
+    wanted = KEEP_CHECKPOINT.get(r["algorithm"])
+    return wanted is None or r["seed_dir"].rsplit("/", 1)[-1] == wanted
 
 POSITION_ORDER = [
     "top",
@@ -418,6 +425,147 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
     write_table(OUT_DIR / f"{stem}.csv", table)
 
 
+def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "cam1 coverage") -> None:
+    """Scatter: x = mean inference time per step, y = task performance.
+
+    One point per (algorithm, inference, refine_iters); points of the same
+    series are joined in iteration order, so each line is that method's
+    cost/quality sweep. Up and to the left is better.
+
+    Timings come from inference_speed.csv and are restricted to CUDA — the CPU
+    rows are ~10x slower for the same config, and two devices cannot share one
+    axis. Configs without a timing (or without a rollout) are dropped.
+    """
+    with SPEED_PATH.open() as f:
+        speed = [r for r in csv.DictReader(f) if r["device"] == DEVICE]
+    speed = [r for r in speed if checkpoint_kept(r)]
+
+    def cell(r: dict) -> tuple[str, str, int]:
+        return (r["algorithm"], r["inference"], int(r["refine_iters"]))
+
+    times: dict[tuple[str, str, int], list[float]] = {}
+    for r in speed:
+        # Same argmax/fallback split the rollout CSV gets, applied to timings.
+        if (r["algorithm"], r["inference"]) == ("q3c", "argmax") and int(r["refine_iters"]) > 0:
+            r["inference"] = "argmax_fallback"
+        times.setdefault(cell(r), []).append(float(r["ms_per_step"]))
+
+    scores: dict[tuple[str, str, int], list[float]] = {}
+    for r in rows:
+        scores.setdefault(cell(r), []).append(r[metric])
+
+    table: list[dict] = []
+    points: dict[tuple[str, str], list[tuple]] = {}
+    for k in sorted(set(times) & set(scores)):
+        alg, inf, iters = k
+        t, s = times[k], scores[k]
+        sem = float(np.std(s, ddof=1) / np.sqrt(len(s))) if len(s) > 1 else 0.0
+        points.setdefault((alg, inf), []).append((float(np.mean(t)), float(np.mean(s)), sem, iters))
+        table.append(
+            {
+                "algorithm": alg,
+                "inference": inf,
+                "refine_iters": iters,
+                "ms_per_step": round(float(np.mean(t)), 2),
+                "n_timing_runs": len(t),
+                "metric": metric,
+                "mean": round(float(np.mean(s)), 4),
+                "sem": round(sem, 4),
+                "n_rollouts": len(s),
+            }
+        )
+
+    fig, ax = plt.subplots(figsize=(9.5, 6), facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+    ax.grid(color=GRID, linewidth=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("bottom", "left"):
+        ax.spines[side].set_color(GRID)
+    ax.tick_params(colors=TEXT_SECONDARY, length=0)
+
+    # Most configs land in a 8-12 ms cluster with DP's sweep out at 50 ms, so a
+    # log x spreads the cluster instead of pinning it against the axis.
+    ax.set_xscale("log")
+    ax.set_xticks([8, 10, 12, 15, 20, 30, 50])
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    lo = min(p[0] for pts in points.values() for p in pts)
+    hi = max(p[0] for pts in points.values() for p in pts)
+    ax.set_xlim(lo * 0.88, hi * 1.15)
+
+    # Alternate the iteration labels above/below so the cluster stays legible.
+    label_offsets = [(0, 12), (0, -17), (-14, -4), (15, 3), (0, -17), (0, 12), (0, 12)]
+
+    for series in SERIES_ORDER:
+        if series not in points:
+            continue
+        offset = label_offsets[SERIES_ORDER.index(series) % len(label_offsets)]
+        pts = sorted(points[series], key=lambda p: p[3])
+        xs, ys, sems, its = zip(*pts)
+        color = series_color(series)
+        marker = "D" if series in SERIES_HATCH else "o"
+        if len(xs) > 1:
+            ax.plot(xs, ys, color=color, linewidth=2, zorder=2, alpha=0.9)
+        ax.errorbar(
+            xs, ys, yerr=sems, fmt="none", ecolor=color, elinewidth=1.2, capsize=3, zorder=3
+        )
+        ax.plot(
+            xs,
+            ys,
+            marker,
+            color=color,
+            markersize=9,
+            markeredgecolor=SURFACE,
+            markeredgewidth=2,
+            linestyle="none",
+            label=series_label(*series),
+            zorder=4,
+        )
+        for x, y, _, it in pts:
+            ax.annotate(
+                f"{it}",
+                (x, y),
+                textcoords="offset points",
+                xytext=offset,
+                ha="center",
+                fontsize=7.5,
+                color=TEXT_SECONDARY,
+                zorder=5,
+            )
+
+    ax.set_xlabel(f"mean inference time per step (ms, {DEVICE})", color=TEXT_SECONDARY)
+    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+    ax.set_title(
+        "Cost vs performance",
+        color=TEXT_PRIMARY,
+        fontsize=13,
+        loc="left",
+        pad=18,
+        weight="bold",
+    )
+    ax.text(
+        0,
+        1.02,
+        "point label = refinement iterations; error bars 1 SEM over rollouts; up and left is better",
+        transform=ax.transAxes,
+        color=TEXT_SECONDARY,
+        fontsize=9,
+        va="bottom",
+    )
+    leg = ax.legend(
+        frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=9, handletextpad=0.6
+    )
+    for txt in leg.get_texts():
+        txt.set_color(TEXT_SECONDARY)
+
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / f"{stem}.png", dpi=200, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    write_table(OUT_DIR / f"{stem}.csv", table)
+
+
 def write_table(path: Path, table: list[dict]) -> None:
     if not table:
         return
@@ -429,13 +577,11 @@ def write_table(path: Path, table: list[dict]) -> None:
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    def keep(r: dict) -> bool:
-        if r["inference"] in EXCLUDED_INFERENCE:
-            return False
-        wanted = KEEP_CHECKPOINT.get(r["algorithm"])
-        return wanted is None or r["seed_dir"].rsplit("/", 1)[-1] == wanted
-
-    rows = [r for r in load_rows() if keep(r)]
+    rows = [
+        r
+        for r in load_rows()
+        if r["inference"] not in EXCLUDED_INFERENCE and checkpoint_kept(r)
+    ]
 
     pooled = "mean over trials and refinement iterations; error bars 1 std over that pool"
     grouped_plot(
@@ -494,7 +640,9 @@ def main() -> None:
         ylabel="cam1 coverage",
     )
 
-    print(f"wrote 7 figures + tables to {OUT_DIR}")
+    speed_tradeoff_plot(rows, "cam1_vs_inference_time")
+
+    print(f"wrote 8 figures + tables to {OUT_DIR}")
 
 
 if __name__ == "__main__":
