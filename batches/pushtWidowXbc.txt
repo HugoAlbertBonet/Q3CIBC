@@ -1,0 +1,54 @@
+# Push-T WidowX — EXPLICIT BC (MSE regression) baseline, BOTH cameras.
+#
+# The explicit-policy control for the Q3C / IBC / DP comparison: one forward
+# pass, pi(o) -> a, trained with MSE. Everything except the objective and the
+# policy class is held EQUAL to the Q3C arm that was actually deployed on the
+# robot (batches/pushtWidowXlib2cam.txt, tag L2c_ch16_scratch), so a difference
+# in robot success is attributable to the objective and not to data, encoder,
+# capacity, budget or preprocessing:
+#
+#   dataset pusht_2026_07_zarr, video-cameras 0 1, frame_stack 2,
+#   idle_filter drop_zero, resnet18 SCRATCH + GroupNorm + 128 SpatialSoftmax kp,
+#   head 512x4 (== --cp-width 512 --cp-depth 4), lr 2e-4 cosine, batch 64,
+#   150k steps, --val-frac 0.1 --val-seed 0, --aug-photometric.
+#
+# Differences from the Q3C lines, all forced by there being no energy model:
+#   * no control-point cloud (the head emits 1 action, not 100), no top-k, no
+#     InfoNCE / separation / entropy / Langevin-negative terms — MSE only.
+#   * the LR schedule is a single cosine anneal over --steps (no warm restarts;
+#     the BC trainer exposes --lr-eta-min instead of --cosine-t0).
+#   * AdamW + grad-clip 1.0 + EMA 0.999; deploy reads bc_policy_ema.pt.
+# Parameter count still lands in the same ballpark as the Q3C CP generator: the
+# encoder dominates and it is literally the same module with the same knobs.
+#
+# SWEEP AXIS (2 jobs): action_chunk {16, 1}.
+#   * ch16 is the apples-to-apples partner of the deployed L2c_ch16_scratch AND
+#     the setting that matters most for an MSE policy: regressing a 16-step
+#     segment commits to one trajectory instead of re-averaging the modes every
+#     control step, which is the standard mitigation for MSE-BC mode averaging.
+#   * ch1 is the unmitigated single-step control — it measures how much of BC's
+#     gap to Q3C/IBC is mode averaging rather than the objective as such.
+# Encoder init is FIXED to scratch, not swept: the lib2cam history found no real
+# gain from imagenet (see batches/pushtWidowXlib2cam_v2.txt), and the deployed
+# arm is the scratch one.
+#
+# --encoder-num-kp 128 matches the DEPLOYED Q3C arm. (The v2 batch argues 256 is
+# better on libero; keeping 128 here preserves the like-for-like comparison —
+# raise it in a follow-up batch only if it is raised for Q3C too.)
+#
+# PREREQUISITE: both frame caches must exist (camera 0 and camera 1):
+#   python scripts/prepare_pusht_video_cache.py --camera 0
+# Otherwise every job blocks decoding the ~17 GB memmap.
+#
+# --workers 4 matches submit_experiments.sh --cpus-per-task=4.
+# batch-size 64: two cameras x frame_stack 2 = 4 sub-images through the ResNet,
+# which OOMs a 44-48 GB card at 128 (same reason as the lib2cam batch).
+#
+# Deploy either checkpoint with:
+#   python scripts/deploy_pusht_real_bc.py --seed-dir <run_dir> --exec-horizon 8
+
+# ── BC2c_ch16: 16-step action chunks (partner of the deployed L2c_ch16_scratch)
+uv run python scripts/train_pusht_real_bc.py --seed 11 --tag BC2c_ch16 --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_bc_2026_07 --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --head-width 512 --head-depth 4 --lr 2e-4 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── BC2c_ch1: single-step regression (unmitigated mode averaging)
+uv run python scripts/train_pusht_real_bc.py --seed 11 --tag BC2c_ch1 --workers 4 --batch-size 64 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --output-root /project2/biyik_1165/halbertb/pusht_real_bc_2026_07 --video-cameras 0 1 --action-chunk 1 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 128 --head-width 512 --head-depth 4 --lr 2e-4 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
