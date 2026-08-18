@@ -1,0 +1,80 @@
+# Push-T WidowX Q3C — SHARED TRUNK, DP-matched trunk count. Both cameras, K=16.
+#
+# L2c_ch16_scratch (batches/pushtWidowXlib2cam.txt) with two changes, so that
+# its inference cost can be compared against the chunked DP runs without the
+# comparison being decided by architecture the policy class does not require:
+#
+#   1. --share-encoder   ONE conv trunk feeding both the CP generator and the Q
+#                        estimator, instead of one each.
+#   2. --encoder-num-kp 64  (L2c used 128), matching h01/i01 in
+#                        batches/pushtWidowXdpChunk16*.txt.
+#
+# THE ENCODER STAYS FROM SCRATCH (--encoder-pretrained none), as in L2c: that
+# measured better for Q3C than ImageNet init. DP's h01/i01 trunk IS ImageNet-
+# pretrained, so the two are not init-matched -- which costs this batch nothing,
+# because initialization changes neither the FLOPs nor the ms it exists to
+# compare. Same reasoning as the gn-vs-bn deviation below.
+#
+# WHY. Inference cost is dominated by the ResNet-18 trunk, which runs once per
+# image slot (utils/models.py:390-393), n_imgs = n_cameras * frame_stack:
+#
+#     DP h01  : 1 cam x fs2 = 2 slots x 1 net                  = 2 trunk passes
+#     DP i01  : 2 cam x fs2 = 4 slots x 1 net                  = 4 trunk passes
+#     L2c     : 2 cam x fs2 = 4 slots x 2 nets (cp_gen+q_net)  = 8 trunk passes
+#     THIS    : 2 cam x fs2 = 4 slots x 1 SHARED trunk         = 4 trunk passes
+#
+# Measured 5.64 GFLOPs per pass (DP g01: 11.28 GFLOPs per denoiser call / 2
+# passes), and L2c's 8 x 5.64 = 45.1 lands on its measured 45.5 GFLOPs per
+# inference. With the trunk shared, Q3C and DP i01 both pay 4 passes, so what
+# is left in the ms/GFLOPs columns is the inference PROCEDURE — DDIM/DDPM chain
+# vs CP cloud + langevin/DFO refinement — which is the thing worth comparing.
+#
+# WHAT SHARING DOES AND DOES NOT DO. The estimator owns the trunk: the
+# generator's loss still backprops into it (there is a single
+# total_loss.backward(), so both losses' gradients accumulate there), but only
+# optimizer_estimator at --est-lr steps it, only the estimator's clip bounds it,
+# and there is one EMA copy of it. Since --lr and --est-lr are both 2e-4 here
+# this is a small change to the optimization, but it is not a no-op and the
+# S03 control below exists to measure it.
+#
+# TRAINING TIME IS UNCHANGED. Sharing removes ~11.7M parameters, not work: the
+# trainer still calls control_point_generator(states) and estimator(state, acts)
+# separately, so the trunk still runs twice per training step. Only INFERENCE
+# gets cheaper, because deploy_pusht_real.py's select_action encodes once and
+# feeds both heads. L2c's 150k/2-camera budget finished inside the 48h cap, so
+# these fit unchanged.
+#
+# NORM KIND STAYS gn, DELIBERATELY UNMATCHED. DP's trunk uses stock BatchNorm.
+# Raw BN is hostile to EBM training — energies computed with batch stats at
+# train and running stats at eval shift the whole Q landscape, and ResNet-BN
+# lost to a norm-free ConvMaxpool across the board in Bstandardlibero
+# (utils/models.py:453-459). GN and BN cost the same FLOPs, so the speed
+# comparison is unaffected by this one.
+#
+# STILL UNMATCHED vs DP, and unfixable from this file: L2c trains with
+# --aug-photometric (kept here, since this is an L2c variant), while the DP
+# trainer has no photometric-only flag — its --aug also applies crop-zoom,
+# which breaks the fixed-camera pixel->world map. Batch size (64 vs 128), lr
+# (2e-4 vs 3e-4) and steps (150k vs 175k/350k) also differ. None of these move
+# GFLOPs or ms; they matter only for a success-rate comparison.
+#
+# --cosine-t0 75000 is inert with --scheduler cosine (T_0 is only read by
+# CosineAnnealingWarmRestarts). Kept for literal parity with the L2c line.
+#
+# Frame cache: both camera caches for this archive, same prerequisite as
+# batches/pushtWidowXdpChunk16BothCam.txt. --workers 4 matches
+# submit_experiments.sh's --cpus-per-task=4.
+#
+# Submit:  ./submit_experiments.sh batches/pushtWidowXlib2camSharedTrunk.txt
+
+# ── S01 PRIMARY: shared trunk, scratch resnet18, kp64. Seed 11.
+uv run python scripts/train_pusht_real.py --seed 11 --tag S01_shared_k16_s11 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 64 --share-encoder --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── S02 seed repeat of S01.
+uv run python scripts/train_pusht_real.py --seed 29 --tag S02_shared_k16_s29 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 64 --share-encoder --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric
+
+# ── S03 CONTROL: identical to S01 but WITHOUT --share-encoder. Isolates the
+#    sharing from the kp128 -> kp64 change S01 also makes against
+#    L2c_ch16_scratch. S01 vs S03 = the cost and quality of sharing;
+#    S03 vs L2c_ch16_scratch = the keypoint count.
+uv run python scripts/train_pusht_real.py --seed 11 --tag S03_noshare_k16_s11 --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_libero_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --video-cameras 0 1 --action-chunk 16 --idle-filter drop_zero --encoder-kind resnet18 --encoder-pretrained none --encoder-norm-kind gn --encoder-num-kp 64 --cp-width 512 --cp-depth 4 --control-points 100 --top-k-cps 30 --lr 2e-4 --est-lr 2e-4 --batch-size 64 --mse-weight 1.0 --sep-weight 0.01 --entropy-bandwidth 0.2 --info-nce-weight 0.5 --generator-infonce-weight 0.05 --infonce-clamp 20 --langevin-negatives 8 --langevin-iters 100 --scheduler cosine --cosine-t0 75000 --steps 150000 --val-frac 0.1 --val-seed 0 --aug-photometric

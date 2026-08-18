@@ -635,9 +635,10 @@ class PixelControlPointGenerator(nn.Module):
 	"""Image-conditioned CP generator.
 
 	Encoder (ConvMaxpoolEncoder) → 256-D features → ControlPointGenerator-style
-	MLP that emits N candidate actions per state. Encoder has its OWN weights
-	(not shared with PixelQEstimator) — matches IBC's separate networks per
-	loss head.
+	MLP that emits N candidate actions per state. By default the encoder has its
+	OWN weights (not shared with PixelQEstimator) — matching IBC's separate
+	networks per loss head. Pass `share_encoder_from=<PixelQEstimator>` to reuse
+	that net's trunk instead, halving the per-inference conv cost.
 	"""
 
 	def __init__(
@@ -663,6 +664,7 @@ class PixelControlPointGenerator(nn.Module):
 		encoder_per_camera: bool = False,
 		cond_fusion: str = "concat",
 		goal_dim: int = 0,
+		share_encoder_from: nn.Module | None = None,
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 conditions the CP head on an extra per-state vector
@@ -680,13 +682,24 @@ class PixelControlPointGenerator(nn.Module):
 			raise ValueError("cond_fusion='film' needs encoder_kind='resnet18' and goal_dim>0")
 		self.cond_fusion = cond_fusion
 		self.goal_dim = int(goal_dim)
-		self.encoder, feat_dim = _build_pixel_encoder(
-			encoder_kind, in_channels, encoder_target_height,
-			encoder_target_width, encoder_feature_dim,
-			encoder_pretrained, encoder_num_kp, encoder_norm_kind,
-			encoder_per_camera,
-			film_dim=(self.goal_dim if cond_fusion == "film" else 0),
-		)
+		# share_encoder_from: adopt another pixel net's trunk instead of building
+		# a second one. The module is registered under BOTH parents, so its
+		# parameters appear in both .parameters() and both .state_dict()s --
+		# whoever wires this up owns deduplicating the optimizer, the gradient
+		# clipping and the EMA (see combinedv2_cpascounter_training.py).
+		self.shares_encoder = share_encoder_from is not None
+		if share_encoder_from is not None:
+			self.encoder = share_encoder_from.encoder
+			feat_dim = int(share_encoder_from.encoder_feature_dim)
+		else:
+			self.encoder, feat_dim = _build_pixel_encoder(
+				encoder_kind, in_channels, encoder_target_height,
+				encoder_target_width, encoder_feature_dim,
+				encoder_pretrained, encoder_num_kp, encoder_norm_kind,
+				encoder_per_camera,
+				film_dim=(self.goal_dim if cond_fusion == "film" else 0),
+			)
+		self.encoder_feature_dim = feat_dim
 		self.head = ControlPointGenerator(
 			input_dim=feat_dim + self.cond_dim,
 			output_dim=output_dim,
@@ -707,15 +720,26 @@ class PixelControlPointGenerator(nn.Module):
 			raise RuntimeError("cond_fusion='film' but ._cond not set.")
 		return self._cond[:, -self.goal_dim:]
 
-	def forward(self, images: torch.Tensor) -> torch.Tensor:
-		"""Args: images (B, C, H, W). Returns: (B, control_points, output_dim)."""
+	def encode(self, images: torch.Tensor) -> torch.Tensor:
+		"""Run the conv encoder once per state. Returns (B, feature_dim).
+
+		Mirrors PixelQEstimator.encode so a SHARED trunk can be run once and
+		fed to both heads (utils/models.py `share_encoder_from`).
+		"""
 		fv = self._film_vec()
-		features = self.encoder(images, fv) if fv is not None else self.encoder(images)
+		return self.encoder(images, fv) if fv is not None else self.encoder(images)
+
+	def head_from_features(self, features: torch.Tensor) -> torch.Tensor:
+		"""CP head on pre-encoded features. (B, F) -> (B, control_points, A)."""
 		if self.cond_dim > 0:
 			if self._cond is None:
 				raise RuntimeError("PixelControlPointGenerator.cond_dim>0 but ._cond not set.")
 			features = torch.cat([features, self._cond], dim=-1)
 		return self.head(features)
+
+	def forward(self, images: torch.Tensor) -> torch.Tensor:
+		"""Args: images (B, C, H, W). Returns: (B, control_points, output_dim)."""
+		return self.head_from_features(self.encode(images))
 
 
 class PixelQEstimator(nn.Module):

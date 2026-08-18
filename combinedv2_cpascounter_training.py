@@ -493,32 +493,13 @@ def main():
         encoder_per_camera = bool(env_model.get("encoder_per_camera", False))
         cond_fusion = env_model.get("cond_fusion", "concat")
         goal_dim = int(getattr(dataset, "goal_emb_dim", 0))
-        print(
-            f"CP generator: PIXEL kind={cp_network_kind} width={cp_width} "
-            f"depth={cp_depth} in_ch={in_channels} enc={encoder_kind} "
-            f"{enc_h}x{enc_w} cond={cond_dim}"
-        )
-        control_point_generator = PixelControlPointGenerator(
-            output_dim=dataset.action_shape,
-            control_points=control_points,
-            hidden_dims=[cp_width for _ in range(cp_depth)],
-            action_bounds=(action_bounds[0], action_bounds[1]),
-            network_kind=cp_network_kind,
-            width=cp_width,
-            depth=cp_depth,
-            use_spectral_norm=cp_use_spectral_norm,
-            in_channels=in_channels,
-            encoder_target_height=enc_h,
-            encoder_target_width=enc_w,
-            cond_dim=cond_dim,
-            encoder_kind=encoder_kind,
-            encoder_pretrained=encoder_pretrained,
-            encoder_num_kp=encoder_num_kp,
-            encoder_norm_kind=encoder_norm_kind,
-            encoder_per_camera=encoder_per_camera,
-            cond_fusion=cond_fusion,
-            goal_dim=goal_dim,
-        ).to(device)
+        # share_encoder: one conv trunk for BOTH nets instead of two. Q3C's
+        # default (separate trunks, IBC's convention) makes every inference pay
+        # the encoder twice; sharing halves that. The ESTIMATOR owns the trunk,
+        # so it is built first and the generator adopts it -- see the optimizer,
+        # grad-clip and EMA branches below, all of which must skip the
+        # generator's now-borrowed encoder parameters to avoid double-updating.
+        share_encoder = bool(env_model.get("share_encoder", False))
         print(
             f"Q estimator:  PIXEL value=DenseResnetValue(w={value_width}, "
             f"blocks={value_num_blocks}) in_ch={in_channels} enc={encoder_kind} "
@@ -531,6 +512,34 @@ def main():
             encoder_target_width=enc_w,
             value_width=value_width,
             value_num_blocks=value_num_blocks,
+            cond_dim=cond_dim,
+            encoder_kind=encoder_kind,
+            encoder_pretrained=encoder_pretrained,
+            encoder_num_kp=encoder_num_kp,
+            encoder_norm_kind=encoder_norm_kind,
+            encoder_per_camera=encoder_per_camera,
+            cond_fusion=cond_fusion,
+            goal_dim=goal_dim,
+        ).to(device)
+        print(
+            f"CP generator: PIXEL kind={cp_network_kind} width={cp_width} "
+            f"depth={cp_depth} in_ch={in_channels} enc={encoder_kind} "
+            f"{enc_h}x{enc_w} cond={cond_dim} "
+            f"trunk={'SHARED with Q estimator' if share_encoder else 'own'}"
+        )
+        control_point_generator = PixelControlPointGenerator(
+            share_encoder_from=(estimator if share_encoder else None),
+            output_dim=dataset.action_shape,
+            control_points=control_points,
+            hidden_dims=[cp_width for _ in range(cp_depth)],
+            action_bounds=(action_bounds[0], action_bounds[1]),
+            network_kind=cp_network_kind,
+            width=cp_width,
+            depth=cp_depth,
+            use_spectral_norm=cp_use_spectral_norm,
+            in_channels=in_channels,
+            encoder_target_height=enc_h,
+            encoder_target_width=enc_w,
             cond_dim=cond_dim,
             encoder_kind=encoder_kind,
             encoder_pretrained=encoder_pretrained,
@@ -568,8 +577,16 @@ def main():
             resnet_final_activation=q_resnet_final_act,
         ).to(device)
 
+    _shares_encoder = bool(getattr(control_point_generator, "shares_encoder", False))
     ema_generator = copy.deepcopy(control_point_generator) if ema_decay > 0.0 else None
     ema_estimator = copy.deepcopy(estimator) if ema_decay > 0.0 else None
+    if _shares_encoder and ema_generator is not None:
+        # deepcopy gave the two EMA models INDEPENDENT trunk copies, which would
+        # drift apart and stop mirroring the (single) live trunk. Re-point the
+        # generator's EMA at the estimator's EMA trunk so there is exactly one,
+        # and skip it when averaging the generator (update_ema's skip_prefix)
+        # so it is not decayed twice per step.
+        ema_generator.encoder = ema_estimator.encoder
     for ema_model in (ema_generator, ema_estimator):
         if ema_model is not None:
             ema_model.eval()
@@ -577,15 +594,24 @@ def main():
                 parameter.requires_grad_(False)
 
     @torch.no_grad()
-    def update_ema(ema_model: nn.Module, source_model: nn.Module) -> None:
-        """Average parameters and copy buffers (BN/SN state) from source."""
+    def update_ema(ema_model: nn.Module, source_model: nn.Module,
+                   skip_prefix: str | None = None) -> None:
+        """Average parameters and copy buffers (BN/SN state) from source.
+
+        `skip_prefix` leaves a submodule alone -- used for a SHARED trunk, which
+        the estimator's own update already covers.
+        """
         source_parameters = dict(source_model.named_parameters())
         for name, ema_parameter in ema_model.named_parameters():
+            if skip_prefix is not None and name.startswith(skip_prefix):
+                continue
             ema_parameter.mul_(ema_decay).add_(
                 source_parameters[name].detach(), alpha=1.0 - ema_decay
             )
         source_buffers = dict(source_model.named_buffers())
         for name, ema_buffer in ema_model.named_buffers():
+            if skip_prefix is not None and name.startswith(skip_prefix):
+                continue
             src = source_buffers[name].detach()
             # Some encoder buffers (e.g. the SpatialSoftmax coordinate grid on
             # the ResNet-18 encoder) are materialized LAZILY on the first
@@ -624,23 +650,49 @@ def main():
         states_expanded = state.unsqueeze(1).expand(-1, actions_bna.shape[1], -1)
         return estimator(states_expanded, actions_bna)
     
+    # With a SHARED trunk the estimator owns it: the generator's optimizer and
+    # grad-clip see HEAD parameters only. The generator's loss still backprops
+    # into the trunk -- there is a single total_loss.backward(), so both losses'
+    # gradients accumulate there -- it just does not step or clip it, which
+    # would otherwise apply two AdamW updates (at two different LRs, with two
+    # separate moment states) to the same weights every iteration.
+    def _generator_named_params():
+        for name, parameter in control_point_generator.named_parameters():
+            if _shares_encoder and name.startswith("encoder."):
+                continue
+            yield name, parameter
+
+    def _generator_opt_params():
+        return [p for _, p in _generator_named_params()]
+
+    def _generator_clip_params():
+        return _generator_opt_params()
+
+    if _shares_encoder:
+        _n_all = sum(1 for _ in control_point_generator.parameters())
+        print(f"Shared trunk: estimator owns it; generator optimizer holds "
+              f"{len(_generator_opt_params())}/{_n_all} of its tensors")
+
     # Split LR for pixel envs: pretrained conv trunks want a much smaller LR
     # than freshly-initialized heads (encoder_lr_scale, default 1.0 = off).
     encoder_lr_scale = float(env_config.get("training", {}).get("encoder_lr_scale", 1.0))
     if encoder_lr_scale != 1.0 and hasattr(control_point_generator, "encoder"):
-        def _split_groups(model, base_lr):
+        def _split_groups(model, base_lr, include_encoder: bool = True):
             enc_ids = {id(p) for p in model.encoder.parameters()}
-            enc = [p for p in model.parameters() if id(p) in enc_ids]
+            enc = ([p for p in model.parameters() if id(p) in enc_ids]
+                   if include_encoder else [])
             rest = [p for p in model.parameters() if id(p) not in enc_ids]
-            return [
-                {"params": rest, "lr": base_lr},
-                {"params": enc, "lr": base_lr * encoder_lr_scale},
-            ]
+            groups = [{"params": rest, "lr": base_lr}]
+            if enc:
+                groups.append({"params": enc, "lr": base_lr * encoder_lr_scale})
+            return groups
         print(f"Split LR: encoder x{encoder_lr_scale}")
-        optimizer_generator = torch.optim.AdamW(_split_groups(control_point_generator, learning_rate))
+        optimizer_generator = torch.optim.AdamW(
+            _split_groups(control_point_generator, learning_rate,
+                          include_encoder=not _shares_encoder))
         optimizer_estimator = torch.optim.AdamW(_split_groups(estimator, estimator_learning_rate))
     else:
-        optimizer_generator = torch.optim.AdamW(control_point_generator.parameters(), lr=learning_rate)
+        optimizer_generator = torch.optim.AdamW(_generator_opt_params(), lr=learning_rate)
         optimizer_estimator = torch.optim.AdamW(estimator.parameters(), lr=estimator_learning_rate)
 
     # Learning Rate Schedules
@@ -1197,14 +1249,19 @@ def main():
             total_loss = loss_generator_total + loss_estimator_total
             total_loss.backward()
 
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(control_point_generator.parameters(), 1.0)
+            # Gradient clipping. With a SHARED trunk the generator's parameter
+            # list still contains the borrowed encoder, so clip the generator
+            # HEAD only -- the estimator's clip already bounds the trunk, and
+            # clipping it twice would scale those grads by the product of two
+            # independently-computed factors.
+            torch.nn.utils.clip_grad_norm_(_generator_clip_params(), 1.0)
             torch.nn.utils.clip_grad_norm_(estimator.parameters(), 1.0)
 
             optimizer_estimator.step()
             optimizer_generator.step()
             if ema_generator is not None and ema_estimator is not None:
-                update_ema(ema_generator, control_point_generator)
+                update_ema(ema_generator, control_point_generator,
+                           skip_prefix="encoder." if _shares_encoder else None)
                 update_ema(ema_estimator, estimator)
             scheduler_generator.step()
             scheduler_estimator.step()

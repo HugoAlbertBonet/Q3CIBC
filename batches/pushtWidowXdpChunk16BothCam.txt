@@ -1,0 +1,86 @@
+# Push-T WidowX Diffusion-Policy — ACTION CHUNKING K=16, BOTH CAMERAS (0 + 1).
+#
+# Camera A/B against h01/h02 in batches/pushtWidowXdpChunk16.txt: same archive,
+# same encoder, same seeds, same val split, same --action-chunk 16. The only
+# difference is --video-cameras 0 1 in place of --video-camera 1.
+#
+# WHY THIS EXISTS. h01 (1 camera, 1 network) was being compared on inference
+# cost against the deployed Q3C checkpoint L2c_ch16_scratch (2 cameras, 2
+# networks), and that is not an architecture-controlled comparison. The ResNet-18
+# encoder splits the channel stack and runs the SHARED trunk once per image slot
+# (utils/models.py:390-393), n_imgs = n_cameras * frame_stack, so:
+#
+#     h01  : 1 cam x fs2 = 2 slots x 1 net (denoiser)          =  2 trunk passes
+#     L2c  : 2 cam x fs2 = 4 slots x 2 nets (cp_gen + q_net)   =  8 trunk passes
+#
+# Measured: DP g01 = 11.28 GFLOPs per denoiser call / 2 passes = 5.64 GFLOPs per
+# pass; 8 x 5.64 = 45.1 against L2c's measured 45.5 GFLOPs per inference
+# (results/pusht/inference_speed.csv). The 4x gap is 2x cameras times 2x
+# networks, not a policy-class result. This batch removes the camera half of it,
+# leaving the 2x that is genuinely Q3C's architecture (its CP generator and Q
+# estimator have separate encoder weights, utils/models.py:638).
+#
+# TWO STEP BUDGETS, deliberately. Doubling the image slots doubles the trunk
+# work per training step, and the trunk is nearly all of DP's step cost, so the
+# 2.29 steps/s measured in batches/pushtWidowXdpCam1_resnet350k.txt drops to
+# roughly 1.15 steps/s:
+#
+#   i01/i02 @ 175k -> ~42h. Inside the 48h #SBATCH --time cap with the
+#     CosineAnnealingLR fully annealed to eta_min, i.e. a converged checkpoint.
+#     Not step-matched to h01, so held-out MAE against h01 confounds cameras
+#     with budget — but inference cost does not depend on training length, so
+#     these are the checkpoints for the speed comparison. 175k is also the
+#     closest budget to L2c's own 150k (batches/pushtWidowXlib2cam.txt).
+#
+#   i03/i04 @ 350k -> ~85h. Step-matched to h01/h02 and therefore the only
+#     honest partner for a held-out MAE A/B. IT WILL NOT FINISH: slurm kills it
+#     at 48h somewhere near 200k with T_max=350000 still half-annealed, and the
+#     trainer has no resume path. Submit these knowing the checkpoint is a
+#     partially-annealed run, or hold them until a longer walltime is available.
+#
+# PREREQUISITE — CAMERA 0'S FRAME CACHE DOES NOT EXIST FOR THIS ARCHIVE. Every
+# prior run on pusht_2026_07_zarr.zip (the g and h series) passed
+# --video-camera 1, so only <cache-dir>/pusht_2026_07_zarr_cam1_240x320.u8 was
+# ever built. The cache is keyed per camera (utils/datasets.py:1637-1638), so
+# camera 0 is a fresh ~17 GB decode. Build it on a CPU node BEFORE submitting,
+# or three of the four GPU jobs sit idle on the build lock burning allocation:
+#
+#   uv run python scripts/prepare_pusht_video_cache.py \
+#     --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip \
+#     --cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --camera 0
+#
+# GPU MEMORY. batch_size 128 x 4 image slots = 512 ResNet-18 forwards per step,
+# double h01's. submit_experiments.sh already exports expandable_segments for
+# exactly this reason ("the 2-camera pusht runs sit near the 44-48 GB card
+# limit"). If a job OOMs on an a40, drop --batch-size 64 rather than the
+# cameras — but then it is no longer a clean A/B against h01.
+#
+# DEPLOY. Contrary to the stale note at the top of batches/pushtWidowXdpBothCam.txt,
+# deploy_pusht_real_dp.py IS multi-camera: --camera-topics takes nargs="+" and
+# defaults to both dataset topics, cam_ids come from the checkpoint's
+# camera_streams, and build_stack_frame iterates them in training order. The
+# client also hard-fails if camera_streams x frame_stack disagrees with the
+# checkpoint's in_channels, so a mismatch cannot go silent.
+#
+# THE "[val] ..." MAE IS STILL NOT COMPARABLE TO THE g-SERIES, for the same
+# reason as h01: the target is 32-D here and 2-D there. It IS comparable to
+# h01/h02 at equal --steps (i03/i04), same val split (--val-frac 0.1
+# --val-seed 0 -> identical held-out episodes).
+#
+# --workers 4 matches submit_experiments.sh's --cpus-per-task=4.
+#
+# Submit:  ./submit_experiments.sh batches/pushtWidowXdpChunk16BothCam.txt
+
+# ── i01 PRIMARY: h01 + both cameras, 175k (fits the 48h cap). Seed 11.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag i01_resnet18_2cam_k16_s11_175k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --action-chunk 16 --steps 175000
+
+# ── i02 seed repeat of i01. DP single-seed success bounces (pushingPixelsDPD
+#    showed 83-95%), so one seed is not a number.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag i02_resnet18_2cam_k16_s29_175k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --action-chunk 16 --steps 175000
+
+# ── i03 step-matched to h01 (350k). ~85h of work in a 48h slot: expect a kill
+#    near 200k with the cosine still half-annealed and no resume. Seed 11.
+uv run python scripts/train_pusht_real_dp.py --seed 11 --prediction-type v --tag i03_resnet18_2cam_k16_s11_350k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --action-chunk 16 --steps 350000
+
+# ── i04 seed repeat of i03, mirroring h02.
+uv run python scripts/train_pusht_real_dp.py --seed 29 --prediction-type v --tag i04_resnet18_2cam_k16_s29_350k --workers 4 --dataset /project2/biyik_1165/halbertb/pusht_2026_07_zarr.zip --output-root /project2/biyik_1165/halbertb/pusht_real_dp_2026_07 --frame-cache-dir /project2/biyik_1165/halbertb/pusht_frame_cache --idle-filter drop_zero --video-cameras 0 1 --val-frac 0.1 --val-seed 0 --encoder-kind resnet18 --encoder-pretrained imagenet --action-chunk 16 --steps 350000

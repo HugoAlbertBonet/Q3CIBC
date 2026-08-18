@@ -205,6 +205,18 @@ def parse_args() -> argparse.Namespace:
         help="Give each camera stream its own encoder instead of a shared one.",
     )
     enc.add_argument(
+        "--share-encoder",
+        action="store_true",
+        help="One conv trunk for BOTH the CP generator and the Q estimator "
+             "instead of two. Q3C's default gives each net its own encoder "
+             "(IBC's convention), so every inference runs the trunk twice; "
+             "sharing halves that, which is what makes an inference-cost "
+             "comparison against single-network policies (DP/BC) an "
+             "architecture-controlled one. The ESTIMATOR owns the trunk: the "
+             "generator's loss still backprops into it, but only "
+             "--est-lr steps it.",
+    )
+    enc.add_argument(
         "--cond-fusion", choices=["concat", "film"], default="concat",
         help="How conditioning (proprio/goal) is fused into the pixel nets. "
              "Only relevant with --cond-eef-xy.",
@@ -378,6 +390,7 @@ def build_config(args: argparse.Namespace, run_dir: Path) -> dict:
             "encoder_norm_kind": args.encoder_norm_kind,
             "encoder_num_kp": args.encoder_num_kp,
             "encoder_per_camera": args.encoder_per_camera,
+            "share_encoder": args.share_encoder,
             "cond_fusion": args.cond_fusion,
             "control_points": args.control_points,
             # cp_width/cp_depth are what the pixel CP generator actually reads

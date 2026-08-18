@@ -1286,6 +1286,20 @@ def build_models(env: dict, in_channels: int, device, cond_dim: int = 0,
         goal_dim=goal_dim,
     )
 
+    # share_encoder: the checkpoint was trained with ONE trunk feeding both
+    # heads, so it must be rebuilt that way. Otherwise load_state_dict writes
+    # the same weights into two modules and inference pays the encoder twice --
+    # which is the entire cost the sharing exists to remove. The estimator owns
+    # the trunk (it did at train time too), so it is built first.
+    share_encoder = bool(ns.get("share_encoder", m.get("share_encoder", False)))
+
+    q_net = PixelQEstimator(
+        action_dim=action_dim,
+        value_width=value_width,
+        value_num_blocks=value_num_blocks,
+        **shared,
+    ).to(device).eval()
+
     cp_gen = PixelControlPointGenerator(
         output_dim=action_dim,
         control_points=control_points,
@@ -1295,15 +1309,12 @@ def build_models(env: dict, in_channels: int, device, cond_dim: int = 0,
         width=cp_width,
         depth=cp_depth,
         use_spectral_norm=cp_use_spectral_norm,
+        share_encoder_from=(q_net if share_encoder else None),
         **shared,
     ).to(device).eval()
-
-    q_net = PixelQEstimator(
-        action_dim=action_dim,
-        value_width=value_width,
-        value_num_blocks=value_num_blocks,
-        **shared,
-    ).to(device).eval()
+    if share_encoder:
+        print("[models] shared trunk: cp_gen reuses q_net's encoder "
+              "(one conv pass per inference)")
 
     return cp_gen, q_net
 
@@ -1435,8 +1446,20 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
     """
     cp_gen._cond = cond
     q_net._cond = cond
-    features = q_net.encode(obs_u8)                   # (1, feat)
-    cps = cp_gen(obs_u8)                              # (1, P, action_dim)
+    # Both trunks run WITHOUT autograd. Nothing downstream differentiates the
+    # encoders, and langevin only needs grad w.r.t. the ACTIONS, which
+    # sample_langevin re-attaches itself (utils/sampling.py:160
+    # `actions.detach().requires_grad_(True)`) -- so detached features cost it
+    # nothing. Leaving grad on here built a graph through two independent
+    # ResNet-18 trunks (separate weights unless the run set share_encoder) on
+    # every control step and kept it alive for the whole call.
+    with torch.no_grad():
+        features = q_net.encode(obs_u8)               # (1, feat)
+        # A shared trunk means `features` ARE the CP generator's features,
+        # so run its head directly instead of encoding the image again.
+        cps = (cp_gen.head_from_features(features)
+               if getattr(cp_gen, "shares_encoder", False)
+               else cp_gen(obs_u8))                   # (1, P, action_dim)
 
     def refine_dfo():
         A = cps.shape[-1]
@@ -1455,7 +1478,8 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
         else:
             act = refine_dfo()
         return act.detach().cpu().numpy()
-    logits = q_net.score(features, cps).squeeze(-1)   # (1, P)
+    with torch.no_grad():
+        logits = q_net.score(features, cps).squeeze(-1)   # (1, P)
     if cp_selection == "sample":
         probs = torch.softmax(logits.squeeze(0) / max(temperature, 1e-6), dim=-1)
         idx = int(torch.multinomial(probs, 1).item())
@@ -1674,6 +1698,12 @@ def main() -> int:
 
     device = torch.device(args.device if (torch.cuda.is_available() or args.device == "cpu")
                           else "cpu")
+    if device.type == "cuda":
+        # Every control step feeds the encoders the exact same shape, so let
+        # cuDNN autotune its conv algorithms once. The tuning pass lands in the
+        # first inference, which InferenceTimer already reports separately as
+        # ms_first_infer and drops from the distribution.
+        torch.backends.cudnn.benchmark = True
     cp_gen, q_net = build_models(env_cfg, in_channels, device, cond_dim=cond_dim,
                                  norm_stats=norm_stats)
     suffix = "" if args.no_ema else "_ema"
