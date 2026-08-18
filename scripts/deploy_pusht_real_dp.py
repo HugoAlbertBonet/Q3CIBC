@@ -364,14 +364,28 @@ def dp_sample_action(diffusion, denoiser, obs_u8, inference, ddim_steps, ddim_et
     chunked checkpoint returns the whole flat chunk exactly as the Q3C client's
     select_action does.
     """
+    # LATE FUSION. The conv trunk does not depend on t, and it is ~all of the
+    # per-call FLOPs (11.28 GFLOPs/step measured, vs ~1e-3 for the 1024-wide
+    # head), so encode ONCE per env step and run the denoising chain on the
+    # flat head. Handing the whole PixelDiffusionDenoiser to the sampler
+    # re-runs the ResNet on every scheduler step, which is why DDPM (T=100)
+    # costs ~100x what it should. This is what PixelDiffusionDenoiser's own
+    # docstring says to do, and what DiffusionSampler (utils/diffusion.py) and
+    # the Q3C client already do.
+    model, state = denoiser, obs_u8.float()
     if cond is not None:
+        # Conditioned DP is not wired up in this client (build_dp_policy
+        # raises on cond_dim); keep the full-module path correct anyway, since
+        # the cond vector is consumed inside the wrapper's forward.
         denoiser._cond = cond
-    state = obs_u8.float()
+    elif hasattr(denoiser, "encode"):
+        state = denoiser.encode(state)
+        model = denoiser.denoiser
     if inference == "ddim":
-        a = diffusion.ddim_sample(denoiser, state, action_dim=action_dim,
+        a = diffusion.ddim_sample(model, state, action_dim=action_dim,
                                   num_steps=ddim_steps, eta=ddim_eta)
     else:
-        a = diffusion.ddpm_sample(denoiser, state, action_dim=action_dim)
+        a = diffusion.ddpm_sample(model, state, action_dim=action_dim)
     return a[0].detach().cpu().numpy()
 
 
