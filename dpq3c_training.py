@@ -599,10 +599,22 @@ def main():
             "cond_dim": cond_dim,
         }
         if is_pixels:
+            # Source these defensively: the pixel datasets do NOT share one
+            # attribute set. PushingPixelsDataset has neither `_H`/`_W` nor
+            # `in_channels`, and LiberoGoalPixelsDataset has `_H` but no `_W`.
+            # `state_shape` is (C, H, W) on all three, so it is the one reliable
+            # source; the config is the last resort.
+            _ss = list(getattr(dataset, "state_shape", []) or [])
+            if len(_ss) == 3:
+                _in_ch, _img_h, _img_w = int(_ss[0]), int(_ss[1]), int(_ss[2])
+            else:
+                _in_ch = int(getattr(dataset, "in_channels", 0))
+                _img_h = int(env_config.get("image_height", 240))
+                _img_w = int(env_config.get("image_width", 320))
             norm_stats.update({
-                "in_channels": dataset.state_shape[0],
-                "image_hw": [dataset._H, dataset._W],
-                "state_shape": list(dataset.state_shape),
+                "in_channels": _in_ch,
+                "image_hw": [_img_h, _img_w],
+                "state_shape": _ss,
                 "encoder_target_height": env_config.get("encoder_target_height", 180),
                 "encoder_target_width": env_config.get("encoder_target_width", 240),
                 "encoder_feature_dim": int(env_model.get("encoder_feature_dim", 256)),
