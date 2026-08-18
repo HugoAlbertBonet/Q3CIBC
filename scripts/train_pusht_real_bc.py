@@ -583,6 +583,21 @@ def main() -> int:
     ema_policy = copy.deepcopy(policy)
     for p in ema_policy.parameters():
         p.requires_grad_(False)
+    # Buffers to keep in sync with the live model: the PERSISTENT ones only
+    # (BatchNorm running stats). Non-persistent buffers are absent from
+    # state_dict and are rebuilt lazily on the first forward — SpatialSoftmax's
+    # coordinate grid is registered as torch.empty(0) and only takes its
+    # (1, 1, h*w) shape once an image has been through it, so the EMA copy (which
+    # is never forwarded during training) still holds the empty placeholder.
+    # Copying buffers positionally therefore raised "size of tensor a (0) must
+    # match tensor b (h*w)" on every resnet18 run. Matching by name and skipping
+    # the non-persistent ones is correct AND sufficient: the EMA model rebuilds
+    # its own grid when val (or deploy) forwards it.
+    _param_names = {n for n, _ in policy.named_parameters()}
+    _persistent = [k for k in policy.state_dict() if k not in _param_names]
+    _ema_bufs = dict(ema_policy.named_buffers())
+    ema_buffer_pairs = [(_ema_bufs[n], b) for n, b in policy.named_buffers()
+                        if n in _persistent and n in _ema_bufs]
 
     # norm_stats.pt: everything the deploy client needs to rebuild the exact
     # preprocessing + denormalization (mirrors the q3c / IBC / DP trainers).
@@ -691,9 +706,10 @@ def main() -> int:
             with torch.no_grad():
                 for ep, p in zip(ema_policy.parameters(), policy.parameters()):
                     ep.mul_(ema_decay).add_(p, alpha=1.0 - ema_decay)
-                # Buffers (BatchNorm running stats) are copied, not averaged —
-                # they are not gradient-trained parameters.
-                for eb, b in zip(ema_policy.buffers(), policy.buffers()):
+                # BatchNorm running stats are copied, not averaged — they are
+                # not gradient-trained parameters. See ema_buffer_pairs above for
+                # why this is name-matched and persistent-only.
+                for eb, b in ema_buffer_pairs:
                     eb.copy_(b)
                 batch_mae = (pred - actions).abs().mean().item()
             running_mae += batch_mae
