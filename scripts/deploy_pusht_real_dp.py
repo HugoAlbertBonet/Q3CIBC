@@ -334,8 +334,13 @@ def build_dp_policy(env_cfg: dict, norm_stats: dict, in_channels: int, device):
                                env_cfg.get("encoder_target_height", 180)))
     enc_w = int(norm_stats.get("encoder_target_width",
                                env_cfg.get("encoder_target_width", 240)))
+    # Action width is the checkpoint's, not 2: a chunked run (--action-chunk K)
+    # trained the denoiser with action_dim = 2 * K and norm_stats["act_min"]
+    # covers the whole flat chunk, so hardcoding 2 rebuilds the wrong first
+    # layer and load_state_dict fails on denoiser.network.0.weight.
+    action_dim = int(np.asarray(norm_stats["act_min"], np.float32).size)
     denoiser = build_pixel_denoiser(
-        2, in_channels, dp,
+        action_dim, in_channels, dp,
         encoder_target_height=enc_h, encoder_target_width=enc_w,
         encoder_feature_dim=int(norm_stats.get("encoder_feature_dim", 256)),
         encoder_kind=str(norm_stats.get("encoder_kind", "conv_maxpool")),

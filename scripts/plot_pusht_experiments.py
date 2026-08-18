@@ -40,6 +40,27 @@ ROOT = Path(__file__).resolve().parents[1]
 CSV_PATH = ROOT / "results" / "pusht" / "experiments.csv"
 SPEED_PATH = ROOT / "results" / "pusht" / "inference_speed.csv"
 DEVICE = "cuda"
+
+# A timing run whose whole record is a handful of inferences is dominated by the
+# first one, which carries CUDA warmup (~220 ms against a ~11 ms steady state).
+# Those runs are not an estimate of anything, so they are dropped rather than
+# averaged in: with them, q3c/argmax at horizon 4 reads 10.29 ms/step against
+# 5.61 at horizon 2; without them it reads 2.78 and the sweep is monotone.
+MIN_INFER_RUNS = 5
+
+# A cost/quality point is only comparable to its neighbours if it was rolled out
+# on the same task distribution. Points covering fewer start positions than this
+# are dropped rather than plotted: the IBC ch16 horizon-1 cell is 3 rollouts all
+# at `top` (the easiest position), which read as cam1 0.96 against sweep-mates
+# that each cover all 9 positions.
+MIN_POSITIONS = 8
+
+# The IBC ch16 checkpoint was never rolled out at horizon 1 on the full position
+# set, so its horizon sweep has no anchor. This borrows that one point from the
+# sibling c256 checkpoint (same algorithm, inference and refinement, 25 rollouts
+# over all 9 positions) and plots it as an ordinary point of the series. The
+# substitution is recorded in the CSV's checkpoint column, not in the mark.
+HORIZON_ANCHOR = {("ibc", "dfo", 5, "Ibc2c16_c256_imnet"): {1: "Ibc2c_c256_imnet"}}
 OUT_DIR = ROOT / "results" / "pusht" / "plots"
 
 # Composite encoding: hue = algorithm, lightness step = inference method within
@@ -103,7 +124,7 @@ EXCLUDED_INFERENCE = {"ddpm"}
 # the figures keep only its best one. dp and q3c also have a second checkpoint
 # each, but those are 2 and 14 rows against 52 and 178 and score within 0.06
 # cam1 of the main one, so they stay pooled.
-KEEP_CHECKPOINT = {"ibc": "Ibc2c_c256_imnet"}
+KEEP_CHECKPOINT = {"ibc": {"Ibc2c_c256_imnet", "Ibc2c16_c256_imnet"}}
 
 
 def series_color(series: tuple[str, str]) -> str:
@@ -112,7 +133,11 @@ def series_color(series: tuple[str, str]) -> str:
 
 def checkpoint_kept(r: dict) -> bool:
     wanted = KEEP_CHECKPOINT.get(r["algorithm"])
-    return wanted is None or r["seed_dir"].rsplit("/", 1)[-1] == wanted
+    return wanted is None or r["seed_dir"].rsplit("/", 1)[-1] in wanted
+
+
+def checkpoint_of(r: dict) -> str:
+    return r["seed_dir"].rsplit("/", 1)[-1]
 
 POSITION_ORDER = [
     "top",
@@ -140,6 +165,7 @@ def load_rows() -> list[dict]:
         r["min_cov"] = min(r["cam0"], r["cam1"])
         r["avg_cov"] = 0.5 * (r["cam0"] + r["cam1"])
         r["dist"] = float(r["dist_centroid"])
+        r["horizon"] = int(r["exec_horizon"])
         # Q3C argmax runs with refinement iterations are the DFO-fallback
         # variant (argmax, with DFO taking over when the argmax action stalls),
         # so they get their own series rather than being averaged into argmax.
@@ -177,10 +203,10 @@ def grouped_plot(
 ) -> None:
     """Grouped bars: x = start position, one bar per algorithm x inference.
 
-    With best_iters=False every refine_iters value of a cell is pooled. With
-    best_iters=True the cell keeps only its best refine_iters (highest mean, or
-    lowest when higher_is_better=False), so mean/std are over trials alone; the
-    full sweep still goes to the table.
+    With best_iters=False every (refine_iters, exec_horizon) setting of a cell
+    is pooled. With best_iters=True the cell keeps only its best setting - the
+    joint argmax over both knobs (argmin when higher_is_better=False) - so
+    mean/std are over trials alone; the full sweep still goes to the table.
     """
     positions = [p for p in POSITION_ORDER if any(r["start_position"] == p for r in rows)]
     series = [s for s in SERIES_ORDER if any((r["algorithm"], r["inference"]) == s for r in rows)]
@@ -188,7 +214,7 @@ def grouped_plot(
     table: list[dict] = []
     means = np.full((len(series), len(positions)), np.nan)
     stds = np.zeros_like(means)
-    chosen_iters: dict[tuple[int, int], int] = {}
+    chosen: dict[tuple[int, int], tuple[int, int]] = {}
 
     for i, (alg, inf) in enumerate(series):
         for j, pos in enumerate(positions):
@@ -200,27 +226,32 @@ def grouped_plot(
             if not cell:
                 continue
 
-            per_iter: dict[int, list[float]] = {}
+            per_cfg: dict[tuple[int, int], list[float]] = {}
+            ckpts: dict[tuple[int, int], set[str]] = {}
             for r in cell:
-                per_iter.setdefault(int(r["refine_iters"]), []).append(r[metric])
+                cfg = (int(r["refine_iters"]), r["horizon"])
+                per_cfg.setdefault(cfg, []).append(r[metric])
+                ckpts.setdefault(cfg, set()).add(checkpoint_of(r))
 
             if best_iters:
                 pick = max if higher_is_better else min
-                best_it = pick(per_iter, key=lambda it: float(np.mean(per_iter[it])))
-                groups = {best_it: per_iter[best_it]}
-                chosen_iters[(i, j)] = best_it
-                for it, vals in sorted(per_iter.items()):
+                best_cfg = pick(per_cfg, key=lambda c: float(np.mean(per_cfg[c])))
+                groups = {best_cfg: per_cfg[best_cfg]}
+                chosen[(i, j)] = best_cfg
+                for cfg, vals in sorted(per_cfg.items()):
                     table.append(
                         {
                             "algorithm": alg,
                             "inference": inf,
                             "start_position": pos,
-                            "refine_iters": it,
+                            "refine_iters": cfg[0],
+                            "exec_horizon": cfg[1],
+                            "checkpoint": "|".join(sorted(ckpts[cfg])),
                             "metric": metric,
                             "mean": round(float(np.mean(vals)), 4),
                             "std": round(float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0, 4),
                             "n_trials": len(vals),
-                            "is_best": "yes" if it == best_it else "",
+                            "is_best": "yes" if cfg == best_cfg else "",
                         }
                     )
             else:
@@ -286,7 +317,8 @@ def grouped_plot(
                 x[j] + offset,
                 min(means[i, j] + stds[i, j], label_cap) + label_pad,
                 (
-                    value_fmt.format(means[i, j]) + f" · it {chosen_iters[(i, j)]}"
+                    value_fmt.format(means[i, j])
+                    + f" · it{chosen[(i, j)][0]} h{chosen[(i, j)][1]}"
                     if best_iters
                     else value_fmt.format(means[i, j])
                 ),
@@ -328,48 +360,46 @@ def grouped_plot(
 
 
 def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> None:
-    """Bars: x = algorithm x inference, best refine_iters by mean of `metric`.
+    """Bars: x = algorithm x inference, best (refine_iters, exec_horizon) setting.
 
     Trials and start positions are pooled, so the std mixes trial noise with
     per-position difficulty (the position sets are not matched across series).
     """
     series = [s for s in SERIES_ORDER if any((r["algorithm"], r["inference"]) == s for r in rows)]
 
-    labels, means, stds, best_iters, ns = [], [], [], [], []
+    labels, means, stds, best_cfgs, ns = [], [], [], [], []
     table: list[dict] = []
 
     for alg, inf in series:
         sub = [r for r in rows if r["algorithm"] == alg and r["inference"] == inf]
-        per_iter = {}
+        per_cfg = {}
+        ckpts = {}
         for r in sub:
-            per_iter.setdefault(int(r["refine_iters"]), []).append(r[metric])
+            cfg = (int(r["refine_iters"]), r["horizon"])
+            per_cfg.setdefault(cfg, []).append(r[metric])
+            ckpts.setdefault(cfg, set()).add(checkpoint_of(r))
+        best_cfg = max(per_cfg, key=lambda c: float(np.mean(per_cfg[c])))
         # Full sweep goes to the table; the plot shows the argmax setting.
-        for it, vals in sorted(per_iter.items()):
+        for cfg, vals in sorted(per_cfg.items()):
             table.append(
                 {
                     "algorithm": alg,
                     "inference": inf,
-                    "refine_iters": it,
+                    "refine_iters": cfg[0],
+                    "exec_horizon": cfg[1],
+                    "checkpoint": "|".join(sorted(ckpts[cfg])),
                     "metric": metric,
                     "mean": round(float(np.mean(vals)), 4),
                     "std": round(float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0, 4),
                     "n_runs": len(vals),
-                    "is_best": "",
+                    "is_best": "yes" if cfg == best_cfg else "",
                 }
             )
-        best_it = max(per_iter, key=lambda it: float(np.mean(per_iter[it])))
-        vals = per_iter[best_it]
-        for row in table:
-            if (
-                row["algorithm"] == alg
-                and row["inference"] == inf
-                and row["refine_iters"] == best_it
-            ):
-                row["is_best"] = "yes"
+        vals = per_cfg[best_cfg]
         labels.append(series_label(alg, inf))
         means.append(float(np.mean(vals)))
         stds.append(float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0)
-        best_iters.append(best_it)
+        best_cfgs.append(best_cfg)
         ns.append(len(vals))
 
     fig, ax = plt.subplots(figsize=(10, 5.2), facecolor=SURFACE)
@@ -385,11 +415,11 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
     ax.errorbar(
         x, means, yerr=stds, fmt="none", ecolor=TEXT_SECONDARY, elinewidth=1.4, capsize=4, zorder=3
     )
-    for xi, m, s, it, n in zip(x, means, stds, best_iters, ns):
+    for xi, m, s, cfg, n in zip(x, means, stds, best_cfgs, ns):
         ax.text(
             xi,
             min(m + s, 1.0) + 0.03,
-            f"{m:.2f}\niters {it} (n={n})",
+            f"{m:.2f}\nit {cfg[0]} · h {cfg[1]} (n={n})",
             ha="center",
             va="bottom",
             fontsize=8,
@@ -411,7 +441,7 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
     ax.text(
         0,
         1.02,
-        f"argmax over the refine_iters sweep of mean {ylabel}; "
+        f"argmax over the refine_iters x exec_horizon sweep of mean {ylabel}; "
         "error bars 1 std over trials and positions",
         transform=ax.transAxes,
         color=TEXT_SECONDARY,
@@ -428,9 +458,11 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
 def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "cam1 coverage") -> None:
     """Scatter: x = mean inference time per step, y = task performance.
 
-    One point per (algorithm, inference, refine_iters); points of the same
-    series are joined in iteration order, so each line is that method's
-    cost/quality sweep. Up and to the left is better.
+    One point per (algorithm, inference, refine_iters) at exec_horizon 1;
+    points of the same series are joined in iteration order, so each line is
+    that method's cost/quality sweep. Up and to the left is better. The horizon
+    sweeps get their own figure - mixing them in here would put two different
+    knobs on one line.
 
     Timings come from inference_speed.csv and are restricted to CUDA — the CPU
     rows are ~10x slower for the same config, and two devices cannot share one
@@ -438,7 +470,12 @@ def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "ca
     """
     with SPEED_PATH.open() as f:
         speed = [r for r in csv.DictReader(f) if r["device"] == DEVICE]
-    speed = [r for r in speed if checkpoint_kept(r)]
+    speed = [
+        r
+        for r in speed
+        if checkpoint_kept(r) and int(r["exec_horizon"]) == 1 and int(r["n_infer"]) >= MIN_INFER_RUNS
+    ]
+    rows = [r for r in rows if r["horizon"] == 1]
 
     def cell(r: dict) -> tuple[str, str, int]:
         return (r["algorithm"], r["inference"], int(r["refine_iters"]))
@@ -538,7 +575,7 @@ def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "ca
     ax.set_xlabel(f"mean inference time per step (ms, {DEVICE})", color=TEXT_SECONDARY)
     ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
     ax.set_title(
-        "Cost vs performance",
+        "Cost vs performance — refinement sweep",
         color=TEXT_PRIMARY,
         fontsize=13,
         loc="left",
@@ -556,6 +593,228 @@ def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "ca
     )
     leg = ax.legend(
         frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=9, handletextpad=0.6
+    )
+    for txt in leg.get_texts():
+        txt.set_color(TEXT_SECONDARY)
+
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / f"{stem}.png", dpi=200, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    write_table(OUT_DIR / f"{stem}.csv", table)
+
+
+# The IBC horizon sweep runs on a different checkpoint from its refinement
+# sweep, so that checkpoint takes the family's dark step to stay distinguishable.
+CHECKPOINT_COLOR = {"Ibc2c16_c256_imnet": "#00582b"}
+CHECKPOINT_TAG = {"Ibc2c16_c256_imnet": "ch16"}
+
+
+def horizon_tradeoff_plot(
+    rows, stem: str, metric: str = "cam1", ylabel: str = "cam1 coverage"
+) -> None:
+    """Scatter: x = mean inference time per step, y = performance, over horizon.
+
+    A series is one (algorithm, inference, refine_iters, checkpoint) combination
+    that was swept over more than one exec_horizon; it is drawn as a line with a
+    dot per horizon, joined shortest horizon to longest. Configs that exist at
+    only one horizon are not plotted, nor are points covering fewer than
+    MIN_POSITIONS start positions. Each point is position-balanced (mean of the
+    per-position means) and its error bar is 1 SEM across positions. CUDA
+    timings only.
+    """
+    with SPEED_PATH.open() as f:
+        speed = [r for r in csv.DictReader(f) if r["device"] == DEVICE]
+    speed = [r for r in speed if checkpoint_kept(r) and int(r["n_infer"]) >= MIN_INFER_RUNS]
+
+    def cfg(r: dict) -> tuple:
+        inf = r["inference"]
+        if (r["algorithm"], inf) == ("q3c", "argmax") and int(r["refine_iters"]) > 0:
+            inf = "argmax_fallback"
+        return (r["algorithm"], inf, int(r["refine_iters"]), checkpoint_of(r), int(r["exec_horizon"]))
+
+    times: dict[tuple, list[float]] = {}
+    for r in speed:
+        times.setdefault(cfg(r), []).append(float(r["ms_per_step"]))
+    # Keep the rollouts per position so each point can be position-balanced -
+    # an unweighted mean would let a cell with extra easy-position rollouts
+    # outscore one with the same policy and a harder mix.
+    scores: dict[tuple, dict[str, list[float]]] = {}
+    for r in rows:
+        scores.setdefault(cfg(r), {}).setdefault(r["start_position"], []).append(r[metric])
+
+    series: dict[tuple, list[tuple]] = {}
+    table: list[dict] = []
+    joint = set(times) & set(scores)
+    covered = {k for k in joint if len(scores[k]) >= MIN_POSITIONS}
+    swept_cfgs = {c for c in {k[:4] for k in covered} if len({k[4] for k in covered if k[:4] == c}) > 1}
+    for k in sorted(joint):
+        alg, inf, iters, ckpt, horizon = k
+        if k[:4] not in swept_cfgs:
+            continue
+        by_pos = scores[k]
+        per_pos = [float(np.mean(v)) for _, v in sorted(by_pos.items())]
+        n_roll = sum(len(v) for v in by_pos.values())
+        mean = float(np.mean(per_pos))
+        sem = float(np.std(per_pos, ddof=1) / np.sqrt(len(per_pos))) if len(per_pos) > 1 else 0.0
+        row = {
+            "algorithm": alg,
+            "inference": inf,
+            "refine_iters": iters,
+            "exec_horizon": horizon,
+            "checkpoint": ckpt,
+            "ms_per_step": round(float(np.mean(times[k])), 2),
+            "n_timing_runs": len(times[k]),
+            "metric": metric,
+            "mean": round(mean, 4),
+            "sem": round(sem, 4),
+            "n_rollouts": n_roll,
+            "n_positions": len(per_pos),
+            "plotted": "yes" if k in covered else "",
+        }
+        table.append(row)
+        if k in covered:
+            series.setdefault((alg, inf, iters, ckpt), []).append(
+                (float(np.mean(times[k])), mean, sem, horizon, False)
+            )
+
+    # Splice in the borrowed anchor points.
+    for cfg_key, anchors in HORIZON_ANCHOR.items():
+        if cfg_key not in series:
+            continue
+        alg, inf, iters, _ = cfg_key
+        for horizon, src_ckpt in anchors.items():
+            if any(pt[3] == horizon for pt in series[cfg_key]):
+                continue
+            src = (alg, inf, iters, src_ckpt, horizon)
+            if src not in covered:
+                continue
+            per_pos = [float(np.mean(v)) for _, v in sorted(scores[src].items())]
+            mean = float(np.mean(per_pos))
+            sem = float(np.std(per_pos, ddof=1) / np.sqrt(len(per_pos)))
+            series[cfg_key].append((float(np.mean(times[src])), mean, sem, horizon, True))
+            table.append(
+                {
+                    "algorithm": alg,
+                    "inference": inf,
+                    "refine_iters": iters,
+                    "exec_horizon": horizon,
+                    "checkpoint": f"{src_ckpt} (borrowed by {cfg_key[3]})",
+                    "ms_per_step": round(float(np.mean(times[src])), 2),
+                    "n_timing_runs": len(times[src]),
+                    "metric": metric,
+                    "mean": round(mean, 4),
+                    "sem": round(sem, 4),
+                    "n_rollouts": sum(len(v) for v in scores[src].values()),
+                    "n_positions": len(per_pos),
+                    "plotted": "yes (spliced)",
+                }
+            )
+
+    fig, ax = plt.subplots(figsize=(10, 6.2), facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+    ax.grid(color=GRID, linewidth=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("bottom", "left"):
+        ax.spines[side].set_color(GRID)
+    ax.tick_params(colors=TEXT_SECONDARY, length=0)
+    ax.set_xscale("log")
+    ax.set_xticks([1, 2, 4, 6, 10, 20, 50])
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+    allpts = [p for pts in series.values() for p in pts]  # noqa: F841
+    ax.set_xlim(min(p[0] for p in allpts) * 0.8, max(p[0] for p in allpts) * 1.25)
+    lo = min(p[1] - p[2] for p in allpts)
+    hi = max(p[1] + p[2] for p in allpts)
+    ax.set_ylim(lo - 0.06, hi + 0.06)
+
+    # Greedy label placement: try right, left, above, below, take the first slot
+    # that clears everything already placed.
+    placed: list[tuple[float, float]] = []
+
+    def place(ax, text, xy):
+        for dx, dy in ((10, -3), (-10, -3), (0, 11), (0, -17)):
+            px, py = ax.transData.transform(xy)
+            cand = (px + dx * 2.2, py + dy * 2.2)
+            if all(abs(cand[0] - q[0]) > 34 or abs(cand[1] - q[1]) > 26 for q in placed):
+                placed.append(cand)
+                ha = "left" if dx > 0 else "right" if dx < 0 else "center"
+                ax.annotate(
+                    text,
+                    xy,
+                    textcoords="offset points",
+                    xytext=(dx, dy),
+                    ha=ha,
+                    fontsize=8,
+                    color=TEXT_SECONDARY,
+                    zorder=6,
+                )
+                return
+        placed.append(ax.transData.transform(xy))
+        ax.annotate(
+            text,
+            xy,
+            textcoords="offset points",
+            xytext=(0, 11),
+            ha="center",
+            fontsize=8,
+            color=TEXT_SECONDARY,
+            zorder=6,
+        )
+
+    def sort_key(item):
+        (alg, inf, iters, ckpt), pts = item
+        return (SERIES_ORDER.index((alg, inf)), iters)
+
+    for (alg, inf, iters, ckpt), pts in sorted(series.items(), key=sort_key):
+        pts = sorted(pts, key=lambda p: p[3])
+        xs, ys, sems, hs, spliced = zip(*pts)
+        color = CHECKPOINT_COLOR.get(ckpt, series_color((alg, inf)))
+        marker = "D" if (alg, inf) in SERIES_HATCH else "o"
+        tag = f" [{CHECKPOINT_TAG[ckpt]}]" if ckpt in CHECKPOINT_TAG else ""
+        label = f"{series_label(alg, inf)} · {iters} it{tag}"
+        ax.plot(xs, ys, color=color, linewidth=2, zorder=2, alpha=0.9)
+        ax.errorbar(
+            xs, ys, yerr=sems, fmt="none", ecolor=color, elinewidth=1.2, capsize=3, zorder=3
+        )
+        ax.plot(
+            xs,
+            ys,
+            marker,
+            color=color,
+            markersize=10,
+            markeredgecolor=SURFACE,
+            markeredgewidth=2,
+            linestyle="none",
+            label=label,
+            zorder=5,
+        )
+        for x, y, _, h, _sp in sorted(pts, key=lambda q: -q[1]):
+            place(ax, f"h{h}", (x, y))
+
+    ax.set_xlabel(f"mean inference time per step (ms, {DEVICE})", color=TEXT_SECONDARY)
+    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+    ax.set_title(
+        "Cost vs performance — execution-horizon sweep",
+        color=TEXT_PRIMARY,
+        fontsize=13,
+        loc="left",
+        pad=32,
+        weight="bold",
+    )
+    ax.text(
+        0,
+        1.03,
+        "lines join a config's horizons shortest to longest (point label = horizon)\n"
+        "position-balanced over all 9 start positions; error bars 1 SEM across positions",
+        transform=ax.transAxes,
+        color=TEXT_SECONDARY,
+        fontsize=9,
+        va="bottom",
+    )
+    leg = ax.legend(
+        frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8.5, handletextpad=0.6
     )
     for txt in leg.get_texts():
         txt.set_color(TEXT_SECONDARY)
@@ -609,7 +868,8 @@ def main() -> None:
         rows,
         "cam1",
         "Cam1 coverage by start position, best refinement setting",
-        "coverage_cam1 — per cell, refine_iters with the highest mean; error bars 1 std over trials",
+        "coverage_cam1 — per cell, the refine_iters x exec_horizon setting with the highest mean; "
+        "error bars 1 std over trials",
         "coverage_cam1_by_position_best_iters",
         best_iters=True,
     )
@@ -617,7 +877,8 @@ def main() -> None:
         rows,
         "dist",
         "Centroid distance by start position, best refinement setting",
-        "dist_centroid, lower is better — per cell, refine_iters with the lowest mean; "
+        "dist_centroid, lower is better — per cell, the refine_iters x exec_horizon setting with "
+        "the lowest mean; "
         "error bars 1 std over trials",
         "dist_centroid_by_position_best_iters",
         best_iters=True,
@@ -641,8 +902,9 @@ def main() -> None:
     )
 
     speed_tradeoff_plot(rows, "cam1_vs_inference_time")
+    horizon_tradeoff_plot(rows, "cam1_vs_inference_time_horizon")
 
-    print(f"wrote 8 figures + tables to {OUT_DIR}")
+    print(f"wrote 9 figures + tables to {OUT_DIR}")
 
 
 if __name__ == "__main__":
