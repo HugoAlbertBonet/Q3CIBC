@@ -1,0 +1,10 @@
+algorithm,inference,refine_iters,exec_horizon,checkpoint,ms_per_step,n_timing_runs,metric,mean,sem,n_rollouts,n_positions,plotted
+ibc,dfo,5,1,Ibc2c16_c256_imnet,8.26,3,avg_cov,0.9669,0.0,3,1,
+ibc,dfo,5,2,Ibc2c16_c256_imnet,4.13,24,avg_cov,0.6717,0.0724,23,9,yes
+ibc,dfo,5,4,Ibc2c16_c256_imnet,2.08,23,avg_cov,0.4623,0.0924,23,9,yes
+ibc,dfo,5,8,Ibc2c16_c256_imnet,1.05,25,avg_cov,0.419,0.0674,25,9,yes
+q3c,argmax_fallback,5,1,L2c_ch16_scratch,11.06,2,avg_cov,0.7539,0.0729,22,9,yes
+q3c,argmax_fallback,5,2,L2c_ch16_scratch,5.56,32,avg_cov,0.8252,0.0606,20,9,yes
+q3c,argmax_fallback,5,4,L2c_ch16_scratch,2.78,25,avg_cov,0.7514,0.091,21,9,yes
+q3c,argmax_fallback,5,8,L2c_ch16_scratch,1.4,23,avg_cov,0.6835,0.079,19,9,yes
+ibc,dfo,5,1,Ibc2c_c256_imnet (borrowed by Ibc2c16_c256_imnet),8.27,2,avg_cov,0.7003,0.0821,25,9,yes (spliced)

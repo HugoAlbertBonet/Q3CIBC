@@ -610,7 +610,11 @@ CHECKPOINT_TAG = {"Ibc2c16_c256_imnet": "ch16"}
 
 
 def horizon_tradeoff_plot(
-    rows, stem: str, metric: str = "cam1", ylabel: str = "cam1 coverage"
+    rows,
+    stem: str,
+    metric: str = "cam1",
+    ylabel: str = "cam1 coverage",
+    title: str = "Cost vs performance — execution-horizon sweep",
 ) -> None:
     """Scatter: x = mean inference time per step, y = performance, over horizon.
 
@@ -796,7 +800,7 @@ def horizon_tradeoff_plot(
     ax.set_xlabel(f"mean inference time per step (ms, {DEVICE})", color=TEXT_SECONDARY)
     ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
     ax.set_title(
-        "Cost vs performance — execution-horizon sweep",
+        title,
         color=TEXT_PRIMARY,
         fontsize=13,
         loc="left",
@@ -902,9 +906,20 @@ def main() -> None:
     )
 
     speed_tradeoff_plot(rows, "cam1_vs_inference_time")
-    horizon_tradeoff_plot(rows, "cam1_vs_inference_time_horizon")
+    horizon_tradeoff_plot(
+        rows,
+        "cam1_vs_inference_time_horizon",
+        title="Cost vs performance — execution-horizon sweep, cam1",
+    )
+    horizon_tradeoff_plot(
+        rows,
+        "coverage_avg_vs_inference_time_horizon",
+        metric="avg_cov",
+        ylabel="mean(cam0, cam1) coverage",
+        title="Cost vs performance — execution-horizon sweep, both cameras",
+    )
 
-    print(f"wrote 9 figures + tables to {OUT_DIR}")
+    print(f"wrote 10 figures + tables to {OUT_DIR}")
 
 
 if __name__ == "__main__":

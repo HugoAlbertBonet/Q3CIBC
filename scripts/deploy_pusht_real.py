@@ -200,6 +200,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="cuda")
     p.add_argument("--no-ema", action="store_true",
                    help="use raw weights instead of the EMA copy")
+    p.add_argument("--share-trunk", dest="share_trunk", action="store_true",
+                   help="build ONE encoder trunk feeding both heads instead of "
+                        "two independent ones. OFF by default, and deliberately "
+                        "NOT read from the checkpoint config, so every run "
+                        "reproduces the two-trunk path the existing results were "
+                        "collected on. Opt in for a checkpoint trained with "
+                        "share_encoder=true (batches/pushtWidowXlib2camSharedTrunk.txt) "
+                        "to skip the duplicate conv pass; actions are identical "
+                        "either way, only inference time changes.")
     p.add_argument("--ip", default="localhost")
     p.add_argument("--port", type=int, default=5556)
     p.add_argument("--widowx-envs-path", type=Path, default=None,
@@ -1214,7 +1223,8 @@ def load_run_config(seed_dir: Path) -> dict:
 
 
 def build_models(env: dict, in_channels: int, device, cond_dim: int = 0,
-                 norm_stats: dict | None = None):
+                 norm_stats: dict | None = None,
+                 share_encoder: bool = False):
     """Reconstruct CP generator + Q estimator exactly as the trainer did.
 
     Mirrors combinedv2_cpascounter_training.py's pixel-model branch argument for
@@ -1286,13 +1296,16 @@ def build_models(env: dict, in_channels: int, device, cond_dim: int = 0,
         goal_dim=goal_dim,
     )
 
-    # share_encoder: the checkpoint was trained with ONE trunk feeding both
-    # heads, so it must be rebuilt that way. Otherwise load_state_dict writes
-    # the same weights into two modules and inference pays the encoder twice --
-    # which is the entire cost the sharing exists to remove. The estimator owns
-    # the trunk (it did at train time too), so it is built first.
-    share_encoder = bool(ns.get("share_encoder", m.get("share_encoder", False)))
-
+    # A shared trunk is a BUILD-TIME decision, and it stays OPT-IN (--share-trunk)
+    # rather than being read off the checkpoint config: two trunks is the path
+    # every existing result was collected on, so it has to remain what you get
+    # by default. Rebuilding a shared-trunk checkpoint as two trunks is not
+    # wrong -- load_state_dict writes the same weights into both, and the
+    # actions come out identical -- it just pays the conv encoder twice per
+    # inference, which is the entire cost the sharing exists to remove.
+    #
+    # The estimator owns the trunk (it did at train time too), so it is built
+    # first and the CP generator adopts it.
     q_net = PixelQEstimator(
         action_dim=action_dim,
         value_width=value_width,
@@ -1447,16 +1460,18 @@ def select_action(cp_gen, q_net, obs_u8, cp_selection: str, temperature: float,
     cp_gen._cond = cond
     q_net._cond = cond
     # Both trunks run WITHOUT autograd. Nothing downstream differentiates the
-    # encoders, and langevin only needs grad w.r.t. the ACTIONS, which
-    # sample_langevin re-attaches itself (utils/sampling.py:160
-    # `actions.detach().requires_grad_(True)`) -- so detached features cost it
-    # nothing. Leaving grad on here built a graph through two independent
-    # ResNet-18 trunks (separate weights unless the run set share_encoder) on
-    # every control step and kept it alive for the whole call.
+    # ENCODERS: dfo is derivative-free, argmax/sample only rank, and langevin
+    # takes grads w.r.t. the ACTIONS, which sample_langevin re-attaches itself
+    # (utils/sampling.py:160 `actions.detach().requires_grad_(True)`) -- so
+    # detached features cost it nothing. Leaving grad on here built a graph
+    # through two ResNet-18 trunks on every control step and kept it alive for
+    # the whole call. NOTE the scope ends before the refinement calls:
+    # sample_langevin has no enable_grad() of its own, so running it inside
+    # no_grad would make torch.autograd.grad fail.
     with torch.no_grad():
         features = q_net.encode(obs_u8)               # (1, feat)
-        # A shared trunk means `features` ARE the CP generator's features,
-        # so run its head directly instead of encoding the image again.
+        # A shared trunk means `features` ARE the CP generator's features, so
+        # run its head directly instead of encoding the same image again.
         cps = (cp_gen.head_from_features(features)
                if getattr(cp_gen, "shares_encoder", False)
                else cp_gen(obs_u8))                   # (1, P, action_dim)
@@ -1698,14 +1713,9 @@ def main() -> int:
 
     device = torch.device(args.device if (torch.cuda.is_available() or args.device == "cpu")
                           else "cpu")
-    if device.type == "cuda":
-        # Every control step feeds the encoders the exact same shape, so let
-        # cuDNN autotune its conv algorithms once. The tuning pass lands in the
-        # first inference, which InferenceTimer already reports separately as
-        # ms_first_infer and drops from the distribution.
-        torch.backends.cudnn.benchmark = True
     cp_gen, q_net = build_models(env_cfg, in_channels, device, cond_dim=cond_dim,
-                                 norm_stats=norm_stats)
+                                 norm_stats=norm_stats,
+                                 share_encoder=args.share_trunk)
     suffix = "" if args.no_ema else "_ema"
     load_weights(cp_gen, seed_dir / f"control_point_generator{suffix}.pt", device)
     load_weights(q_net, seed_dir / f"q_estimator{suffix}.pt", device)
