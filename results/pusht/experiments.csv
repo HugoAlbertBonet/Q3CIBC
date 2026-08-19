@@ -629,3 +629,10 @@ ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,1
 ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,4,False,turned_right,3,0.8729,0.9368,14.98
 ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,8,False,turned_right,0,0.2981,0.3245,104.09
 ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,8,False,turned_right,1,0.0765,0.145,188.9
+ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,2,False,turned_left,0,0.3983,0.478,73.65
+ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,2,False,turned_left,1,0.628,0.596,56.99
+ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,4,False,turned_left,0,0.5862,0.1474,102.44
+ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,4,False,turned_left,1,0.5381,0.3971,87.95
+ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,4,False,turned_left,2,0.2551,0.419,85.83
+ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,8,False,turned_left,0,0.4932,0.4113,97.66
+ibc,/home/liralab-widowx/Q3CIBC/checkpoints/2026_07_ibc/Ibc2c16_c256_imnet,dfo,10,8,False,turned_left,1,0.6501,0.3611,60.39
