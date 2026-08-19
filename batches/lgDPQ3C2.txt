@@ -1,0 +1,72 @@
+# libero_goal_pixels — DP+Q3C round 2. THE ROUND-1 RESULTS WERE INVALID.
+#
+# Submit with:  bash submit_experiments.sh batches/lgDPQ3C2.txt
+# Prereq:       uv sync --extra libero   (read-only shared venv; see submit_experiments.sh)
+#
+# ── Why round 1 must be discarded, not interpreted ─────────────────────────
+# Every round-1 cell scored 0.10-0.22 against a q3c baseline of 0.96 (trial 76)
+# on the same env and the same 50-seed protocol. Nothing in that spread was
+# outside noise at n=50, so it carried no information about the algorithm. Two
+# config errors in batches/lgDPQ3C.txt are responsible, both mine:
+#
+#   frame_stack:      round 1 used 2   -> the winning recipe uses 1
+#   image_crop_size:  round 1 used 0   -> the winning recipe uses 116
+#
+# I took both from the pushtWidowXlib2cam.txt header (which describes the PORT
+# to Push-T, where frame_stack 2 carries the motion signal) instead of reading
+# the actual libero trial. The 116 random-crop is standard BC augmentation for
+# this benchmark, and dropping it removes the main regularizer.
+#
+# The corroborating symptom: final_train_accuracy was exactly 1.000 in ALL seven
+# round-1 cells. The critic separated the expert from the candidates perfectly on
+# every batch, which happens when the candidates are nowhere near the expert —
+# i.e. the ACTOR was failing and the critic had nothing to discriminate. Compare
+# pushing_pixels, where the same term sat at 0.29-0.41. Watch this number here:
+# anything above ~0.9 means the actor is broken again and the success rate is
+# not worth reading.
+#
+# ── What else changed ──────────────────────────────────────────────────────
+# prediction_type "v" and a longer actor schedule, both carried over from the
+# pushing_pixels finding that the best DP on that env needs v-prediction and far
+# more steps than round 1 gave it. Steps go 150k -> 200k only: round-1 libero
+# jobs ran 12-28 h for 150k (node-dependent), so 200k is the most that fits the
+# 48 h wall with margin. frame_stack 1 also halves the encoder input, which
+# should claw back time.
+#
+# Everything else is pinned to q3c trial 76/80: resnet18 + GroupNorm + 128
+# keypoints, action_chunk 16, lr 2e-4, batch 128, info_nce 0.5, infonce_clamp 20,
+# 8 Langevin negatives x 100 iters, gradient penalty hinge 1.0/1.0, cosine.
+#
+# ── SWEEP (8 jobs) ─────────────────────────────────────────────────────────
+#   A  pipeline fix only, no optional terms. THE line that matters: if A does
+#      not land far above round 1's 0.10-0.22, the problem was never the
+#      algorithm and the next step is the data pipeline, not more sweeping.
+#   B  margin + progress (the pushing_pixels winner, ported)
+#   C  margin only        | D  progress only     — isolate the two terms
+#   E  B + ImageNet encoder @ encoder_lr_scale 0.1 (q3c trial 80's variant)
+#   F  B second seed — the noise floor; every ordering below |B-F| is not real
+#   G  control (no DP negatives)   | H  B with a 128-candidate cloud
+
+# ── A_fix: pipeline fix only (frame_stack 1 + crop 116), no optional terms
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── B_margin: + DQfD margin hinge and progress anchor (pushing_pixels winner)
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── C_margin_only: margin without the progress anchor
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── D_prog_only: progress anchor without the margin
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── E_imnet: B with the ImageNet trunk at 0.1x LR (q3c trial 80's encoder)
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── F_margin_s1: B with trial_seed 1 — this pair IS the noise floor
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":1,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── G_ctrl: CONTROL — critic never sees a diffusion sample
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":0,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":0,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":32,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── H_n128: B with a 128-candidate cloud, train and eval matched
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"trial_seed":0,"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":2e-4,"estimator_learning_rate":2e-4,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":128,"inference_dp_iters":10,"inference_dp_method":"ddim"}'

@@ -1,0 +1,71 @@
+# pushing_pixels — DP+Q3C round 2. FIX THE ACTOR, then re-test the margin term.
+#
+# Submit with:  bash submit_experiments.sh batches/ppDPQ3C2.txt
+# Prereq:       uv sync --extra pushing   (read-only shared venv; see submit_experiments.sh)
+#
+# ── What round 1 (batches/ppDPQ3C.txt) said ────────────────────────────────
+# Best dpq3c cell 0.83, against q3c 0.99 (trial 95) and plain DP 0.96 (trial 19)
+# on this same env and eval protocol. So dpq3c is currently BELOW both parents.
+# The cause is not the critic — it is that the actor was trained wrong:
+#
+#   best DP recipe (trial 19, sr 0.96): training_steps 750000, prediction_type "v"
+#   round-1 dpq3c actor:                training_steps 100000, prediction_type "epsilon"
+#
+# 7.5x undertrained and on the worse parameterization. Round 2 fixes both as far
+# as the 48 h wall allows (400k steps ~= 30 h at the measured 0.076 h/1k) and
+# switches to v-prediction. Everything else is held at the q3c winner's values
+# (info_nce 0.5, infonce_clamp 10, gradient penalty hinge 1.0/1.0, no uniform or
+# Langevin negatives, batch 128, lr 3e-4).
+#
+# The one effect that WAS real in round 1: the DQfD margin hinge.
+#   margin vs control:            0.83 vs 0.57   z=+4.18  p<0.0001
+#   margin vs its own base cell:  0.83 vs 0.67   z=+2.66  p=0.008
+# and it led on all three secondary metrics simultaneously (avg_reward 29.4 vs
+# 39.2, min_dist 0.024 vs 0.040, episode_length 59 vs 73), so it is not an
+# artifact of one noisy statistic.
+#
+# What was NOT real at n=100: dp_negatives 64-vs-16 (p=0.24-0.31), progress_weight
+# 0.1-vs-0 (p=0.55-0.67), q_actor_weight (p=0.44). Round 2 keeps dp_negatives 64
+# fixed and re-tests progress and margin strength on a properly trained actor,
+# where the differences have room to show.
+#
+# Diagnostic worth watching: final_train_accuracy is ANTI-correlated with success.
+# The control (uniform negatives) hit 0.953 train accuracy and 0.57 success; the
+# DP-negative cells sat at 0.29-0.41 and scored higher. High InfoNCE accuracy
+# means the negatives are too easy for the critic to be learning anything useful.
+# Expect 0.3-0.5 here; a jump back toward 1.0 means the actor collapsed.
+#
+# ── SWEEP (8 jobs) ─────────────────────────────────────────────────────────
+#   A  actor-fix-only baseline (no margin, no progress) — isolates the 400k + v
+#      change from everything else. THE reference for every other line.
+#   B  the round-1 winner, retrained properly       | C  same, second seed
+#   D  margin without progress                      | E/F margin strength + width
+#   G  control (no DP negatives) at 400k            | H  dp_negatives 128
+#
+# C exists because every round-1 cell was a single seed. Before believing any
+# ordering here, check |B - C|: that gap is the seed noise floor, and any
+# difference smaller than it is not a result.
+
+# ── A_base400: actor fix only — 400k steps + v-prediction, no optional terms
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── B_margin: round-1 winner (margin 0.5 @ m 0.1 + progress 0.1), retrained
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── C_margin_s1: B with trial_seed 1 — this pair IS the noise floor
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":1,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── D_margin_noprog: margin alone — isolates progress_weight on a trained actor
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── E_margin1: stronger hinge weight (1.0)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":1.0,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── F_marginM05: wider margin (m 0.5) — how far the expert must beat the cloud
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── G_ctrl400: CONTROL at 400k — critic never sees a diffusion sample
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":0,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":0,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":64,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── H_n128: B with a 128-candidate cloud, train and eval matched
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"trial_seed":0,"training_steps":400000,"cosine_t_max":400000,"scheduler_type":"cosine","batch_size":128,"learning_rate":3e-4,"estimator_learning_rate":3e-4,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":128,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
