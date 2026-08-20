@@ -83,7 +83,15 @@ SERIES_COLORS = {
     ("q3c", "langevin"): "#104281",  # blue 650
     ("ibc", "dfo"): "#1baf7a",  # aqua, mid
     ("ibc", "langevin"): "#00582b",  # aqua, dark
+    ("bc", "deterministic"): "#d4319b",  # magenta
 }
+
+# BC's magenta was picked by sweeping OKLCH hue x lightness x chroma and keeping
+# only steps that clear the all-pairs gates against the whole plotted set. It is
+# never the limiting pair: worst all-pairs stays aqua<->orange at CVD dE 9.2 and
+# blue650<->blue450 at normal-vision dE 19.5, both pre-existing. Violet was the
+# first pick but read as another cool step beside the three Q3C blues; the
+# documented palette's yellow, magenta and red steps all fail beside orange.
 
 # argmax and its DFO-fallback variant share a step and separate by texture. A
 # fourth blue step is not available: the ramp's usable range cannot hold four
@@ -114,6 +122,7 @@ SERIES_ORDER = [
     ("q3c", "langevin"),
     ("ibc", "dfo"),
     ("ibc", "langevin"),
+    ("bc", "deterministic"),
 ]
 
 # Series dropped from the figures (still present in experiments.csv).
@@ -138,6 +147,23 @@ def checkpoint_kept(r: dict) -> bool:
 
 def checkpoint_of(r: dict) -> str:
     return r["seed_dir"].rsplit("/", 1)[-1]
+
+
+def config_of(r: dict) -> tuple[str, str, int, int]:
+    return (r["algorithm"], r["inference"], int(r["refine_iters"]), r["horizon"])
+
+
+def eligible_configs(rows) -> set[tuple[str, str, int, int]]:
+    """Configs rolled out on enough start positions to be picked as a `best`.
+
+    Without this the argmax reaches into partially-collected sweeps: the DP
+    h01 checkpoint currently has cells of 2 rollouts at a single position, one
+    of which reads cam1 0.97 and would outrank every fully-swept config.
+    """
+    seen: dict[tuple[str, str, int, int], set[str]] = {}
+    for r in rows:
+        seen.setdefault(config_of(r), set()).add(r["start_position"])
+    return {c for c, pos in seen.items() if len(pos) >= MIN_POSITIONS}
 
 POSITION_ORDER = [
     "top",
@@ -235,6 +261,10 @@ def grouped_plot(
 
             if best_iters:
                 pick = max if higher_is_better else min
+                # Every config competes here: a bar is one start position, so a
+                # config that only ran on a few positions is still a valid
+                # measurement at the positions it did run. The position-coverage
+                # guard belongs to the figures that pool positions.
                 best_cfg = pick(per_cfg, key=lambda c: float(np.mean(per_cfg[c])))
                 groups = {best_cfg: per_cfg[best_cfg]}
                 chosen[(i, j)] = best_cfg
@@ -359,28 +389,65 @@ def grouped_plot(
     write_table(OUT_DIR / f"{stem}.csv", table)
 
 
-def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> None:
+def best_iters_plot(
+    rows,
+    stem: str,
+    metric: str,
+    title: str,
+    ylabel: str,
+    eligible: set | None = None,
+    exclude_positions: set[str] | None = None,
+    position_balanced: bool = False,
+) -> None:
     """Bars: x = algorithm x inference, best (refine_iters, exec_horizon) setting.
 
-    Trials and start positions are pooled, so the std mixes trial noise with
-    per-position difficulty (the position sets are not matched across series).
+    With position_balanced=False trials and start positions are pooled, so the
+    std mixes trial noise with per-position difficulty. With it True each
+    position is averaged first and the bar is the mean of those per-position
+    means, so a cell with extra rollouts on an easy position cannot outweigh the
+    rest; the std is then taken across positions.
     """
+    drop = exclude_positions or set()
+    if drop:
+        # Dropping a position changes which settings count as fully swept, so
+        # eligibility is recomputed against what is left.
+        rows = [r for r in rows if r["start_position"] not in drop]
+        eligible = eligible_configs(rows)
     series = [s for s in SERIES_ORDER if any((r["algorithm"], r["inference"]) == s for r in rows)]
 
     labels, means, stds, best_cfgs, ns = [], [], [], [], []
+    kept: list[tuple[str, str]] = []  # series that actually get a bar
     table: list[dict] = []
 
     for alg, inf in series:
         sub = [r for r in rows if r["algorithm"] == alg and r["inference"] == inf]
-        per_cfg = {}
+        per_cfg: dict[tuple[int, int], dict[str, list[float]]] = {}
         ckpts = {}
         for r in sub:
             cfg = (int(r["refine_iters"]), r["horizon"])
-            per_cfg.setdefault(cfg, []).append(r[metric])
+            per_cfg.setdefault(cfg, {}).setdefault(r["start_position"], []).append(r[metric])
             ckpts.setdefault(cfg, set()).add(checkpoint_of(r))
-        best_cfg = max(per_cfg, key=lambda c: float(np.mean(per_cfg[c])))
+
+        def score(by_pos):
+            if position_balanced:
+                return float(np.mean([np.mean(v) for v in by_pos.values()]))
+            return float(np.mean([x for v in by_pos.values() for x in v]))
+
+        def spread(by_pos):
+            sample = (
+                [float(np.mean(v)) for v in by_pos.values()]
+                if position_balanced
+                else [x for v in by_pos.values() for x in v]
+            )
+            return float(np.std(sample, ddof=1)) if len(sample) > 1 else 0.0
+
+        pool = [c for c in per_cfg if eligible is None or (alg, inf) + c in eligible]
+        if not pool:
+            continue
+        best_cfg = max(pool, key=lambda c: score(per_cfg[c]))
         # Full sweep goes to the table; the plot shows the argmax setting.
-        for cfg, vals in sorted(per_cfg.items()):
+        for cfg, by_pos in sorted(per_cfg.items()):
+            sd = spread(by_pos)
             table.append(
                 {
                     "algorithm": alg,
@@ -389,25 +456,31 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
                     "exec_horizon": cfg[1],
                     "checkpoint": "|".join(sorted(ckpts[cfg])),
                     "metric": metric,
-                    "mean": round(float(np.mean(vals)), 4),
-                    "std": round(float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0, 4),
-                    "n_runs": len(vals),
+                    "mean": round(score(by_pos), 4),
+                    "std": round(sd, 4),
+                    "sem": round(sd / np.sqrt(len(by_pos)), 4) if position_balanced else "",
+                    "n_positions": len(by_pos),
+                    "n_runs": sum(len(v) for v in by_pos.values()),
+                    "eligible": ""
+                    if eligible is not None and (alg, inf) + cfg not in eligible
+                    else "yes",
                     "is_best": "yes" if cfg == best_cfg else "",
                 }
             )
-        vals = per_cfg[best_cfg]
+        by_pos = per_cfg[best_cfg]
+        kept.append((alg, inf))
         labels.append(series_label(alg, inf))
-        means.append(float(np.mean(vals)))
-        stds.append(float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0)
+        means.append(score(by_pos))
+        stds.append(spread(by_pos))
         best_cfgs.append(best_cfg)
-        ns.append(len(vals))
+        ns.append(sum(len(v) for v in by_pos.values()))
 
     fig, ax = plt.subplots(figsize=(10, 5.2), facecolor=SURFACE)
     style_axes(ax)
     x = np.arange(len(labels))
 
-    bars = ax.bar(x, means, width=0.56, color=[series_color(s) for s in series], zorder=2)
-    for bar, s in zip(bars, series):
+    bars = ax.bar(x, means, width=0.56, color=[series_color(s) for s in kept], zorder=2)
+    for bar, s in zip(bars, kept):
         if s in SERIES_HATCH:
             bar.set_hatch(SERIES_HATCH[s])
             bar.set_edgecolor(HATCH_EDGE)
@@ -419,7 +492,7 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
         ax.text(
             xi,
             min(m + s, 1.0) + 0.03,
-            f"{m:.2f}\nit {cfg[0]} · h {cfg[1]} (n={n})",
+            f"{m:.2f}\nit {cfg[0]} · h {cfg[1]}",
             ha="center",
             va="bottom",
             fontsize=8,
@@ -435,14 +508,19 @@ def best_iters_plot(rows, stem: str, metric: str, title: str, ylabel: str) -> No
         color=TEXT_PRIMARY,
         fontsize=13,
         loc="left",
-        pad=18,
+        pad=30,
         weight="bold",
     )
     ax.text(
         0,
         1.02,
-        f"argmax over the refine_iters x exec_horizon sweep of mean {ylabel}; "
-        "error bars 1 std over trials and positions",
+        f"argmax over the refine_iters x exec_horizon sweep of {ylabel}\n"
+        + (
+            "bar = mean of the per-position means; error bars 1 std across positions"
+            if position_balanced
+            else "error bars 1 std over trials and positions"
+        )
+        + (f"\nexcluded: {', '.join(sorted(drop)).replace('_', ' ')}" if drop else ""),
         transform=ax.transAxes,
         color=TEXT_SECONDARY,
         fontsize=9,
@@ -533,7 +611,7 @@ def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "ca
     ax.set_xlim(lo * 0.88, hi * 1.15)
 
     # Alternate the iteration labels above/below so the cluster stays legible.
-    label_offsets = [(0, 12), (0, -17), (-14, -4), (15, 3), (0, -17), (0, 12), (0, 12)]
+    label_offsets = [(0, 12), (0, -17), (-14, -4), (15, 3), (0, -17), (0, 12), (0, 12), (-14, -4)]
 
     for series in SERIES_ORDER:
         if series not in points:
@@ -829,6 +907,314 @@ def horizon_tradeoff_plot(
     write_table(OUT_DIR / f"{stem}.csv", table)
 
 
+def baseline_delta_plot(
+    rows,
+    stem: str,
+    metric: str = "cam1",
+    xlabel: str = "Δ cam1 coverage vs BC baseline",
+    baseline_alg: str = "bc",
+) -> None:
+    """Forest plot of per-position paired differences against a BC baseline.
+
+    Start position explains more of the spread than the algorithm does, so the
+    absolute bars carry error bars too wide to separate anything. This blocks on
+    position: every config is compared to the baseline *within* each position,
+    and the 9 differences are then averaged.
+
+    The interval is 1 SEM over positions, which answers "is this config better
+    than the baseline". The per-position differences are drawn as dots behind
+    it, because the spread across positions is real signal (methods fail on
+    different positions), not just noise to be averaged away.
+
+    Two limits worth remembering when reading it. Differencing cancels the
+    position effect but adds the trial noise of both arms - with a median of 2
+    trials per cell the SE of one per-position mean is ~0.12, so the difference
+    carries a noise floor of ~0.17 no matter how well the blocking works. And it
+    only helps where the two position-profiles correlate: that runs from r=0.94
+    (DP) down to r=0.24 (IBC), and below about r=0.5 the pairing adds variance
+    rather than removing it. The CSV carries r per config so this is checkable.
+    """
+    per_pos: dict[tuple, dict[str, list[float]]] = {}
+    for r in rows:
+        cfg = config_of(r)
+        per_pos.setdefault(cfg, {}).setdefault(r["start_position"], []).append(r[metric])
+
+    means = {
+        cfg: {p: float(np.mean(v)) for p, v in d.items()}
+        for cfg, d in per_pos.items()
+        if len(d) >= MIN_POSITIONS
+    }
+    if not means:
+        return
+
+    # Baseline = the baseline algorithm's best fully-swept combination.
+    cands = {c: d for c, d in means.items() if c[0] == baseline_alg}
+    if not cands:
+        return
+    base = max(cands, key=lambda c: float(np.mean(list(cands[c].values()))))
+    positions = sorted(means[base])
+
+    table, points = [], []
+    for cfg, d in means.items():
+        shared = [p for p in positions if p in d]
+        if len(shared) < MIN_POSITIONS or cfg == base:
+            continue
+        a = np.array([d[p] for p in shared])
+        b = np.array([means[base][p] for p in shared])
+        diff = a - b
+        sem = float(np.std(diff, ddof=1) / np.sqrt(len(diff)))
+        corr = float(np.corrcoef(a, b)[0, 1])
+        points.append((cfg, float(diff.mean()), sem, list(zip(shared, diff))))
+        row = {
+            "algorithm": cfg[0],
+            "inference": cfg[1],
+            "refine_iters": cfg[2],
+            "exec_horizon": cfg[3],
+            "metric": metric,
+            "abs_mean": round(float(a.mean()), 4),
+            "delta_mean": round(float(diff.mean()), 4),
+            "delta_std": round(float(np.std(diff, ddof=1)), 4),
+            "delta_sem": round(sem, 4),
+            "corr_with_baseline": round(corr, 3),
+            "n_positions": len(shared),
+            "n_rollouts": sum(len(v) for v in per_pos[cfg].values()),
+        }
+        row.update({f"delta_{p}": round(float(x), 4) for p, x in zip(shared, diff)})
+        table.append(row)
+
+    points.sort(key=lambda t: t[1])
+    fig, ax = plt.subplots(figsize=(11, 0.52 * len(points) + 2.6), facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+    ax.grid(axis="x", color=GRID, linewidth=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(GRID)
+    ax.tick_params(colors=TEXT_SECONDARY, length=0)
+    ax.axvline(0, color=TEXT_SECONDARY, linewidth=1.4, zorder=1)
+
+    labels = []
+    for i, (cfg, mean, sem, pos_diffs) in enumerate(points):
+        alg, inf, iters, horizon = cfg
+        color = series_color((alg, inf))
+        marker = "D" if (alg, inf) in SERIES_HATCH else "o"
+        # Per-position differences: the spread the mean is hiding.
+        ax.plot(
+            [x for _, x in pos_diffs],
+            [i] * len(pos_diffs),
+            "o",
+            color=color,
+            markersize=5,
+            alpha=0.35,
+            markeredgecolor="none",
+            zorder=2,
+        )
+        ax.errorbar(
+            [mean], [i], xerr=[sem], fmt="none", ecolor=color, elinewidth=2.2, capsize=4, zorder=3
+        )
+        ax.plot(
+            [mean],
+            [i],
+            marker,
+            color=color,
+            markersize=10,
+            markeredgecolor=SURFACE,
+            markeredgewidth=1.6,
+            zorder=4,
+        )
+        it = f"{iters} it · " if iters else ""
+        labels.append(f"{series_label(alg, inf)} · {it}h{horizon}")
+
+    ax.set_yticks(range(len(points)))
+    ax.set_yticklabels(labels, color=TEXT_SECONDARY, fontsize=9)
+    ax.set_ylim(-0.8, len(points) - 0.2)
+    ax.set_xlabel(xlabel, color=TEXT_SECONDARY)
+    bl = f"{series_label(base[0], base[1])} · h{base[3]}"
+    ax.set_title(
+        "Paired difference from the BC baseline",
+        color=TEXT_PRIMARY,
+        fontsize=13,
+        loc="left",
+        pad=62,
+        weight="bold",
+    )
+    ax.text(
+        0,
+        1.008,
+        f"each config minus {bl} within every start position, then averaged\n"
+        "solid mark = mean over 9 positions, bar = 1 SEM; faint dots = the 9 per-position differences\n"
+        "configs not run on all 9 positions are excluded",
+        transform=ax.transAxes,
+        color=TEXT_SECONDARY,
+        fontsize=9,
+        va="bottom",
+    )
+
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / f"{stem}.png", dpi=200, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    write_table(OUT_DIR / f"{stem}.csv", table)
+
+
+def baseline_delta_bars(
+    rows,
+    stem: str,
+    metric: str = "cam1",
+    ylabel: str = "Δ cam1 coverage vs BC baseline",
+    baseline_alg: str = "bc",
+    exclude_positions: set[str] | None = None,
+) -> None:
+    """Bars: one per algorithm x inference, at its best (iters, horizon) setting.
+
+    Same paired statistic as `baseline_delta_plot` - each config differenced
+    against the baseline within every start position - collapsed to one bar per
+    method so it reads like the best-setting bar charts. Only settings rolled
+    out on all positions can be picked, and the error bar is 1 SEM over
+    positions rather than 1 std over trials, which is what makes these bars
+    narrow enough to rank.
+
+    The baseline series itself is not drawn: its best setting *is* the baseline,
+    so its bar would be zero by construction. The zero line is that baseline.
+    """
+    drop = exclude_positions or set()
+    rows = [r for r in rows if r["start_position"] not in drop]
+    per_pos: dict[tuple, dict[str, list[float]]] = {}
+    for r in rows:
+        per_pos.setdefault(config_of(r), {}).setdefault(r["start_position"], []).append(r[metric])
+    # With a position removed the coverage bar moves with it: a setting still has
+    # to have been run on every remaining position to qualify.
+    n_needed = min(MIN_POSITIONS, len({r["start_position"] for r in rows}))
+    means = {
+        cfg: {p: float(np.mean(v)) for p, v in d.items()}
+        for cfg, d in per_pos.items()
+        if len(d) >= n_needed
+    }
+    cands = {c: d for c, d in means.items() if c[0] == baseline_alg}
+    if not cands:
+        return
+    base = max(cands, key=lambda c: float(np.mean(list(cands[c].values()))))
+    positions = sorted(means[base])
+
+    best: dict[tuple[str, str], tuple] = {}
+    table = []
+    for cfg, d in means.items():
+        shared = [p for p in positions if p in d]
+        if len(shared) < n_needed:
+            continue
+        diff = np.array([d[p] for p in shared]) - np.array([means[base][p] for p in shared])
+        sem = float(np.std(diff, ddof=1) / np.sqrt(len(diff)))
+        n_roll = sum(len(v) for v in per_pos[cfg].values())
+        entry = (float(diff.mean()), sem, cfg[2], cfg[3], n_roll)
+        table.append(
+            {
+                "algorithm": cfg[0],
+                "inference": cfg[1],
+                "refine_iters": cfg[2],
+                "exec_horizon": cfg[3],
+                "metric": metric,
+                "delta_mean": round(entry[0], 4),
+                "delta_sem": round(sem, 4),
+                "delta_std": round(float(np.std(diff, ddof=1)), 4),
+                "n_positions": len(shared),
+                "n_rollouts": n_roll,
+                "is_best": "",
+            }
+        )
+        key = (cfg[0], cfg[1])
+        if key not in best or entry[0] > best[key][0]:
+            best[key] = entry
+    for row in table:
+        key = (row["algorithm"], row["inference"])
+        if key in best and (row["refine_iters"], row["exec_horizon"]) == best[key][2:4]:
+            row["is_best"] = "yes"
+
+    series = [s for s in SERIES_ORDER if s in best and s[0] != baseline_alg]
+    if not series:
+        return
+    vals = [best[s] for s in series]
+
+    fig, ax = plt.subplots(figsize=(1.6 * len(series) + 3.5, 5.6), facecolor=SURFACE)
+    ax.set_facecolor(SURFACE)
+    ax.grid(axis="y", color=GRID, linewidth=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+    ax.tick_params(colors=TEXT_SECONDARY, length=0)
+    ax.axhline(0, color=TEXT_SECONDARY, linewidth=1.4, zorder=3)
+
+    x = np.arange(len(series))
+    bars = ax.bar(
+        x, [v[0] for v in vals], width=0.56, color=[series_color(s) for s in series], zorder=2
+    )
+    for bar, s in zip(bars, series):
+        if s in SERIES_HATCH:
+            bar.set_hatch(SERIES_HATCH[s])
+            bar.set_edgecolor(HATCH_EDGE)
+            bar.set_linewidth(0)
+    ax.errorbar(
+        x,
+        [v[0] for v in vals],
+        yerr=[v[1] for v in vals],
+        fmt="none",
+        ecolor=TEXT_SECONDARY,
+        elinewidth=1.4,
+        capsize=4,
+        zorder=4,
+    )
+
+    lo = min(v[0] - v[1] for v in vals)
+    hi = max(v[0] + v[1] for v in vals)
+    lo, hi = min(lo, 0.0), max(hi, 0.0)
+    span = hi - lo
+    for xi, (m, sem, iters, horizon, n) in zip(x, vals):
+        up = m >= 0
+        it = f"{iters} it · " if iters else ""
+        ax.text(
+            xi,
+            m + (sem + 0.035 * span) * (1 if up else -1),
+            f"{m:+.3f}\n{it}h{horizon}",
+            ha="center",
+            va="bottom" if up else "top",
+            fontsize=8,
+            color=TEXT_SECONDARY,
+            zorder=5,
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [series_label(*s).replace(" · ", "\n") for s in series], color=TEXT_SECONDARY
+    )
+    ax.set_ylim(lo - 0.3 * span, hi + 0.28 * span)
+    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+    bl = f"{series_label(base[0], base[1])} · h{base[3]}"
+    ax.set_title(
+        "Best setting per method, relative to the BC baseline",
+        color=TEXT_PRIMARY,
+        fontsize=13,
+        loc="left",
+        pad=48,
+        weight="bold",
+    )
+    ax.text(
+        0,
+        1.008,
+        f"paired against {bl} within every start position; bar = mean over {len(positions)} "
+        f"positions, error bar = 1 SEM\nbest (refine_iters, exec_horizon) per method among "
+        f"settings run on all {len(positions)} positions"
+        + (f"\nexcluded: {', '.join(sorted(drop)).replace('_', ' ')}" if drop else ""),
+        transform=ax.transAxes,
+        color=TEXT_SECONDARY,
+        fontsize=9,
+        va="bottom",
+    )
+
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / f"{stem}.png", dpi=200, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    write_table(OUT_DIR / f"{stem}.csv", table)
+
+
 def write_table(path: Path, table: list[dict]) -> None:
     if not table:
         return
@@ -845,6 +1231,7 @@ def main() -> None:
         for r in load_rows()
         if r["inference"] not in EXCLUDED_INFERENCE and checkpoint_kept(r)
     ]
+    eligible = eligible_configs(rows)
 
     pooled = "mean over trials and refinement iterations; error bars 1 std over that pool"
     grouped_plot(
@@ -896,6 +1283,7 @@ def main() -> None:
         metric="avg_cov",
         title="Best refinement setting per method",
         ylabel="mean(cam0, cam1) coverage",
+        eligible=eligible,
     )
     best_iters_plot(
         rows,
@@ -903,6 +1291,7 @@ def main() -> None:
         metric="cam1",
         title="Best refinement setting per method, cam1",
         ylabel="cam1 coverage",
+        eligible=eligible,
     )
 
     speed_tradeoff_plot(rows, "cam1_vs_inference_time")
@@ -919,7 +1308,50 @@ def main() -> None:
         title="Cost vs performance — execution-horizon sweep, both cameras",
     )
 
-    print(f"wrote 10 figures + tables to {OUT_DIR}")
+    best_iters_plot(
+        rows,
+        "coverage_avg_best_iters_no_upside_down",
+        metric="avg_cov",
+        title="Best refinement setting per method",
+        ylabel="mean(cam0, cam1) coverage",
+        exclude_positions={"upside_down"},
+    )
+
+    best_iters_plot(
+        rows,
+        "coverage_avg_best_iters_position_balanced",
+        metric="avg_cov",
+        title="Best refinement setting per method, position-balanced",
+        ylabel="mean(cam0, cam1) coverage",
+        eligible=eligible,
+        position_balanced=True,
+    )
+
+    baseline_delta_plot(rows, "cam1_delta_vs_bc")
+    baseline_delta_plot(
+        rows,
+        "coverage_avg_delta_vs_bc",
+        metric="avg_cov",
+        xlabel="Δ mean(cam0, cam1) coverage vs BC baseline",
+    )
+
+    baseline_delta_bars(rows, "cam1_delta_vs_bc_best")
+    baseline_delta_bars(
+        rows,
+        "coverage_avg_delta_vs_bc_best",
+        metric="avg_cov",
+        ylabel="Δ mean(cam0, cam1) coverage vs BC baseline",
+    )
+
+    baseline_delta_bars(
+        rows,
+        "coverage_avg_delta_vs_bc_best_no_upside_down",
+        metric="avg_cov",
+        ylabel="Δ mean(cam0, cam1) coverage vs BC baseline",
+        exclude_positions={"upside_down"},
+    )
+
+    print(f"wrote 17 figures + tables to {OUT_DIR}")
 
 
 if __name__ == "__main__":
