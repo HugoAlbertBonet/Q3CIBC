@@ -62,6 +62,11 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
         # conv encoder preprocesses). Drop it so it can't be misapplied.
         self.obs_normalizer = None
         self.cond_dim = int(norm_stats["cond_dim"])
+        # Cloud-selection rule (previously a hard argmax here, see
+        # simulations/cp_selection.py for why that is the fragile choice).
+        self.cp_selection = str(norm_stats.get("cp_selection", "argmax"))
+        self.cp_selection_temperature = float(norm_stats.get("cp_selection_temperature", 1.0) or 1.0)
+        self.cp_score_norm = str(norm_stats.get("cp_score_norm", "none"))
         self.proprio_keys = list(norm_stats["libero_obs_keys"])
         # Train-time random-crop aug ⇒ eval-time CENTER crop to the same size,
         # so the encoder sees the same input scale/coverage it trained on.
@@ -140,8 +145,10 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
             cps = self.control_point_generator(img_t)            # (1, N, A)
             feats = self.q_estimator.encode(img_t)               # (1, F)
             q = self.q_estimator.score(feats, cps).squeeze(-1)   # (1, N)
-            best = q.argmax(dim=1)
-            action_norm = cps[0, best[0], :].cpu().numpy()
+            from simulations.cp_selection import select_from_cloud
+            idx = select_from_cloud(q, cps, self.cp_selection,
+                                    self.cp_selection_temperature, self.cp_score_norm)
+            action_norm = cps[0, idx, :].cpu().numpy()
         return self._denormalize_action(action_norm)
 
     # Task-major episode loop (group by task → 1 env build per task).

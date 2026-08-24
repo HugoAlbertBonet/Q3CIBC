@@ -1,0 +1,75 @@
+# pushing_pixels — DP+Q3C round 4. NEW axes, not a re-run of round 3's grid.
+#
+# Submit with:  bash submit_experiments.sh batches/ppDPQ3C4.txt
+# Prereq:       uv sync --extra pushing
+# Companion:    batches/ppREEVAL.txt — the eval-side half of this, which costs
+#               minutes per job instead of ~29 h and should be run FIRST.
+#
+# ── Why these axes and not more of the last ones ───────────────────────────
+# Round 2 closed out most of the training-side grid:
+#   actor length 100k -> 400k        +0.25   z=+4.30  p<0.0001   the one big lever
+#   margin, at a good actor          +0.01..+0.07      noise/marginal
+#   progress_weight                  neutral in THREE separate measurements
+#   dp_negatives 128 vs 64           +0.02   p=0.62
+#   dp_negatives 64 vs 0 (alone)     +0.04   p=0.41
+#   seed floor on this env           0.03
+# Re-running those with new values would mostly re-measure noise. What has never
+# been varied at all is the ACTOR's own capacity and diffusion process, and how
+# its training negatives are drawn. Six of the eight lines below are axes with
+# zero prior measurements.
+#
+#   CAP_w2048 / CAP_d2   The denoiser head has been 1024x1 in every run, copied
+#                        from the plain-DP recipe. But in dpq3c the actor also
+#                        has to supply the critic's negatives, so it is doing
+#                        strictly more work than a standalone DP for the same
+#                        capacity. Untested.
+#   T50 / T200           num_train_timesteps has been 100 throughout. The chain
+#                        length trades sample fidelity against how far each
+#                        denoising step has to move, and it interacts with the
+#                        eval step count that ppREEVAL sweeps.
+#   NEG_DDPM             Training negatives have always been drawn with the
+#                        deterministic DDIM chain. Ancestral DDPM gives a more
+#                        diverse cloud at the same count — plausibly harder and
+#                        better-spread negatives, which is the whole point of
+#                        drawing them from the actor.
+#   QACTOR_retest       q_actor_weight was noise at 100k (p=0.44), but so was
+#                        the margin, and the margin's story changed completely
+#                        once the actor worked. Pulling the denoiser's predicted
+#                        clean sample toward high Q deserves one look on an actor
+#                        that can actually denoise.
+#
+# The two 550k arms are kept because actor length is the only demonstrated large
+# effect and 550k has never been run. They are a PAIR on purpose: one with the
+# critic terms on and one off, so a gain can be attributed to the extra steps
+# rather than to the terms. ~40 h each at the measured 0.073 h/1k, inside the
+# 48 h wall with ~7 h of margin. Do NOT raise this to 750k in one job — that is
+# ~55 h and would be killed at the wall with nothing recorded. If 550k still
+# improves, the right move is checkpoint-resume support in dpq3c_training.py so
+# a full 750k run splits across two jobs.
+#
+# Everything not named above is pinned to the round-2 best cell (trial 21, 0.95):
+# 400k steps, v-prediction, dp_negatives 64, margin 0.5 at m 0.5, progress 0.1.
+
+# ── LONG550_best    : 550k actor steps, terms ON  — is actor length still paying?
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":550000,"cosine_t_max":550000}'
+
+# ── LONG550_noterms : 550k actor steps, terms OFF — isolates actor length
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.0,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":550000,"cosine_t_max":550000}'
+
+# ── CAP_w2048       : NEW — double the denoiser head width
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":2048,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":400000,"cosine_t_max":400000}'
+
+# ── CAP_d2          : NEW — two residual blocks instead of one
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":400000,"cosine_t_max":400000}'
+
+# ── T50             : NEW — shorter diffusion chain (T=50)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":400000,"cosine_t_max":400000}'
+
+# ── T200            : NEW — longer diffusion chain (T=200)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":200,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":400000,"cosine_t_max":400000}'
+
+# ── NEG_DDPM        : NEW — draw the training negatives with ancestral DDPM
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddpm","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":400000,"cosine_t_max":400000}'
+
+# ── QACTOR_retest   : NEW at a good actor — Q-guided denoising (was noise at 100k)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.05,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0,"training_steps":400000,"cosine_t_max":400000}'

@@ -1,0 +1,78 @@
+# pushing_pixels — dpq3c INFERENCE-KNOB sweep. Eval only, no retraining.
+#
+# Submit with:  bash submit_experiments.sh batches/ppREEVAL.txt
+# Prereq:       uv sync --extra pushing
+#
+# Every line runs at the env's STANDARD evaluation protocol — pushing_pixels
+# num_eval_seeds = 100, inherited from the per-run config, never overridden. That
+# is the count q3c (126 trials), plain DP (20 trials) and dpq3c (8 trials) were
+# all scored with, so every number produced here drops straight into the same
+# comparison without a footnote.
+#
+# ── What this sweeps, and why it could not be swept before ─────────────────
+# A finished dpq3c run freezes two things: the denoiser weights and the Q
+# weights. It does NOT fix how they are used. Four decisions are made after
+# training and cost only a re-score to change:
+#
+#     how many denoising steps draw the candidate cloud   (inference_dp_iters)
+#     deterministic DDIM vs ancestral DDPM cloud          (inference_dp_method)
+#     argmax vs sampling from softmax(Q/temperature)       (cp_selection,
+#     and how scores are rescaled within the cloud          cp_score_norm)
+#
+# Every dpq3c number so far used the same setting for all four: 10 DDIM steps
+# and a HARD ARGMAX. The argmax was not a choice — it was the only thing the
+# pixel simulations could do. Only pen_human_v2_simulation honoured
+# cp_selection; pushing_pixels and libero_goal_pixels had q.argmax() hardcoded.
+# That is now fixed (simulations/cp_selection.py), so this dimension is
+# measurable for the first time.
+#
+# It is worth measuring because argmax is the most fragile rule available: it
+# seeks the candidate where Q is highest, which is disproportionately the
+# candidate where Q is WRONG. Sampling from softmax(Q/temperature) trades a
+# little greediness for robustness to a miscalibrated critic — and the round-2
+# critics are visibly imperfect (final_train_accuracy 0.52-0.69, i.e. they rank
+# the expert first only about 60% of the time).
+#
+# Temperature alone does nothing, which is why it is never swept alone here. Raw
+# Q magnitude drifts with the state, so on a synthetic cloud softmax at
+# temperature 1.0 over RAW scores returned the argmax 6 times out of 6, while
+# the same temperature over z-scored values explored, and over ranks explored
+# broadly. Sampling is only meaningful together with a score normalization.
+#
+# ── Why this is the cheap half of the work ─────────────────────────────────
+# A training job on this env is ~29 h. These re-score a saved checkpoint, so
+# they cost evaluation only. Three checkpoints are re-scored per line:
+#     19 = no-terms baseline (0.88)   22 = margin m 0.1 (0.90)   21 = best (0.95)
+# Sweeping all three rather than just the winner shows whether a knob helps
+# everywhere or only rescues the weaker critics — which is the more useful
+# answer, since it says whether the effect is about the critic's quality.
+#
+# ── And it directly sets the Push-T deploy flags ───────────────────────────
+# These are exactly the knobs scripts/deploy_pusht_real_dpq3c.py exposes:
+# --dp-iters, --dp-method, --cp-selection, --cp-temperature, --cp-score-norm.
+# They were built and have never had a single data point behind them. On the
+# real arm each data point is a physical rollout; here it is a re-score.
+#
+# NOTE the parity question (dpq3c 0.95 vs q3c 0.99, p=0.095) is NOT resolvable
+# by this batch and is not meant to be — at the standard n=100 the per-trial SE
+# is 0.022, so a 0.04 gap stays inside the noise. Closing it needs more training
+# seeds, which is what batches/ppDPQ3C4.txt spends its budget on.
+
+# ── softmax selection over a z-scored cloud, three temperatures
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"cp_selection":"sample","cp_selection_temperature":0.5,"cp_score_norm":"zscore"}'
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"cp_selection":"sample","cp_selection_temperature":1.0,"cp_score_norm":"zscore"}'
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"cp_selection":"sample","cp_selection_temperature":2.0,"cp_score_norm":"zscore"}'
+
+# ── rank normalization: scale-free, immune to one wildly overestimated candidate
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"cp_selection":"sample","cp_selection_temperature":1.0,"cp_score_norm":"rank"}'
+
+# ── denoising steps for the cloud: fewer / more than the 10 used everywhere so far
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"inference_dp_iters":5}'
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"inference_dp_iters":25}'
+
+# ── ancestral DDPM cloud instead of the deterministic DDIM chain: more diverse
+#    candidates for the critic to choose between, at the same candidate count
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"inference_dp_method":"ddpm"}'
+
+# ── both at once: more denoising steps AND softened selection
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 19 22 21 --param-overrides '{"inference_dp_iters":25,"cp_selection":"sample","cp_selection_temperature":1.0,"cp_score_norm":"zscore"}'

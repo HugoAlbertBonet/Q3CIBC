@@ -558,6 +558,14 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # Rescale Q within the cloud before the softmax. Raw Q magnitude drifts with
+    # the state, so one temperature is near-greedy on some frames and
+    # near-uniform on others; monotone, so it cannot change an argmax.
+    "cp_score_norm": {
+        "values": ["none", "zscore", "rank"],
+        "type": "str",
+        "location": "env_training",
+    },
     # Deterministic seed — searchable so we can run reps with seed=0,1,2,...
     "trial_seed": {
         "values": [0, 1, 2, 3, 4],
@@ -673,6 +681,15 @@ SEARCH_SPACE: dict[str, dict] = {
         "values": [0.0, 0.5, 1.0],
         "type": "float",
         "location": "env_training",
+    },
+    # Evaluation episodes per trial. A top-level env key (evaluate_q3c reads
+    # env_config["num_eval_seeds"]). Searchable so a batch can buy tighter
+    # error bars when the effect being measured is smaller than the noise at
+    # the env's default count.
+    "num_eval_seeds": {
+        "values": [50, 100, 200, 500],
+        "type": "int",
+        "location": "env",
     },
 }
 
@@ -838,6 +855,15 @@ INFERENCE_ONLY_PARAMS: set[str] = {
     "inference_dfo_iteration_std",
     "inference_dfo_iteration_std_decay",
     "inference_dfo_num_uniform",
+    # Evaluation-only for BOTH algorithms: these change how a saved checkpoint
+    # is queried, never what was trained, so reeval_trials.py may override them.
+    "cp_selection",
+    "cp_selection_temperature",
+    "cp_score_norm",
+    # dpq3c only (q3c ignores them): the sampler that draws the candidate cloud.
+    "inference_dp_iters",
+    "inference_dp_method",
+    "inference_dp_eta",
 }
 
 

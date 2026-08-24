@@ -1,0 +1,100 @@
+# libero_goal_pixels — DP+Q3C round 3. STOP SWEEPING, START REPLICATING.
+#
+# Submit with:  bash submit_experiments.sh batches/lgDPQ3C3.txt
+# Prereq:       uv sync --extra libero
+#
+# ── What round 2 established, and what it did not ──────────────────────────
+# The pipeline fix (frame_stack 1 + image_crop_size 116 + v-prediction) was the
+# entire story: 0.22 -> 0.76-0.88 across EVERY cell, control included.
+#     round-2 control 0.76  vs  round-1 best 0.22    z=+6.42  p<1e-6
+# and the best cell now sits within noise of the q3c baseline:
+#     round-2 best 0.88     vs  q3c trial 76 0.96    z=-1.49  p=0.14
+#
+# But the seed replicate killed every algorithmic conclusion. Same config, two
+# training seeds:
+#     B seed0 = 0.88     F seed1 = 0.60     delta = 0.28   z=+3.37  p=0.0008
+# That gap exceeds what eval sampling alone can produce at n=50 (SE_diff 0.083),
+# so it is genuine RUN-TO-RUN TRAINING variance. And it is larger than every
+# other difference in the round-2 table:
+#     margin+prog vs no-terms  +0.10  | margin only  +0.08  | progress only  0.00
+#     control vs DP-negatives  -0.02  | imagenet     +0.10  | n=128         -0.10
+# All six are inside the seed spread. Round 2 resolved nothing about the
+# algorithm — one seed per cell cannot, at this variance.
+#
+# So round 3 changes ONE thing: it spends the budget on replication instead of
+# on new axes: three configs, four training seeds each, at the env's STANDARD
+# 50 evaluation episodes. Matching the protocol every other algorithm on this
+# env was scored with keeps these numbers directly comparable to the q3c and
+# IBC records already in trials.jsonl. Averaging over four training seeds is
+# what tightens the estimate here, not a bigger per-trial episode count.
+#
+# ── The ladder (3 configs x 4 seeds = 12 jobs) ─────────────────────────────
+#   CTRL   dp_negatives 0        — critic never sees a diffusion sample
+#                                  (uniform + Langevin negatives), i.e. a
+#                                  Q3C-style critic bolted onto a DP actor
+#   ALIGN  dp_negatives 64       — negatives drawn from the actor itself
+#   FULL   ALIGN + margin 0.5@0.1 + progress 0.1
+#
+# Read it as MEANS OVER FOUR SEEDS with their spread, never as single numbers.
+# The question is only: does ALIGN beat CTRL, and does FULL beat ALIGN, by more
+# than the seed spread? If the three rungs overlap after four seeds each, the
+# critic is not contributing on this task and the next move is the architecture
+# (a noise-conditional critic), not another hyperparameter grid.
+#
+# A second thing worth extracting: the SPREAD itself, per rung. A policy whose
+# success swings 0.60-0.88 with the training seed is not something to deploy on
+# a robot regardless of its mean. If one rung is visibly tighter than the
+# others, that is a result in its own right and arguably a more useful one.
+#
+# ── CORRECTION to the round-2 note ─────────────────────────────────────────
+# batches/lgDPQ3C2.txt warned that final_train_accuracy above ~0.9 means the
+# actor is broken. That was wrong for this env. Round 2 shows train accuracy
+# pinned at exactly 1.000 in every cell WHILE success rose 0.22 -> 0.88. With
+# action_chunk 16 on a 7-DoF arm the action is 112-dimensional, and telling the
+# true expert chunk from any sampled chunk is trivial in 112 dimensions no
+# matter how good the actor is. The diagnostic holds on pushing_pixels (2-D
+# actions, train accuracy 0.29-0.41) but carries no signal here — ignore it on
+# libero rather than reading it as a failure.
+#
+# ── Timing ─────────────────────────────────────────────────────────────────
+# Round-2 jobs ran 14-21 h at 200k steps with 50 eval episodes; round-1 jobs of
+# the same size ranged 12-28 h purely on node draw. Eval is a small share of
+# that, so 200 episodes should land inside the 48 h wall with margin. If jobs
+# start hitting the wall, drop a seed before cutting steps — training length is
+# what bought the round-2 jump.
+
+# ── CTRL_s0
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":0,"num_uniform_negatives":32,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":0}'
+
+# ── CTRL_s1
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":0,"num_uniform_negatives":32,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":1}'
+
+# ── CTRL_s2
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":0,"num_uniform_negatives":32,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":2}'
+
+# ── CTRL_s3
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":0,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":0,"num_uniform_negatives":32,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":3}'
+
+# ── ALIGN_s0
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":0}'
+
+# ── ALIGN_s1
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":1}'
+
+# ── ALIGN_s2
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":2}'
+
+# ── ALIGN_s3
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.0,"margin_weight":0.0,"q_actor_weight":0.0,"trial_seed":3}'
+
+# ── FULL_s0
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"trial_seed":0}'
+
+# ── FULL_s1
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"trial_seed":1}'
+
+# ── FULL_s2
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"trial_seed":2}'
+
+# ── FULL_s3
+uv run --managed-python --extra libero python hyperparam_search.py dpq3c_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":200000,"cosine_t_max":200000,"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":false,"encoder_norm_kind":"gn","encoder_num_kp":128,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"info_nce_weight":0.5,"infonce_logit_clamp":20,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","dp_negatives":64,"num_uniform_negatives":0,"progress_weight":0.1,"margin_weight":0.5,"margin":0.1,"q_actor_weight":0.0,"trial_seed":3}'

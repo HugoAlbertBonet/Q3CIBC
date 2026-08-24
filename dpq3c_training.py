@@ -583,6 +583,7 @@ def main():
             "cp_selection": str(env_training.get("cp_selection", "argmax")),
             "cp_selection_temperature": float(
                 env_training.get("cp_selection_temperature", 1.0)),
+            "cp_score_norm": str(env_training.get("cp_score_norm", "none")),
             # The cloud size this critic was CALIBRATED on. Deploy should use the
             # same --cp unless it also retunes the temperature.
             "dp_negatives": dp_negatives,

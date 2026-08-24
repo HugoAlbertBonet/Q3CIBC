@@ -59,6 +59,12 @@ class PushingPixelsSimulation(BaseSimulation):
         # chunk then replan. 0 (or >=K) keeps pure open-loop chunk execution.
         # Mirrors PenHumanV2Simulation.
         self.action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
+        # Cloud-selection rule. Only pen_human_v2 honoured these before, so
+        # every pixel result to date was a hard argmax.
+        _nsd = norm_stats or {}
+        self.cp_selection = str(_nsd.get("cp_selection", "argmax"))
+        self.cp_selection_temperature = float(_nsd.get("cp_selection_temperature", 1.0) or 1.0)
+        self.cp_score_norm = str(_nsd.get("cp_score_norm", "none"))
         _eh = int(execute_horizon or 0)
         self.execute_horizon = (
             self.action_chunk if _eh <= 0 else min(_eh, self.action_chunk)
@@ -125,8 +131,10 @@ class PushingPixelsSimulation(BaseSimulation):
             # Late fusion: encode once, broadcast features over the N CPs.
             features = self.q_estimator.encode(obs_tensor)  # (1, F)
             q_values = self.q_estimator.score(features, control_points).squeeze(-1)  # (1, N)
-            best_idx = q_values.argmax(dim=1)
-            action_normalized = control_points[0, best_idx[0], :].cpu().numpy()
+            from simulations.cp_selection import select_from_cloud
+            idx = select_from_cloud(q_values, control_points, self.cp_selection,
+                                    self.cp_selection_temperature, self.cp_score_norm)
+            action_normalized = control_points[0, idx, :].cpu().numpy()
             q_range = (q_values.min().item(), q_values.max().item())
 
         action = self._denormalize_action(action_normalized)
