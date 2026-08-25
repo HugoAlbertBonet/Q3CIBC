@@ -76,7 +76,7 @@ OUT_DIR = ROOT / "results" / "pusht" / "plots"
 # bounds govern standalone slots, not steps inside an ordinal ramp.
 SERIES_COLORS = {
     ("dp", "ddim"): "#eb6834",  # orange, mid
-    ("dp", "ddpm"): "#c94908",  # orange, dark
+    ("dp", "ddpm"): "#983000",  # orange, dark
     ("q3c", "argmax"): "#86b6ef",  # blue 250
     ("q3c", "argmax_fallback"): "#86b6ef",  # blue 250 + hatch
     ("q3c", "dfo"): "#2a78d6",  # blue 450
@@ -125,15 +125,26 @@ SERIES_ORDER = [
     ("bc", "deterministic"),
 ]
 
-# Series dropped from the figures (still present in experiments.csv).
-EXCLUDED_INFERENCE = {"ddpm"}
+# Series dropped from the figures (still present in experiments.csv). DDPM was
+# excluded while it was 3 rollouts at one position; the i02 checkpoint now
+# carries a full 100-iteration sweep over all 4 horizons and all 9 positions, so
+# it is back in.
+EXCLUDED_INFERENCE: set[str] = set()
 
 # IBC has two checkpoints in the CSV and they are far apart (cam1 0.75 for
 # Ibc2c_c256_imnet over all 9 positions vs 0.43 for Ibc2c_c256_conv over 5), so
 # the figures keep only its best one. dp and q3c also have a second checkpoint
 # each, but those are 2 and 14 rows against 52 and 178 and score within 0.06
 # cam1 of the main one, so they stay pooled.
-KEEP_CHECKPOINT = {"ibc": {"Ibc2c_c256_imnet", "Ibc2c16_c256_imnet"}}
+# DP now spans five checkpoints, of which only g01 (1-camera, horizon 1 only)
+# and i02 (2-camera, the full refine_iters x horizon grid) have complete
+# position coverage. Pooling them would average a 1-cam and a 2-cam model into
+# one "DP" bar - they differ by up to 0.11 cam1 at the same setting - so the
+# figures keep i02, the one the new sweeps were collected on.
+KEEP_CHECKPOINT = {
+    "ibc": {"Ibc2c_c256_imnet", "Ibc2c16_c256_imnet"},
+    "dp": {"i02_resnet18_2cam_k16_s29_175k"},
+}
 
 
 def series_color(series: tuple[str, str]) -> str:
@@ -681,9 +692,11 @@ def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "ca
     write_table(OUT_DIR / f"{stem}.csv", table)
 
 
-# The IBC horizon sweep runs on a different checkpoint from its refinement
-# sweep, so that checkpoint takes the family's dark step to stay distinguishable.
-CHECKPOINT_COLOR = {"Ibc2c16_c256_imnet": "#00582b"}
+# No checkpoint currently needs its own step: IBC contributes a single horizon
+# line, and its dark-aqua override collided with the DP ddpm step under protan
+# simulation (dE 4.5). The checkpoint is still named in the legend via
+# CHECKPOINT_TAG.
+CHECKPOINT_COLOR: dict[str, str] = {}
 CHECKPOINT_TAG = {"Ibc2c16_c256_imnet": "ch16"}
 
 
@@ -693,6 +706,7 @@ def horizon_tradeoff_plot(
     metric: str = "cam1",
     ylabel: str = "cam1 coverage",
     title: str = "Cost vs performance — execution-horizon sweep",
+    show_error: bool = True,
 ) -> None:
     """Scatter: x = mean inference time per step, y = performance, over horizon.
 
@@ -807,8 +821,9 @@ def horizon_tradeoff_plot(
     ax.xaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     allpts = [p for pts in series.values() for p in pts]  # noqa: F841
     ax.set_xlim(min(p[0] for p in allpts) * 0.8, max(p[0] for p in allpts) * 1.25)
-    lo = min(p[1] - p[2] for p in allpts)
-    hi = max(p[1] + p[2] for p in allpts)
+    pad = (lambda p: p[2]) if show_error else (lambda p: 0.0)
+    lo = min(p[1] - pad(p) for p in allpts)
+    hi = max(p[1] + pad(p) for p in allpts)
     ax.set_ylim(lo - 0.06, hi + 0.06)
 
     # Greedy label placement: try right, left, above, below, take the first slot
@@ -849,26 +864,38 @@ def horizon_tradeoff_plot(
         (alg, inf, iters, ckpt), pts = item
         return (SERIES_ORDER.index((alg, inf)), iters)
 
+    # A family can now contribute several lines (DP sweeps horizons at 5, 10 and
+    # 25 refinement iterations), which would all wear the same hue. Dash pattern
+    # separates them inside the family; the legend names the iteration count.
+    dashes = ["-", "--", ":", "-."]
+    family_rank: dict[tuple[str, str], int] = {}
+
     for (alg, inf, iters, ckpt), pts in sorted(series.items(), key=sort_key):
+        rank = family_rank.get((alg, inf), 0)
+        family_rank[(alg, inf)] = rank + 1
         pts = sorted(pts, key=lambda p: p[3])
         xs, ys, sems, hs, spliced = zip(*pts)
         color = CHECKPOINT_COLOR.get(ckpt, series_color((alg, inf)))
         marker = "D" if (alg, inf) in SERIES_HATCH else "o"
         tag = f" [{CHECKPOINT_TAG[ckpt]}]" if ckpt in CHECKPOINT_TAG else ""
         label = f"{series_label(alg, inf)} · {iters} it{tag}"
-        ax.plot(xs, ys, color=color, linewidth=2, zorder=2, alpha=0.9)
-        ax.errorbar(
-            xs, ys, yerr=sems, fmt="none", ecolor=color, elinewidth=1.2, capsize=3, zorder=3
-        )
+        if show_error:
+            ax.errorbar(
+                xs, ys, yerr=sems, fmt="none", ecolor=color, elinewidth=1.2, capsize=3, zorder=3
+            )
+        # Line and markers in one call so the legend handle carries the dash
+        # pattern - a family can contribute several lines in the same hue.
         ax.plot(
             xs,
             ys,
-            marker,
             color=color,
+            linewidth=2,
+            alpha=0.9,
+            linestyle=dashes[rank % len(dashes)],
+            marker=marker,
             markersize=10,
             markeredgecolor=SURFACE,
             markeredgewidth=2,
-            linestyle="none",
             label=label,
             zorder=5,
         )
@@ -889,7 +916,12 @@ def horizon_tradeoff_plot(
         0,
         1.03,
         "lines join a config's horizons shortest to longest (point label = horizon)\n"
-        "position-balanced over all 9 start positions; error bars 1 SEM across positions",
+        "position-balanced over all 9 start positions"
+        + (
+            "; error bars 1 SEM across positions"
+            if show_error
+            else "; uncertainty omitted — see the error-bar version before comparing points"
+        ),
         transform=ax.transAxes,
         color=TEXT_SECONDARY,
         fontsize=9,
@@ -1302,6 +1334,12 @@ def main() -> None:
     )
     horizon_tradeoff_plot(
         rows,
+        "cam1_vs_inference_time_horizon_no_error",
+        title="Cost vs performance — execution-horizon sweep, cam1",
+        show_error=False,
+    )
+    horizon_tradeoff_plot(
+        rows,
         "coverage_avg_vs_inference_time_horizon",
         metric="avg_cov",
         ylabel="mean(cam0, cam1) coverage",
@@ -1351,7 +1389,7 @@ def main() -> None:
         exclude_positions={"upside_down"},
     )
 
-    print(f"wrote 17 figures + tables to {OUT_DIR}")
+    print(f"wrote 18 figures + tables to {OUT_DIR}")
 
 
 if __name__ == "__main__":
