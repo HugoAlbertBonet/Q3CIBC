@@ -456,8 +456,24 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
         from utils.models import PixelQEstimator
         value_width = int(hparams.get("VALUE_WIDTH", 1024))
         value_blocks = int(hparams.get("VALUE_NUM_BLOCKS", 1))
-        print(f"  EBM backbone: PIXEL conv_maxpool + DenseResnetValue("
-              f"w={value_width}, blocks={value_blocks}) cond={dataset.cond_dim}")
+        # Encoder is selectable so IBC can be run on the SAME visual backbone as
+        # q3c / dpq3c. It used to be hardcoded to conv_maxpool, which meant every
+        # libero IBC number was produced on a weaker encoder than the algorithms
+        # it was being compared against. Defaults preserve the old behaviour
+        # exactly, so existing trials remain reproducible.
+        enc_kind = str(hparams.get("ENCODER_KIND", "conv_maxpool"))
+        enc_pretrained = hparams.get("ENCODER_PRETRAINED", False)
+        if isinstance(enc_pretrained, str):
+            enc_pretrained = enc_pretrained.lower() in ("imagenet", "true", "1")
+        enc_num_kp = int(hparams.get("ENCODER_NUM_KP", 64))
+        enc_norm_kind = str(hparams.get("ENCODER_NORM_KIND", "bn"))
+        enc_per_camera = bool(hparams.get("ENCODER_PER_CAMERA", False))
+        cond_fusion = str(hparams.get("COND_FUSION", "concat"))
+        goal_dim = int(getattr(dataset, "goal_emb_dim", 0))
+        print(f"  EBM backbone: PIXEL {enc_kind} (pretrained={enc_pretrained}, "
+              f"kp={enc_num_kp}, norm={enc_norm_kind}) + DenseResnetValue("
+              f"w={value_width}, blocks={value_blocks}) cond={dataset.cond_dim} "
+              f"fusion={cond_fusion}")
         energy_model = PixelQEstimator(
             action_dim=dataset.action_shape,
             in_channels=dataset.in_channels,
@@ -466,10 +482,24 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             value_width=value_width,
             value_num_blocks=value_blocks,
             cond_dim=dataset.cond_dim,
+            encoder_kind=enc_kind,
+            encoder_pretrained=enc_pretrained,
+            encoder_num_kp=enc_num_kp,
+            encoder_norm_kind=enc_norm_kind,
+            encoder_per_camera=enc_per_camera,
+            cond_fusion=cond_fusion,
+            goal_dim=goal_dim,
         ).to(device)
         norm_stats["value_width"] = value_width
         norm_stats["value_num_blocks"] = value_blocks
-        norm_stats["encoder_kind"] = "conv_maxpool"
+        # Persist the ACTUAL encoder so eval rebuilds the same tree.
+        norm_stats["encoder_kind"] = enc_kind
+        norm_stats["encoder_pretrained"] = bool(enc_pretrained)
+        norm_stats["encoder_num_kp"] = enc_num_kp
+        norm_stats["encoder_norm_kind"] = enc_norm_kind
+        norm_stats["encoder_per_camera"] = enc_per_camera
+        norm_stats["cond_fusion"] = cond_fusion
+        norm_stats["goal_emb_dim"] = goal_dim
     if not is_pixel:
         print(f"  EBM backbone: {network_kind} (width={q_width}, depth={q_depth}, "
               f"final_act={resnet_final_act})")
@@ -689,6 +719,11 @@ def evaluate_checkpoint(
 
         if norm_stats is None or "cond_dim" not in norm_stats:
             raise RuntimeError("pixel DFO eval needs norm_stats with the libero pixel schema.")
+        # Encoder fields come from norm_stats (what training actually built).
+        # Older checkpoints predate them and fall back to the conv_maxpool
+        # defaults, so they still rebuild correctly. pretrained is forced False:
+        # the weights come from the state_dict, and a compute node may have no
+        # network to fetch ImageNet with.
         model = PixelQEstimator(
             action_dim=action_dim,
             in_channels=int(norm_stats["in_channels"]),
@@ -697,6 +732,13 @@ def evaluate_checkpoint(
             value_width=int(norm_stats.get("value_width", 1024)),
             value_num_blocks=int(norm_stats.get("value_num_blocks", 1)),
             cond_dim=int(norm_stats["cond_dim"]),
+            encoder_kind=str(norm_stats.get("encoder_kind", "conv_maxpool")),
+            encoder_pretrained=False,
+            encoder_num_kp=int(norm_stats.get("encoder_num_kp", 64)),
+            encoder_norm_kind=str(norm_stats.get("encoder_norm_kind", "bn")),
+            encoder_per_camera=bool(norm_stats.get("encoder_per_camera", False)),
+            cond_fusion=str(norm_stats.get("cond_fusion", "concat")),
+            goal_dim=int(norm_stats.get("goal_emb_dim", 0)),
         )
         model.load_state_dict(sd)
         model.to(device).eval()

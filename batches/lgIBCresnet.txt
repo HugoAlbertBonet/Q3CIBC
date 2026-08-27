@@ -1,0 +1,87 @@
+# libero_goal_pixels — IBC on the SAME visual backbone as q3c / dpq3c.
+#
+# Submit with:  bash submit_experiments.sh batches/lgIBCresnet.txt
+# Prereq:       uv sync --extra libero    (resnet18 needs torchvision)
+#
+# ── What changed in the code to make this possible ─────────────────────────
+# hyperparam_search_dfo.py hardcoded the pixel encoder to conv_maxpool at both
+# the training build and the eval rebuild, so every libero IBC number to date
+# (6 trials, 0.30-0.46) was produced on a weaker visual backbone than the
+# algorithms it was being compared against. That was a structural handicap, not
+# a property of IBC.
+#
+# Both sites now read the encoder from hparams / norm_stats:
+#     ENCODER_KIND        conv_maxpool | resnet18
+#     ENCODER_PRETRAINED  false | "imagenet"
+#     ENCODER_NORM_KIND   bn | gn | bn_frozen
+#     ENCODER_NUM_KP      SpatialSoftmax keypoints
+#     ENCODER_PER_CAMERA, COND_FUSION (concat | film)
+# Defaults reproduce the old behaviour exactly, and checkpoints written before
+# this change have no encoder fields in norm_stats so they still rebuild as
+# conv_maxpool. Existing trials stay reproducible.
+#
+# Verified: train-side kwargs and eval-side rebuild kwargs are identical, the
+# "imagenet" string maps to the bool the model expects, eval forces
+# pretrained=False (weights come from the state_dict, and compute nodes may have
+# no network), and a legacy checkpoint with no encoder fields still resolves to
+# conv_maxpool. The conv_maxpool state_dict round-trips train -> eval. The
+# resnet18 path could not be exercised locally — no torchvision in this venv —
+# so the FIRST job is the real test of it; watch for the backbone line
+#     EBM backbone: PIXEL resnet18 (pretrained=..., kp=128, norm=gn) + ...
+# in the log before trusting the rest of the batch.
+#
+# ── The remaining handicap, which this does NOT fix ────────────────────────
+# There is still no ACTION_CHUNK in the dfo search space, so IBC runs unchunked
+# while q3c's 82.0 and dpq3c's 78.8 both use action_chunk 16. Chunking is the
+# largest single effect measured anywhere in this project. So even these runs
+# are a lower bound on IBC, just a much tighter one. Adding chunking to the dfo
+# trainer is a bigger change (the Langevin sampler, the action bounds and the
+# eval sim all assume a single-step action) and is the next thing to do if the
+# resnet numbers land close to q3c.
+#
+# ── Reference points on this env (3 seeds, 50 evals/seed unless noted) ─────
+#     Q3CIBC ImageNet (chunk8)      86.7
+#     Q3CIBC scratch  (chunk16)     82.0
+#     dpq3c ALIGN scratch chunk16   78.8   (mean of 5 runs, sd 3.0)
+#     Diffusion Policy (scratch)    68.3   (paper)
+#     IBC conv_maxpool, unchunked   46.0   (best of 6, n=50) <- what this replaces
+#
+# ── The sweep (10 jobs) ────────────────────────────────────────────────────
+#   RN_s0/1/2       resnet18 + GroupNorm + 128 keypoints + crop 116, 3 seeds
+#   RN_imnet_s0/1   + ImageNet trunk (q3c gains +4.7 from this here)
+#   RN_film_s0      cond_fusion film — the variant behind q3c's own best trial
+#   RN_nocrop_s0    resnet18 without the crop, separating encoder from crop
+#   RN_S4096_s0     resnet18 with a 4096-sample inference cloud
+#   CONV_ctrl_s0/1  CONTROL: old conv_maxpool backbone, everything else identical
+#
+# The controls matter: without them a jump from 0.46 could be credited to the
+# encoder when it was really the crop, the extra 50k steps, or the larger
+# inference cloud, all of which also changed from the old trials.
+#
+# COST: IBC eval runs INFERENCE_NUM_SAMPLES x INFERENCE_NUM_ITERATIONS energy
+# evaluations per action (2048 x 100 = 204,800; the S4096 line doubles that),
+# and resnet18 is heavier per evaluation than conv_maxpool. Expect these to be
+# the slowest jobs in the project. Drop RN_S4096 first if they hit the wall.
+#
+# Standard 50 eval episodes, inherited from the env config, never overridden.
+
+# ── RN_s0        : resnet18+gn+128kp, crop 116 — the q3c visual backbone, seed 0
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── RN_s1        : same, seed 1
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":1,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── RN_s2        : same, seed 2
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":2,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── RN_imnet_s0  : + ImageNet trunk (q3c gains +4.7 from this on libero)
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":"imagenet","ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── RN_imnet_s1  : same, seed 1
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":1,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":"imagenet","ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── RN_film_s0   : cond_fusion film — q3c trial 76's variant (its best, 0.96)
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"film","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── RN_nocrop_s0 : resnet18 without the crop, to separate encoder from crop
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── RN_S4096_s0  : resnet18 + a 4096-sample inference cloud
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"resnet18","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"gn","ENCODER_NUM_KP":128,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":4096,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── CONV_ctrl_s0 : CONTROL — old conv_maxpool backbone, everything else identical
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"conv_maxpool","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"bn","ENCODER_NUM_KP":64,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── CONV_ctrl_s1 : same control, seed 1
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":1,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"ENCODER_KIND":"conv_maxpool","ENCODER_PRETRAINED":false,"ENCODER_NORM_KIND":"bn","ENCODER_NUM_KP":64,"COND_FUSION":"concat","INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'

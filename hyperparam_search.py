@@ -682,6 +682,17 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # Candidate-cloud size at EVAL only (dpq3c). Distinct from `control_points`,
+    # which for q3c is baked into the generator's output head and therefore is
+    # NOT inference-only. For dpq3c the cloud is drawn by a sampler, so its size
+    # is a free runtime choice — and setting it to 1 turns dpq3c into plain
+    # diffusion policy with no ranking, which is the cleanest possible baseline:
+    # same actor, same data, same encoder, ranking removed.
+    "inference_control_points": {
+        "values": [1, 8, 64, 128],
+        "type": "int",
+        "location": "env_training",
+    },
     # Evaluation episodes per trial. A top-level env key (evaluate_q3c reads
     # env_config["num_eval_seeds"]). Searchable so a batch can buy tighter
     # error bars when the effect being measured is smaller than the noise at
@@ -864,6 +875,7 @@ INFERENCE_ONLY_PARAMS: set[str] = {
     "inference_dp_iters",
     "inference_dp_method",
     "inference_dp_eta",
+    "inference_control_points",
 }
 
 
@@ -1046,6 +1058,8 @@ def _build_dpq3c_generator(weights_path, env_config, norm_stats, action_dim,
     denoiser.to(device).eval()
 
     et = env_config.get("training", {})
+    # Eval-only cloud size; falls back to the trained-against value.
+    control_points = int(et.get("inference_control_points", control_points))
     # Eval sampler knobs. Default the step count to the first entry the trainer
     # recorded in ddim_eval_steps, so a trial evaluates at the schedule it was
     # set up for rather than a hardcoded guess.

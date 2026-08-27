@@ -1,0 +1,75 @@
+# libero_goal_pixels — IBC (implicit BC / DFO) baseline sweep.
+#
+# Submit with:  bash submit_experiments.sh batches/lgIBC.txt
+# Prereq:       uv sync --extra libero
+#
+# ── READ THIS BEFORE INTERPRETING ANY NUMBER FROM THIS BATCH ───────────────
+# IBC on this env is STRUCTURALLY HANDICAPPED relative to q3c and dpq3c, and no
+# amount of hyperparameter sweeping inside this file can fix it.
+# hyperparam_search_dfo.py does not expose two things the other two algorithms
+# both use here:
+#
+#   ACTION CHUNKING   Absent entirely — there is no ACTION_CHUNK key in the dfo
+#                     search space, and all 6 existing libero IBC trials ran
+#                     unchunked. The q3c recipe that scores 82.0 on this env
+#                     uses action_chunk 16, and chunking is the single largest
+#                     known effect in this whole project.
+#   ENCODER CHOICE    Hardcoded to conv_maxpool (hyperparam_search_dfo.py:472).
+#                     q3c and dpq3c both use ResNet-18 + GroupNorm + 128
+#                     SpatialSoftmax keypoints here.
+#
+# So the existing IBC best of 0.46 is a LOWER BOUND on what IBC can do on
+# libero, not a measurement of IBC. Quoting it against q3c 82.0 or dpq3c 78.8
+# without that caveat would misrepresent the algorithm — IBC scores 100.0 on
+# pushing_pixels, where it is not handicapped this way.
+#
+# This batch does what CAN be done without touching the dfo trainer: tune the
+# knobs it does expose, and get a replicate so the number has an error bar.
+# Making the comparison genuinely fair needs ACTION_CHUNK and encoder support
+# added to hyperparam_search_dfo.py first — a separate piece of work on a 67 KB
+# script, worth doing before any cross-algorithm table is published.
+#
+# ── What the 6 existing trials suggest ─────────────────────────────────────
+#     id1 0.30  id2 0.34  id3 0.40  id5 0.32 (crop 116)  id4 0.42 (neg 16)
+#     id6 0.46  (INFERENCE_NUM_SAMPLES 512 -> 1024)
+# The inference cloud size is the clearest lever: +0.06 from doubling it once.
+# TRAINING_STEPS was never varied off 100k, while q3c and dpq3c use 150-200k on
+# this env. Both are swept here.
+#
+# ── The sweep (10 jobs) ────────────────────────────────────────────────────
+#   inference samples 1024 / 2048 / 4096
+#   training steps    150k (default here) / 200k
+#   counter-examples  8 / 16 / 32
+#   image crop        0 / 116
+#   3 seeds at the 2048 setting, plus a replicate of the existing best (trial 6)
+#   so the 0.46 finally has a variance attached to it
+#
+# COST WARNING: IBC eval runs INFERENCE_NUM_SAMPLES x INFERENCE_NUM_ITERATIONS
+# energy evaluations per action (2048 x 100 = 204800; 4096 x 100 = 409600).
+# That is orders of magnitude above dpq3c's 10 denoiser passes plus one batched
+# Q pass, and it is why the pushing_pixels comparison table records a
+# scoring_evals column. The S4096 line is the one most likely to run long —
+# drop it first if jobs hit the wall.
+#
+# Standard 50 eval episodes, inherited from the env config, never overridden.
+
+# ── S1024_150k     : trial-6 config (0.46) + 150k steps instead of 100k
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":1024,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S2048_150k_s0  : 2048 inference samples — the strongest lever in the 6 existing trials
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S2048_150k_s1  : same, second seed
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":1,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S2048_150k_s2  : same, third seed
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":2,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S4096_150k     : 4096 samples — expensive, tests where the cloud saturates
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":4096,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S2048_200k     : longer training at the better sample count
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":200000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S2048_neg16    : more training counter-examples
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":16,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S2048_neg32    : more still
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":32,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S2048_crop116  : the crop q3c uses, on a config that is not otherwise weak
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":0,"TRAINING_STEPS":150000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":116,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'
+# ── S1024_100k_s1  : replicate the EXISTING best (trial 6) to get its variance
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --params '{"trial_seed":1,"TRAINING_STEPS":100000,"BATCH_SIZE":128,"LEARNING_RATE":0.001,"LR_DECAY_RATE":0.99,"LR_DECAY_STEPS":100,"NUM_COUNTER_EXAMPLES":8,"LANGEVIN_TRAIN_ITERATIONS":100,"LANGEVIN_STEPSIZE_INIT":0.1,"LANGEVIN_STEPSIZE_FINAL":1e-05,"LANGEVIN_STEPSIZE_POWER":2.0,"LANGEVIN_NOISE_SCALE":0.1,"LANGEVIN_DELTA_ACTION_CLIP":0.1,"GRADIENT_MARGIN":1.0,"SOFTMAX_TEMPERATURE":1.0,"UNIFORM_BOUNDARY_BUFFER":0.05,"HIDDEN_DIMS":[512,512,512,512,512,512,512,512],"Q_USE_SPECTRAL_NORM":false,"VALUE_WIDTH":1024,"VALUE_NUM_BLOCKS":1,"IMAGE_CROP":0,"INFERENCE_NUM_SAMPLES":1024,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_LR_INIT":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_NOISE_SCALE":0.1}'

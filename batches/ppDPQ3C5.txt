@@ -1,0 +1,106 @@
+# pushing_pixels — DP+Q3C round 5. Confirm the two 0.97 cells, then combine them.
+#
+# Submit with:  bash submit_experiments.sh batches/ppDPQ3C5.txt
+# Prereq:       uv sync --extra pushing
+#
+# ── What round 4 found ─────────────────────────────────────────────────────
+# Two independent axes both landed at 0.97, above the round-2 best of 0.95:
+#     T = 50   (shorter diffusion chain)     trial 51   0.97
+#     denoiser_depth 2                        trial 54   0.97
+# Neither is significant on its own at n=100 (both p=0.47 vs 0.95), but two
+# unrelated changes landing on the same number is worth one confirmation round.
+# ── CORRECTION: what the q3c baseline on this env actually is ──────────────
+# Earlier headers in this series compared against 0.99, taken from q3c trial 95
+# in trials.jsonl. That is a SINGLE run and the maximum over 126 scored trials —
+# a winner's-curse number, not a baseline. The published, seed-averaged figures
+# are in results/hyperparam_search/combinedv2_cpascounter_training/
+# pushing_pixels/single_target_pixels.csv:
+#
+#     method        success %   sd    seeds   scoring evals
+#     ibc             100.0     0.0     3        12288
+#     q3c_5iter        95.7     1.7     3          324
+#     q3c_10iter       94.8     1.5     5          396
+#     q3c_0iter        94.0     3.0     3           30
+#     dp_ddpm100       94.0     2.2     3          100
+#     dp_ddim25        93.3     1.2     3           25
+#
+# dpq3c ranks its cloud with no refinement, so q3c_0iter (94.0) is the like-for-
+# like row; q3c's best seed-averaged number anywhere on this env is 95.7. The
+# real ceiling is IBC at 100.0, which nothing in this project has approached.
+#
+# So the round-4 cells at 0.97 are single runs sitting at or slightly above a
+# 3-seed q3c average of 94.0-95.7 — promising, but not yet comparable, because
+# theirs is a seed average and ours is one run. Replication is what makes the
+# two numbers the same KIND of number, which is the whole point of this batch.
+#
+# ── What round 4 ruled OUT — do not re-test these ──────────────────────────
+#   550k actor steps      0.93 vs 0.95 (terms on), 0.86 vs 0.88 (off). Actor
+#                         length SATURATED between 400k and 550k. This also
+#                         cancels the checkpoint-resume plan for a 750k run —
+#                         there is nothing there to collect.
+#   denoiser_width 2048   0.92, below the 1024 baseline
+#   T = 200               0.93, below
+#   ddpm training negs    0.95, identical result for 45.1 h instead of 27.0 h
+#   q_actor_weight 0.05   0.87, the only change that clearly HURT (p=0.046)
+#
+# ── And the eval knobs are all neutral or worse ────────────────────────────
+# The ppREEVAL sweep re-scored three checkpoints under every inference setting.
+# Nothing beat the default. On the best checkpoint specifically, softened
+# selection consistently LOST:
+#     sample t0.5/1.0/2.0 + zscore   -0.04, -0.05, -0.04
+#     sample t1.0 + rank             -0.05
+#     25 denoising steps             -0.04
+# So argmax over a 10-step DDIM cloud stays the setting, and the softmax-β
+# selection idea is dead on this task — a clean negative result on something
+# that looked promising in theory.
+#
+# One genuinely useful finding did come out of it: 5 denoising steps scores the
+# same as 10 (+0.01 / +0.02 / -0.01 across the three checkpoints). That halves
+# the per-action sampler cost for free, which matters directly for the Push-T
+# control loop, not here.
+#
+# ── This batch (10 jobs) ───────────────────────────────────────────────────
+#   T50      x 3 seeds     confirm trial 51
+#   D2       x 3 seeds     confirm trial 54
+#   T50+D2   x 3 seeds     never tried together
+#   T50+D2, margin+progress OFF x 1
+#
+# The last line is there because libero, with 5-7 replicates per rung, found the
+# optional terms add NOTHING to the mean (FULL 0.780 vs ALIGN 0.788, p=0.84)
+# while TRIPLING the run-to-run spread (sd 0.099 vs 0.030). pushing_pixels
+# currently disagrees (+0.07, p=0.074) but on one run per config, so libero is
+# the more trustworthy read. If the no-terms line matches the others here, drop
+# both terms from the Push-T recipe and take the variance reduction.
+#
+# Everything else is pinned to round-2 trial 21: 400k steps, v-prediction,
+# dp_negatives 64, margin 0.5 @ m 0.5, progress 0.1. ~28 h per job.
+
+# ── T50_s0          : T=50 (tied best, 0.97)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0}'
+
+# ── T50_s1          : T=50 (tied best, 0.97)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":1}'
+
+# ── T50_s2          : T=50 (tied best, 0.97)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":2}'
+
+# ── D2_s0           : denoiser_depth 2 (tied best, 0.97)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0}'
+
+# ── D2_s1           : denoiser_depth 2 (tied best, 0.97)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":1}'
+
+# ── D2_s2           : denoiser_depth 2 (tied best, 0.97)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":2}'
+
+# ── T50D2_s0        : both together — never tried
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0}'
+
+# ── T50D2_s1        : both together — never tried
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":1}'
+
+# ── T50D2_s2        : both together — never tried
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.1,"margin_weight":0.5,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":2}'
+
+# ── T50D2_noterms_s0 : both, margin+progress OFF (libero says they are inert)
+uv run --managed-python --extra pushing python hyperparam_search.py dpq3c_training.py --run --active-env pushing_pixels --fixed-params '{"scheduler_type":"cosine","batch_size":128,"learning_rate":0.0003,"estimator_learning_rate":0.0003,"ema_decay":0.999,"training_steps":400000,"cosine_t_max":400000,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":2,"time_emb_dim":128,"dp_negatives":64,"dp_negative_iters":4,"dp_negative_method":"ddim","dp_negative_warmup_steps":5000,"progress_weight":0.0,"margin_weight":0.0,"margin":0.5,"q_actor_weight":0.0,"info_nce_weight":0.5,"infonce_logit_clamp":10,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"control_points":64,"inference_dp_iters":10,"inference_dp_method":"ddim","trial_seed":0}'

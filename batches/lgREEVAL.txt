@@ -1,0 +1,65 @@
+# libero_goal_pixels — DP and cloud-size baselines by RE-SCORING, no retraining.
+#
+# Submit with:  bash submit_experiments.sh batches/lgREEVAL.txt
+# Prereq:       uv sync --extra libero
+#
+# ── What this produces, and why it is nearly free ──────────────────────────
+# The pushing_pixels comparison table (single_target_pixels.csv) has a full set
+# of Diffusion-Policy rows — dp_ddpm100, dp_ddim5, dp_ddim10, dp_ddim25 — next
+# to the q3c and IBC rows. libero has NO in-house DP row at all: the 68.3 in
+# standard_results.csv is quoted from a paper, and diffusion_policy_training.py
+# has branches for libero_goal (flat) but not libero_goal_pixels, so it cannot
+# be run on this env without new code.
+#
+# It does not need new code. dpq3c's actor IS a diffusion policy, and with a
+# candidate cloud of ONE there is nothing for the critic to rank — so the policy
+# reduces exactly to plain DP. Setting inference_control_points to 1 on an
+# existing dpq3c checkpoint therefore yields a DP baseline that is BETTER
+# controlled than a separate DP run would be: same actor weights, same dataset
+# pipeline, same encoder, same crop, same seeds. The only thing removed is the
+# ranking. Any gap is attributable to ranking and nothing else.
+#
+# The cloud size is a runtime choice for dpq3c (a sampler draws it), unlike q3c
+# where control_points is baked into the generator's output head. That is why
+# inference_control_points exists as a separate key and is inference-only.
+#
+# Five ALIGN checkpoints are re-scored per line — trials 15, 23, 28, 29, 30,
+# the 5-run scratch ALIGN group whose mean is 0.788 (sd 0.030). Re-scoring all
+# five keeps every row a 5-run mean, directly comparable to that baseline rather
+# than to a single lucky run.
+#
+# ── The rows this builds ───────────────────────────────────────────────────
+#   cloud=1,  ddim 5 / 10 / 25      the dp_ddim* rows libero is missing
+#   cloud=1,  ddpm                  the dp_ddpm row
+#   cloud=8 / 64 / 128, ddim 10     how much ranking buys as the cloud grows
+#                                   (64 is the trained-against size = 0.788)
+#   cloud=64, ddpm                  ancestral cloud under ranking
+#
+# Read the cloud=1 rows as "DP alone" and the cloud=64 row as "dpq3c". The
+# difference between them is the entire value of the critic on this task, and
+# the cloud=8/128 rows say whether it saturates.
+#
+# ── Also worth recording while here ────────────────────────────────────────
+# IBC on this env has already been run: results/hyperparam_search/
+# ibc_dfo_libero_goal_pixels/trials.jsonl holds 6 trials scoring 0.30-0.46 at
+# n=50. That is far below q3c's 82.0 and dpq3c's 78.8, and worth noting because
+# IBC scores 100.0 on pushing_pixels — the per-env ranking is not stable, and
+# libero is the harder test. Six trials is a thin search though, so treat 0.46
+# as a lower bound on IBC here rather than a settled number.
+#
+# Standard 50 eval episodes throughout, never overridden.
+
+# ── DP baseline: cloud of 1, DDIM at three step counts
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --param-overrides '{"inference_control_points":1,"inference_dp_iters":5,"inference_dp_method":"ddim"}'
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --param-overrides '{"inference_control_points":1,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --param-overrides '{"inference_control_points":1,"inference_dp_iters":25,"inference_dp_method":"ddim"}'
+
+# ── DP baseline: cloud of 1, ancestral DDPM (full training chain)
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --param-overrides '{"inference_control_points":1,"inference_dp_method":"ddpm"}'
+
+# ── how much does ranking buy? cloud 8 / 64 / 128 at the standard 10 DDIM steps
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --param-overrides '{"inference_control_points":8}'
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --param-overrides '{"inference_control_points":128}'
+
+# ── ranking over an ancestral DDPM cloud at the trained-against size
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --param-overrides '{"inference_control_points":64,"inference_dp_method":"ddpm"}'
