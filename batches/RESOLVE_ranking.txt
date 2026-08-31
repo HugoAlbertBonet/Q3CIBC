@@ -1,0 +1,83 @@
+# Does the critic's RANKING do anything? A decisive eval-only test, both envs.
+#
+# Submit with:  bash submit_experiments.sh batches/RESOLVE_ranking.txt
+# Prereq:       uv sync --extra libero --extra pushing   (this file uses both)
+#
+# ── The contradiction this resolves ────────────────────────────────────────
+# Two measurements on libero point opposite ways.
+#
+#   TRAINING-side (round 3, 5 runs per rung):
+#       ALIGN  (critic trained on diffusion samples)  0.788   sd 0.030
+#       CTRL   (critic trained on uniform samples)    0.708   sd 0.036
+#       +0.080   z=+3.78   p<0.001
+#
+#   EVAL-side (lgREEVAL, re-scoring those same ALIGN checkpoints):
+#       cloud 64 (rank 64 candidates)   0.788   sd 0.030
+#       cloud  1 (no ranking = plain DP) 0.812   sd 0.041
+#       -0.024   z=-1.06   p=0.29     i.e. ranking adds NOTHING
+#       and no trend with cloud size: 1 -> .812, 8 -> .780, 64 -> .788, 128 -> .768
+#
+# These cannot both be the naive story. The critic's gradients never reach the
+# denoiser — sample_dp_actions is @torch.no_grad, the features feeding it are
+# detached, q_actor_weight is 0, and the two nets have separate optimizers — so
+# ALIGN and CTRL should have statistically identical ACTORS. If ranking adds
+# nothing, they should score the same. They differ by 0.08.
+#
+# ── The two hypotheses, and the one line that separates them ───────────────
+# H1  The difference lives in the CRITIC, and ranking with a MISCALIBRATED
+#     critic actively HURTS. CTRL's critic never saw a diffusion sample, so its
+#     argmax over 64 of them picks badly and drags 0.81 down to 0.71. ALIGN's
+#     critic is calibrated, so its ranking is merely harmless (0.79 vs 0.81).
+#     Under H1 the alignment's value is not that it makes ranking helpful — it
+#     is that it makes ranking SAFE. That is still a real and useful result, but
+#     it is a different claim from the one round 3 appeared to support.
+#
+# H2  The difference lives in the ACTOR after all. Drawing diffusion negatives
+#     consumes randomness that uniform negatives do not, so ALIGN and CTRL walk
+#     different RNG streams and train different denoisers. Five seeds each
+#     should wash that out, but if it does not, the +0.08 is an artifact and the
+#     alignment story is wrong.
+#
+# THE TEST: re-score the CTRL checkpoints at cloud = 1, which removes ranking
+# entirely and leaves only the actor.
+#     CTRL @ cloud1 ~ 0.71  (unchanged)  -> H2: the actor differs, alignment is an artifact
+#     CTRL @ cloud1 ~ 0.79-0.81          -> H1: ranking with a bad critic is what costs 0.08
+#
+# Everything here is a re-score of existing checkpoints. No training.
+#
+# ── Also worth knowing ─────────────────────────────────────────────────────
+# The cloud-size sweep was run on SCRATCH checkpoints whose mean is 0.788. The
+# ImageNet checkpoints are much stronger (0.887) and have never been tested at
+# other cloud sizes; ranking may behave differently when the proposals are
+# better. Both directions are covered below.
+#
+# pushing_pixels gets the same treatment because it is the env where the terms
+# and the cloud DID appear to help (terms +0.057 p=0.011), so if ranking is
+# inert there too, the whole picture is consistent and the conclusion is that
+# dpq3c's gains come from the ACTOR recipe, not from the critic.
+#
+# Standard eval counts throughout (libero 50, pushing_pixels 100), never overridden.
+
+# ══════════ libero: the decisive line ══════════
+# ── CTRL checkpoints (critic trained on uniform negatives) with ranking REMOVED
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 19 24 25 26 27 --param-overrides '{"inference_control_points":1,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── CTRL at an intermediate cloud, for the dose-response
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 19 24 25 26 27 --param-overrides '{"inference_control_points":8,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ══════════ libero: does ranking help when the ACTOR is strong? ══════════
+# ── ImageNet checkpoints (0.887) with ranking removed
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 21 78 79 80 --param-overrides '{"inference_control_points":1,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── ImageNet checkpoints with a LARGER cloud than they were trained against
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script dpq3c_training.py --active-env libero_goal_pixels --trials 21 78 79 80 --param-overrides '{"inference_control_points":128,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ══════════ pushing_pixels: the same question on the env where terms helped ══
+# ── best config (T=50 + depth 2, mean 0.963) with ranking removed
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 62 66 68 --param-overrides '{"inference_control_points":1,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── best config at an intermediate cloud
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 62 66 68 --param-overrides '{"inference_control_points":8,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+
+# ── pushing_pixels CTRL (no DP negatives, 0.84) with ranking removed
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script dpq3c_training.py --active-env pushing_pixels --trials 25 --param-overrides '{"inference_control_points":1,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
