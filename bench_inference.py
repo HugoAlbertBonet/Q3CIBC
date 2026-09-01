@@ -68,7 +68,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from utils.models import ControlPointGenerator, QEstimator
+from utils.models import ControlPointGenerator, QEstimator, _build_backbone
 
 
 RESULTS_PATH = (
@@ -416,6 +416,62 @@ def make_method_q3cibc_cp_dfo(device: torch.device, cfg: BenchConfig):
 
 # ─── Method: Diffusion Policy — DDPM (full T-step chain) ─────────────────────
 
+# ─── Methods: IBC's explicit baselines (Florence et al., pushing_states) ─────
+# Architectures taken verbatim from the paper's own "best" configs:
+#   configs/pushing_states/mlp_mse_best.gin
+#       MLPMSE.layers='ResNetPreActivation', width=1024, depth=8, rate=0.1
+#   configs/pushing_states/mlp_mdn_best.gin
+#       MLPMDN.layers='ResNetPreActivation', width=512, depth=8, rate=0.1,
+#       num_components=26, test_temperature=1.0, test_variance_exponent=1.0
+# IBC's `depth` counts dense layers and ours counts 2-layer blocks, so both
+# depth=8 become 4 blocks here. Dropout is inactive at eval. Inference for
+# both is a single forward pass -- no sampling, no refinement.
+MSE_WIDTH, MSE_BLOCKS = 1024, 4
+MDN_WIDTH, MDN_BLOCKS, MDN_COMPONENTS = 512, 4, 26
+
+
+def make_method_bc_mse(device: torch.device, cfg: BenchConfig):
+    net = _build_backbone(
+        input_dim=OBS_DIM, output_dim=ACTION_DIM,
+        network_kind="resnet", hidden_dims=[MSE_WIDTH] * MSE_BLOCKS,
+        width=MSE_WIDTH, depth=MSE_BLOCKS,
+        activation=torch.nn.ReLU, use_spectral_norm=False,
+        resnet_final_activation=False,
+    ).to(device).eval()
+    name = "Explicit BC + MSE (paper mlp_mse_best: 1024 x 8 dense)"
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            return net(obs)[0].clamp(ACTION_MIN, ACTION_MAX)
+
+    return name, select_action
+
+
+def make_method_bc_mdn(device: torch.device, cfg: BenchConfig):
+    """Paper-faithful argmax-mode MDN: pick the top mixing weight, take its mean."""
+    net = _build_backbone(
+        input_dim=OBS_DIM,
+        output_dim=MDN_COMPONENTS * (2 * ACTION_DIM + 1),
+        network_kind="resnet", hidden_dims=[MDN_WIDTH] * MDN_BLOCKS,
+        width=MDN_WIDTH, depth=MDN_BLOCKS,
+        activation=torch.nn.ReLU, use_spectral_norm=False,
+        resnet_final_activation=False,
+    ).to(device).eval()
+    name = f"Explicit BC + MDN (paper mlp_mdn_best: 512 x 8 dense, {MDN_COMPONENTS} comps)"
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            out = net(obs).view(1, MDN_COMPONENTS, 2 * ACTION_DIM + 1)
+            best = out[..., -1].argmax(dim=1)            # top mixing logit
+            mean = out[0, best[0], :ACTION_DIM]
+            return torch.tanh(mean) * ((ACTION_MAX - ACTION_MIN) / 2) \
+                + (ACTION_MAX + ACTION_MIN) / 2
+
+    return name, select_action
+
+
 def make_method_dp_ddpm(device: torch.device, cfg: BenchConfig):
     from utils.diffusion import DiffusionDenoiser, GaussianDiffusion
     denoiser = DiffusionDenoiser(
@@ -646,6 +702,8 @@ def main():
         make_method_ibc_langevin,
         make_method_ibc_dfo,
         make_method_ibc_dfo_autoregressive,
+        make_method_bc_mse,
+        make_method_bc_mdn,
     ]
     if args.include_dp:
         methods.append(make_method_dp_ddpm)
