@@ -52,7 +52,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from utils.models import QEstimator, ControlPointGenerator
+from utils.models import QEstimator, ControlPointGenerator, _build_backbone
 
 
 ROOT = Path(__file__).parent
@@ -61,6 +61,14 @@ IBC_TRIALS = ROOT / "results" / "hyperparam_search" / "ibc_dfo_pen" / "trials.js
 OUT_CSV = ROOT / "results" / "hyperparam_search" / "combinedv2_cpascounter_training" / "d4rl" / "pen" / "pen_inference_results.csv"
 
 # Pen env / arch constants (AdroitHandPen-v1, IBC paper App. D.1).
+# Explicit BC (MSE) baseline -- IBC's own explicit-policy comparison.
+# Arch from configs/d4rl/mlp_mse_best.gin, the config the paper uses across
+# the D4RL tasks: MLPMSE = ResNetPreActivation, width 2048, 8 dense layers
+# (4 of our 2-layer blocks), dropout 0.1 (inactive at eval), one forward pass
+# obs -> action. Mirrors make_method_mse in bench_inference_kitchen.py.
+MSE_WIDTH = 2048
+MSE_BLOCKS = 4          # = 8 dense layers
+
 OBS_DIM = 45
 ACTION_DIM = 24
 ACTION_MIN = -1.0
@@ -322,6 +330,25 @@ def make_method_q3c_langevin(device: torch.device):
 
 
 # ─── Method 4: IBC paper-exact Langevin inference ────────────────────────────
+
+def make_method_mse(device: torch.device):
+    """Explicit BC: one forward pass through the paper's MLPMSE arch."""
+    net = _build_backbone(
+        input_dim=OBS_DIM, output_dim=ACTION_DIM,
+        network_kind="resnet", hidden_dims=[MSE_WIDTH] * MSE_BLOCKS,
+        width=MSE_WIDTH, depth=MSE_BLOCKS,
+        activation=torch.nn.ReLU, use_spectral_norm=False,
+        resnet_final_activation=False,
+    ).to(device).eval()
+    name = f"Explicit BC MSE (paper arch {MSE_WIDTH}x8-dense; quality: paper-reported)"
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            return net(obs)[0].clamp(ACTION_MIN, ACTION_MAX)
+
+    return name, select_action
+
 
 def make_method_ibc_paper(device: torch.device):
     q_net = build_q_paper(device)
@@ -648,6 +675,7 @@ def main():
         make_method_q3c_dfo,
         make_method_q3c_langevin,
         make_method_ibc_paper,
+        make_method_mse,
     )
     for builder in builders:
         name, fn = builder(device)
