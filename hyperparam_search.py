@@ -702,6 +702,19 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env",
     },
+    # Particle dimensionality. n_dim drives the dataset AND the obs/action
+    # widths, so a batch that sweeps it must set all three together:
+    # state_dim = 2 * n_dim * frame_stack, action_dim = n_dim.
+    "n_dim": {"values": [2, 4, 6, 8, 16, 32], "type": "int", "location": "env"},
+    "state_dim": {"values": [8, 16, 32, 64, 128], "type": "int", "location": "env"},
+    "action_dim": {"values": [2, 4, 6, 8, 16, 32], "type": "int", "location": "env"},
+    # Diffusion-policy eval samplers (read by diffusion_policy_training.py and
+    # by resolve_dp_params). Without these, a batch passing them is silently
+    # ignored and every trial evaluates at the config default.
+    "ddim_eval_steps": {"values": [[5], [10], [5, 10, 25]], "type": "list",
+                        "location": "env_training"},
+    "ddim_eta": {"values": [0.0, 0.5, 1.0], "type": "float", "location": "env_training"},
+    "eval_ddpm": {"values": [True, False], "type": "bool", "location": "env_training"},
 }
 
 

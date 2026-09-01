@@ -1,0 +1,51 @@
+# libero_goal_pixels — Q3C, aiming to beat the cloud=1 dpq3c result.
+#
+# Submit with:  bash submit_experiments.sh batches/q3cLibero.txt
+# Prereq:       uv sync --extra libero
+#
+# ── The target ─────────────────────────────────────────────────────────────
+# The number to beat is 91.3 (mean of 3 runs, sd 3.1): dpq3c's ImageNet
+# checkpoints re-scored with the critic switched off, i.e. a plain diffusion
+# policy on our recipe. Published q3c on this env is 86.7 (ImageNet, chunk 8)
+# and 82.0 (scratch, chunk 16), both 3-seed means.
+#
+# So q3c is currently 4.6 points behind a diffusion policy here, and this batch
+# asks whether that gap is real or whether q3c was simply never given the same
+# treatment.
+#
+# ── What is being carried over from the dpq3c work ─────────────────────────
+#   ImageNet trunk at 0.1x LR   +9.9 points for dpq3c on this env (p=0.0004),
+#                               the single largest effect measured on libero.
+#                               q3c trial 80 already used it, so this is a
+#                               replication rather than a transfer.
+#   300k steps                  Training length was the largest effect on
+#                               pushing_pixels (+0.25). q3c on libero has only
+#                               ever been run at 150k. Two lines test 300k.
+#   3 seeds per configuration   Every conclusion we drew from single-seed cells
+#                               had to be retracted later.
+#
+# Base recipe is q3c trial 80 (0.946 at n=500, the most trustworthy published
+# q3c libero number): ImageNet resnet18 + GroupNorm + 128 keypoints, crop 116,
+# frame_stack 1, chunk 16, 100 control points / top-k 30, cp 512x4, entropy
+# separation at bandwidth 0.2, 8 Langevin negatives x 100 iterations, gradient
+# penalty hinge 1.0/1.0. The film-fusion lines are trial 76's variant, which
+# produced q3c's best single libero run.
+#
+# Read as 3-seed means against 91.3, never as best-of-N — q3c's headline numbers
+# on both environments turned out to be best-of-many-trials artifacts, and that
+# is exactly the comparison error this batch exists to avoid repeating.
+
+# ── Q3C libero, trial-80 recipe (ImageNet @0.1x LR), seed 0
+uv run --managed-python --extra libero python combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","cosine_t0":75000,"batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"cond_fusion":"concat","control_points":100,"top_k_control_points":30,"cp_width":512,"cp_depth":4,"mse_weight":3.0,"info_nce_weight":0.5,"generator_infonce_weight":0.05,"infonce_logit_clamp":20,"separation_loss":"entropy","entropy_bandwidth":0.2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"trial_seed":0}'
+# ── Q3C libero, trial-80 recipe (ImageNet @0.1x LR), seed 1
+uv run --managed-python --extra libero python combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","cosine_t0":75000,"batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"cond_fusion":"concat","control_points":100,"top_k_control_points":30,"cp_width":512,"cp_depth":4,"mse_weight":3.0,"info_nce_weight":0.5,"generator_infonce_weight":0.05,"infonce_logit_clamp":20,"separation_loss":"entropy","entropy_bandwidth":0.2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"trial_seed":1}'
+# ── Q3C libero, trial-80 recipe (ImageNet @0.1x LR), seed 2
+uv run --managed-python --extra libero python combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","cosine_t0":75000,"batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"cond_fusion":"concat","control_points":100,"top_k_control_points":30,"cp_width":512,"cp_depth":4,"mse_weight":3.0,"info_nce_weight":0.5,"generator_infonce_weight":0.05,"infonce_logit_clamp":20,"separation_loss":"entropy","entropy_bandwidth":0.2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"trial_seed":2}'
+# ── Q3C libero, 300k steps — the lever that moved dpq3c most, seed 0
+uv run --managed-python --extra libero python combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","cosine_t0":75000,"batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"cond_fusion":"concat","control_points":100,"top_k_control_points":30,"cp_width":512,"cp_depth":4,"mse_weight":3.0,"info_nce_weight":0.5,"generator_infonce_weight":0.05,"infonce_logit_clamp":20,"separation_loss":"entropy","entropy_bandwidth":0.2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"trial_seed":0}'
+# ── Q3C libero, 300k steps — the lever that moved dpq3c most, seed 1
+uv run --managed-python --extra libero python combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","cosine_t0":75000,"batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"cond_fusion":"concat","control_points":100,"top_k_control_points":30,"cp_width":512,"cp_depth":4,"mse_weight":3.0,"info_nce_weight":0.5,"generator_infonce_weight":0.05,"infonce_logit_clamp":20,"separation_loss":"entropy","entropy_bandwidth":0.2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"trial_seed":1}'
+# ── Q3C libero, film fusion (trial-76 variant), seed 0
+uv run --managed-python --extra libero python combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","cosine_t0":75000,"batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"cond_fusion":"film","control_points":100,"top_k_control_points":30,"cp_width":512,"cp_depth":4,"mse_weight":3.0,"info_nce_weight":0.5,"generator_infonce_weight":0.05,"infonce_logit_clamp":20,"separation_loss":"entropy","entropy_bandwidth":0.2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"trial_seed":0}'
+# ── Q3C libero, film fusion (trial-76 variant), seed 1
+uv run --managed-python --extra libero python combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"training_steps":150000,"cosine_t_max":150000,"scheduler_type":"cosine","cosine_t0":75000,"batch_size":128,"learning_rate":0.0002,"estimator_learning_rate":0.0002,"ema_decay":0.999,"frame_stack":1,"image_crop_size":116,"action_chunk":16,"encoder_kind":"resnet18","encoder_pretrained":"imagenet","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"cond_fusion":"film","control_points":100,"top_k_control_points":30,"cp_width":512,"cp_depth":4,"mse_weight":3.0,"info_nce_weight":0.5,"generator_infonce_weight":0.05,"infonce_logit_clamp":20,"separation_loss":"entropy","entropy_bandwidth":0.2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_num_iterations":100,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"trial_seed":1}'

@@ -1,0 +1,50 @@
+# particle — Diffusion Policy across dimensionalities, DDPM and DDIM.
+#
+# Submit with:  bash submit_experiments.sh batches/dpParticle.txt
+#
+# ── One training per cell, both samplers evaluated ─────────────────────────
+# DDPM and DDIM are two inference schedules over the SAME trained denoiser, not
+# two models. So each line trains once and is scored under both: eval_ddpm true
+# gives the full ancestral chain, and ddim_eval_steps [5,10,25] gives three
+# sub-sampled deterministic chains. Four numbers per run, one training cost.
+#
+# ── Why v-prediction ───────────────────────────────────────────────────────
+# On pushing_pixels the best DP recipe used prediction_type "v" and our first
+# dpq3c round used "epsilon"; switching (together with a longer schedule) was
+# worth +0.25 success, the largest single effect measured anywhere in this
+# project. It costs nothing to carry over, so every line here uses it.
+#
+# ── Dimensionality ─────────────────────────────────────────────────────────
+# 2, 4, 6, 8, 16, 32 — n_dim, action_dim and state_dim move together
+# (state_dim = 2 * n_dim * frame_stack). Only 16D has ever produced scored q3c
+# trials; 6D, 8D and 32D have empty results directories, and 2D/4D have never
+# been touched. If the dataset does not carry a given n_dim the job fails fast
+# during loading, so an unavailable dimension costs minutes, not a GPU day —
+# cheaper to find out this way than to pre-verify each one.
+#
+# 2 seeds per dimension, because single runs are what misled us repeatedly.
+
+# ── DP particle 2D seed 0 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":2,"action_dim":2,"state_dim":8,"trial_seed":0}'
+# ── DP particle 2D seed 1 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":2,"action_dim":2,"state_dim":8,"trial_seed":1}'
+# ── DP particle 4D seed 0 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":4,"action_dim":4,"state_dim":16,"trial_seed":0}'
+# ── DP particle 4D seed 1 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":4,"action_dim":4,"state_dim":16,"trial_seed":1}'
+# ── DP particle 6D seed 0 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":6,"action_dim":6,"state_dim":24,"trial_seed":0}'
+# ── DP particle 6D seed 1 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":6,"action_dim":6,"state_dim":24,"trial_seed":1}'
+# ── DP particle 8D seed 0 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":8,"action_dim":8,"state_dim":32,"trial_seed":0}'
+# ── DP particle 8D seed 1 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":8,"action_dim":8,"state_dim":32,"trial_seed":1}'
+# ── DP particle 16D seed 0 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":16,"action_dim":16,"state_dim":64,"trial_seed":0}'
+# ── DP particle 16D seed 1 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":16,"action_dim":16,"state_dim":64,"trial_seed":1}'
+# ── DP particle 32D seed 0 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":32,"action_dim":32,"state_dim":128,"trial_seed":0}'
+# ── DP particle 32D seed 1 (one training; DDPM and DDIM 5/10/25 both evaluated)
+uv run --managed-python python diffusion_policy_training.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine","batch_size":512,"learning_rate":0.0003,"ema_decay":0.999,"num_train_timesteps":100,"beta_schedule":"cosine","prediction_type":"v","denoiser_network_kind":"dense_resnet","denoiser_width":1024,"denoiser_depth":1,"time_emb_dim":128,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true,"n_dim":32,"action_dim":32,"state_dim":128,"trial_seed":1}'

@@ -141,9 +141,14 @@ EXCLUDED_INFERENCE: set[str] = set()
 # position coverage. Pooling them would average a 1-cam and a 2-cam model into
 # one "DP" bar - they differ by up to 0.11 cam1 at the same setting - so the
 # figures keep i02, the one the new sweeps were collected on.
+# Q3C's S02 checkpoint is a different model from L2c, not more runs of it: on
+# the 8 positions both cover, S02 beats L2c by +0.254 cam1 at argmax it0 h1 and
+# +0.12 at argmax/fallback h8. Pooling would average two models into one bar, so
+# the figures keep S02, which also carries the full horizon grid.
 KEEP_CHECKPOINT = {
     "ibc": {"Ibc2c_c256_imnet", "Ibc2c16_c256_imnet"},
     "dp": {"i02_resnet18_2cam_k16_s29_175k"},
+    "q3c": {"S02_shared_k16_s29"},
 }
 
 
@@ -916,7 +921,8 @@ def horizon_tradeoff_plot(
         0,
         1.03,
         "lines join a config's horizons shortest to longest (point label = horizon)\n"
-        "position-balanced over all 9 start positions"
+        f"position-balanced per config over the start positions it covers "
+        f"(>= {MIN_POSITIONS} of 9; see n_positions in the CSV)"
         + (
             "; error bars 1 SEM across positions"
             if show_error
@@ -1074,8 +1080,9 @@ def baseline_delta_plot(
         0,
         1.008,
         f"each config minus {bl} within every start position, then averaged\n"
-        "solid mark = mean over 9 positions, bar = 1 SEM; faint dots = the 9 per-position differences\n"
-        "configs not run on all 9 positions are excluded",
+        f"solid mark = mean over the shared positions, bar = 1 SEM; faint dots = the per-position "
+        f"differences\nconfigs sharing fewer than {MIN_POSITIONS} positions with the baseline are "
+        "excluded",
         transform=ax.transAxes,
         color=TEXT_SECONDARY,
         fontsize=9,
@@ -1231,9 +1238,9 @@ def baseline_delta_bars(
     ax.text(
         0,
         1.008,
-        f"paired against {bl} within every start position; bar = mean over {len(positions)} "
-        f"positions, error bar = 1 SEM\nbest (refine_iters, exec_horizon) per method among "
-        f"settings run on all {len(positions)} positions"
+        f"paired against {bl} within every start position; bar = mean over the positions shared "
+        f"with the baseline, error bar = 1 SEM\nbest (refine_iters, exec_horizon) per method "
+        f"among settings sharing at least {n_needed} of {len(positions)} positions"
         + (f"\nexcluded: {', '.join(sorted(drop)).replace('_', ' ')}" if drop else ""),
         transform=ax.transAxes,
         color=TEXT_SECONDARY,

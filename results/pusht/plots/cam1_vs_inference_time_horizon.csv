@@ -23,8 +23,16 @@ ibc,dfo,5,1,Ibc2c16_c256_imnet,8.25,7,cam1,0.9591,0.0,3,1,
 ibc,dfo,5,2,Ibc2c16_c256_imnet,4.13,28,cam1,0.6545,0.0798,23,9,yes
 ibc,dfo,5,4,Ibc2c16_c256_imnet,2.08,26,cam1,0.455,0.0913,23,9,yes
 ibc,dfo,5,8,Ibc2c16_c256_imnet,1.05,25,cam1,0.4014,0.073,25,9,yes
-q3c,argmax_fallback,5,1,L2c_ch16_scratch,10.74,3,cam1,0.803,0.0756,22,9,yes
-q3c,argmax_fallback,5,2,L2c_ch16_scratch,5.47,38,cam1,0.8416,0.0643,20,9,yes
-q3c,argmax_fallback,5,4,L2c_ch16_scratch,2.78,25,cam1,0.7832,0.0896,21,9,yes
-q3c,argmax_fallback,5,8,L2c_ch16_scratch,1.4,23,cam1,0.7039,0.0884,19,9,yes
+q3c,argmax,0,1,S02_shared_k16_s29,10.33,19,cam1,0.8788,0.0511,16,8,yes
+q3c,argmax,0,2,S02_shared_k16_s29,5.18,19,cam1,0.877,0.0513,19,8,yes
+q3c,argmax,0,4,S02_shared_k16_s29,2.6,15,cam1,0.8101,0.0743,17,8,yes
+q3c,argmax,0,8,S02_shared_k16_s29,1.3,15,cam1,0.7796,0.0586,16,8,yes
+q3c,argmax_fallback,5,1,S02_shared_k16_s29,10.65,21,cam1,0.885,0.052,16,8,yes
+q3c,argmax_fallback,5,2,S02_shared_k16_s29,5.27,19,cam1,0.8902,0.0534,17,8,yes
+q3c,argmax_fallback,5,4,S02_shared_k16_s29,2.65,20,cam1,0.8675,0.0524,16,8,yes
+q3c,argmax_fallback,5,8,S02_shared_k16_s29,1.33,16,cam1,0.8499,0.0427,17,8,yes
+q3c,dfo,5,1,S02_shared_k16_s29,10.72,16,cam1,0.8984,0.0514,16,8,yes
+q3c,dfo,5,2,S02_shared_k16_s29,5.39,15,cam1,0.9094,0.0484,16,8,yes
+q3c,dfo,5,4,S02_shared_k16_s29,2.71,18,cam1,0.8586,0.0529,17,8,yes
+q3c,dfo,5,8,S02_shared_k16_s29,1.37,18,cam1,0.8071,0.0669,17,8,yes
 ibc,dfo,5,1,Ibc2c_c256_imnet (borrowed by Ibc2c16_c256_imnet),8.27,2,cam1,0.7129,0.0831,25,9,yes (spliced)

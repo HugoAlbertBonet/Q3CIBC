@@ -1,0 +1,52 @@
+# particle — Q3C at 16D and 32D, with the methodology lessons applied.
+#
+# Submit with:  bash submit_experiments.sh batches/q3cParticle.txt
+#
+# ── What "applying what we learned" means here ─────────────────────────────
+# Most of the wins from the pixel envs do NOT transfer: v-prediction, ImageNet
+# trunks, T=50 and denoiser depth are all diffusion-side, and particle is a flat
+# state env with no encoder. What DOES transfer is the methodology lesson, and
+# it is the one that changed every conclusion we drew:
+#
+#   REPLICATE. Single-seed cells sent us down two wrong paths — a "significant"
+#   margin effect that vanished on a properly trained actor, and a
+#   "significant" +0.08 alignment effect that turned out to live in the actor's
+#   RNG stream. particle 16D's current best (0.940, trial 231) is ONE run out of
+#   161 scored trials, i.e. exactly the best-of-N artifact that inflated q3c's
+#   pushing_pixels number from a seed-averaged 94-96 to a headline 99.
+#
+# So this batch replicates rather than searches. 3 seeds per configuration.
+#
+# ── Status of the two dimensionalities ─────────────────────────────────────
+#   16D  161 scored trials, best 0.940 (single run) — this REPLICATES it
+#   32D  the results directory exists but holds ZERO scored trials, so nothing
+#        has ever completed here. These are first results, not a redo.
+#
+# NOTE particle's dimensionality drives three config fields that must move
+# together: n_dim, action_dim = n_dim, and state_dim = 2 * n_dim * frame_stack
+# (64 at 16D, 128 at 32D). All three are set explicitly on every line; they were
+# not previously in SEARCH_SPACE, so passing n_dim alone would have been
+# silently dropped and every line would have trained 16D.
+#
+# Recipe is trial 231's: 300k steps, cosine warm restarts, batch 512, lr 1e-3,
+# 30 control points / top-k 15, entropy separation at bandwidth 0.1, mse 10.0,
+# info_nce 0.5, gradient penalty 1.0, no uniform or Langevin negatives.
+# The two wider-net lines at 32D test whether double the dimensionality needs
+# more capacity — the only structural knob worth a guess here.
+
+# ── Q3C particle 16D seed 0
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":256,"cp_depth":2,"q_width":256,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":16,"action_dim":16,"state_dim":64,"trial_seed":0}'
+# ── Q3C particle 16D seed 1
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":256,"cp_depth":2,"q_width":256,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":16,"action_dim":16,"state_dim":64,"trial_seed":1}'
+# ── Q3C particle 16D seed 2
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":256,"cp_depth":2,"q_width":256,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":16,"action_dim":16,"state_dim":64,"trial_seed":2}'
+# ── Q3C particle 32D seed 0
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":256,"cp_depth":2,"q_width":256,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":32,"action_dim":32,"state_dim":128,"trial_seed":0}'
+# ── Q3C particle 32D seed 1
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":256,"cp_depth":2,"q_width":256,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":32,"action_dim":32,"state_dim":128,"trial_seed":1}'
+# ── Q3C particle 32D seed 2
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":256,"cp_depth":2,"q_width":256,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":32,"action_dim":32,"state_dim":128,"trial_seed":2}'
+# ── Q3C particle 32D, wider nets (higher dim may need capacity), seed 0
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":512,"cp_depth":2,"q_width":512,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":32,"action_dim":32,"state_dim":128,"trial_seed":0}'
+# ── Q3C particle 32D, wider nets (higher dim may need capacity), seed 1
+uv run --managed-python python hyperparam_search.py --run --active-env particle --fixed-params '{"training_steps":300000,"cosine_t_max":300000,"scheduler_type":"cosine_warm_restarts","batch_size":512,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"top_k_control_points":15,"cp_width":512,"cp_depth":2,"q_width":512,"q_depth":2,"mse_weight":10.0,"info_nce_weight":0.5,"separation_loss":"entropy","entropy_bandwidth":0.1,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":1.0,"ema_decay":0.999,"n_dim":32,"action_dim":32,"state_dim":128,"trial_seed":1}'

@@ -1,0 +1,75 @@
+# libero — WHY doesn't ranking the cloud help? Three measurements, plus cost.
+#
+# Submit with:  bash submit_experiments.sh batches/lgDIAGNOSE.txt
+# Prereq:       uv sync --extra libero
+#
+# No training. Everything here reads existing checkpoints and either measures a
+# property of the candidate cloud or times a policy call.
+#
+# ── The question ───────────────────────────────────────────────────────────
+# Re-scoring 18 dpq3c checkpoints showed ranking is neutral-to-harmful: paired,
+# same checkpoint, 0.819 with ranking vs 0.834 without, worse on 12 of 18, and
+# -0.027 at p=0.046 on the strongest group. The best number in the project is
+# dpq3c with the critic switched off (libero ImageNet at cloud 1: 91.3, against
+# q3c's published 86.7).
+#
+# Two explanations remain, and they demand opposite fixes:
+#
+#   A  THE CLOUD HAS NO DIVERSITY. At DDIM eta=0 the only thing separating
+#      candidates is the initial noise. If a trained denoiser maps most of that
+#      to nearly the same action, cloud=1 and cloud=64 are the same policy by
+#      construction, NO critic could ever have helped, and every ranking
+#      experiment we ran measured nothing. Fix would be sampler diversity.
+#
+#   B  THE CRITIC CANNOT RANK. InfoNCE trains it to separate expert from
+#      negatives, but at deploy every candidate is a plausible sample and the
+#      question is "which plausible action is better" — which it was never
+#      trained on. Fix would be a critic with a real value signal.
+#
+#      Worth being explicit about a design error here: progress_weight was meant
+#      to address exactly this and was neutral in three measurements. It could
+#      not have worked. It constrains Q only AT THE EXPERT ACTION, so it sets an
+#      absolute scale but says nothing about the ordering of two candidates.
+#
+# And the number that decides whether either fix is worth building:
+#
+#   C  THE ORACLE GAP. Action-MAE picking the BEST candidate in the cloud vs the
+#      critic's pick vs a random pick — the ceiling on what any critic could
+#      buy. If the oracle barely beats random, ranking is a dead end regardless
+#      of the critic, and the honest result is that dpq3c is a diffusion policy
+#      and the contribution is the training recipe.
+#
+# Read C FIRST. A and B only matter if C says there is headroom.
+#
+# ── Lines 1-4: the diagnostic on the strongest checkpoints ─────────────────
+# Trials 21/78/79/80 are the ImageNet ALIGN runs (0.88-0.92), i.e. the best
+# actors we have — if ranking cannot help there it will not help anywhere.
+# Lines 2-4 vary the sampler specifically to probe hypothesis A: if spread rises
+# with eta or under DDPM and the oracle gap rises with it, the cloud was the
+# problem, not the critic.
+
+# ── baseline: exactly the deployed setting (DDIM, 10 steps, eta 0)
+uv run --managed-python --extra libero python scripts/diagnose_cloud.py --active-env libero_goal_pixels --trials 21 78 79 80 --cloud 64 --dp-iters 10 --dp-method ddim --dp-eta 0.0
+
+# ── does stochastic DDIM widen the cloud?
+uv run --managed-python --extra libero python scripts/diagnose_cloud.py --active-env libero_goal_pixels --trials 21 78 79 80 --cloud 64 --dp-iters 10 --dp-method ddim --dp-eta 1.0
+
+# ── does an ancestral DDPM cloud widen it?
+uv run --managed-python --extra libero python scripts/diagnose_cloud.py --active-env libero_goal_pixels --trials 21 78 79 80 --cloud 64 --dp-method ddpm
+
+# ── fewer denoising steps = less converged = more spread?
+uv run --managed-python --extra libero python scripts/diagnose_cloud.py --active-env libero_goal_pixels --trials 21 78 79 80 --cloud 64 --dp-iters 3 --dp-method ddim --dp-eta 0.0
+
+# ── line 5: does a bigger cloud raise the oracle ceiling?
+uv run --managed-python --extra libero python scripts/diagnose_cloud.py --active-env libero_goal_pixels --trials 78 --cloud 256 --dp-iters 10 --dp-method ddim --dp-eta 0.0
+
+# ── line 6: the same diagnostic on the SCRATCH ALIGN runs, to check the
+#    conclusion is a property of dpq3c here and not of the ImageNet trunk
+uv run --managed-python --extra libero python scripts/diagnose_cloud.py --active-env libero_goal_pixels --trials 15 23 28 29 30 --cloud 64 --dp-iters 10 --dp-method ddim --dp-eta 0.0
+
+# ── line 7: per-action inference COST for every family on this env.
+#    The success tables have no cost column, and the spread is large: on
+#    pushing_pixels IBC scores 100.0 while spending 12288 energy evaluations per
+#    action against q3c's 30. dpq3c at cloud=1 should be the cheapest thing that
+#    also scores best here, which is the whole argument for dropping the critic.
+uv run --managed-python --extra libero python scripts/bench_libero_inference.py --dpq3c-trials 78 --q3c-trials 80 --ibc-trials 6 --cloud 64 --dp-iters 10 --reps 50
