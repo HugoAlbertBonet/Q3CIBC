@@ -68,6 +68,9 @@ OUT_CSV = ROOT / "results" / "hyperparam_search" / "combinedv2_cpascounter_train
 # obs -> action. Mirrors make_method_mse in bench_inference_kitchen.py.
 MSE_WIDTH = 2048
 MSE_BLOCKS = 4          # = 8 dense layers
+MSE_PAPER_REWARD = 2141.0   # IBC paper, pen-human, BC(MSE)
+MSE_PAPER_STD = 109.0
+MSE_PAPER_NSEEDS = 3
 
 OBS_DIM = 45
 ACTION_DIM = 24
@@ -695,7 +698,20 @@ def main():
     q3c_dfo_st = q3c_dfo_stats()
     q3c_lang_st = q3c_langevin_stats()
     ibc_stats = ibc_paper_stats()
-    all_stats = [q3c_stats, q3c_dfo_st, q3c_lang_st, ibc_stats]
+    # One stats entry per timed method, in the SAME order as `builders`: the
+    # CSV is written by zip(methods, all_stats), so a missing entry shifts
+    # every later row onto the wrong method and zip drops the tail.
+    # Explicit BC is not trained in our environment, so it carries the
+    # paper-reported return with no per-seed statistics.
+    mse_stats = {
+        "label": "Explicit BC MSE (paper-reported)",
+        "n_seeds": MSE_PAPER_NSEEDS, "avg_reward": MSE_PAPER_REWARD,
+        "std": None, "SEM": None, "cross_seed_std": MSE_PAPER_STD,
+        "seeds": ["paper"], "trial_ids": ["paper"],
+    }
+    all_stats = [q3c_stats, q3c_dfo_st, q3c_lang_st, ibc_stats, mse_stats]
+    assert len(all_stats) == len(methods), (
+        f"{len(methods)} timed methods but {len(all_stats)} stats entries")
 
     # ── Diffusion Policy: time DDPM + DDIM {5,10,25}, reward from penDPB ─────
     dp_specs = [
@@ -719,8 +735,11 @@ def main():
             continue
         print(f"  {s['label']}: n_seeds={s['n_seeds']} seeds={s['seeds']} "
               f"trial_ids={s['trial_ids']}")
-        print(f"    avg_reward={s['avg_reward']:.1f}  σ_ep(avg)={s['std']:.1f}  "
-              f"SEM={s['SEM']:.2f}  cross_seed_std={s['cross_seed_std']:.2f}")
+        # Paper-reported entries carry no per-seed spread, so format defensively.
+        def _f(v, nd=1):
+            return "n/a" if v is None else f"{v:.{nd}f}"
+        print(f"    avg_reward={_f(s['avg_reward'])}  σ_ep(avg)={_f(s['std'])}  "
+              f"SEM={_f(s['SEM'], 2)}  cross_seed_std={_f(s['cross_seed_std'], 2)}")
 
     # ── Speed-vs-reward summary ─────────────────────────────────────────────
     if q3c_stats["avg_reward"] is not None and ibc_stats["avg_reward"] is not None:
