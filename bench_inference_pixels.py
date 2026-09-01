@@ -574,9 +574,13 @@ def make_dp(device: torch.device, sampler: str, ddim_steps, timesteps: int, meth
         "denoiser_depth": 1, "time_emb_dim": 128,
         "num_train_timesteps": timesteps, "beta_schedule": "cosine",
     }}})
+    # `device` must be passed by keyword: build_pixel_denoiser's sixth
+    # positional parameter is encoder_feature_dim, so passing it positionally
+    # set feature_dim='cuda' and aborted every Diffusion Policy method.
     model = build_pixel_denoiser(
         ACTION_DIM, IMAGE_CHANNELS, dp,
-        ENCODER_TARGET_HEIGHT, ENCODER_TARGET_WIDTH, device,
+        ENCODER_TARGET_HEIGHT, ENCODER_TARGET_WIDTH,
+        device=device,
     ).eval()
     diffusion = build_diffusion(dp, device, (ACTION_MIN, ACTION_MAX))
 
