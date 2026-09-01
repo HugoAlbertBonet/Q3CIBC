@@ -74,7 +74,7 @@ from utils.models import ControlPointGenerator, QEstimator
 # ─── Particle n_dim=16 task constants ─────────────────────────────────────────
 # From config_json/config.json (particle entry): n_dim=16, state_dim=64,
 # action_dim=16, frame_stack=2, action_bounds=[0, 1].
-N_DIM = 16
+N_DIM = 16              # overridable with --n-dim; OBS/ACTION follow it
 FRAME_STACK = 2
 OBS_DIM = 4 * N_DIM * FRAME_STACK          # 4·16·2 = 128
 ACTION_DIM = N_DIM                          # 16
@@ -258,6 +258,27 @@ def make_method_q3c_best(device: torch.device):
     return name, select_action, q_net, cp_gen
 
 
+def make_method_q3c_argmax(device: torch.device):
+    """CP-argmax: generate the control points, score them, take the best.
+
+    No refinement, matching the "Q3C + CP-argmax" rows reported for the other
+    environments, so particle can be compared with them on equal terms.
+    """
+    q_net = build_q_mlp(width=256, depth=2, device=device)
+    cp_gen = build_cp_gen(width=256, depth=2, control_points=30, device=device)
+    name = "Q3CIBC CP-argmax (MLP 256x2, CPs=30, no refinement)"
+
+    def select_action():
+        obs = torch.randn(1, OBS_DIM, device=device)
+        with torch.no_grad():
+            cps = cp_gen(obs)
+            obs_exp = obs.unsqueeze(1).expand(-1, cps.shape[1], -1)
+            q = q_net(obs_exp, cps).squeeze(-1)
+            return cps[0, q.argmax(dim=1)[0], :]
+
+    return name, select_action, q_net, cp_gen
+
+
 # ─── Method 3: Q3CIBC fastest ≥90% (HH11-HH15 — 89.2% mean, 90% peak) ────────
 
 def make_method_q3c_fastest(device: torch.device):
@@ -303,12 +324,20 @@ def param_count(*modules) -> int:
 
 
 def main():
+    global N_DIM, OBS_DIM, ACTION_DIM
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--num-steps", type=int, default=50, help="Timed calls per method")
     parser.add_argument("--warmup", type=int, default=5, help="Untimed warmup calls")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
+    parser.add_argument("--n-dim", type=int, default=N_DIM,
+                        help="Particle dimensionality; obs=4*n*frame_stack, action=n.")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    if args.n_dim != N_DIM:
+        N_DIM = args.n_dim
+        OBS_DIM = 4 * N_DIM * FRAME_STACK
+        ACTION_DIM = N_DIM
+        print(f'Particle n_dim={N_DIM}: obs={OBS_DIM}, action={ACTION_DIM}')
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.device != "cpu" else "cpu") \
         if args.device == "auto" else torch.device(args.device)
@@ -343,6 +372,20 @@ def main():
                   "lr=0.015, lr_final=1e-4, clip=0.015, noise=0.05. "
                   "Best particle-16 trial in `particle/16/trials.jsonl`.",
             make=make_method_q3c_best,
+        ),
+        MethodSpec(
+            name="Q3CIBC CP-argmax (no refinement)",
+            approach="q3c",
+            success_rate="",
+            langevin_iters=0,
+            num_chains=1,
+            q_net_kind="mlp",
+            q_width=256,
+            q_depth_blocks=2,
+            notes="MLP Q + MLP CP-gen (CPs=30); score the control points and "
+                  "take the argmax, no refinement. Matches the CP-argmax rows "
+                  "reported for the other environments.",
+            make=make_method_q3c_argmax,
         ),
         MethodSpec(
             name="Q3CIBC fastest ≥90% (HH11-HH15)",
