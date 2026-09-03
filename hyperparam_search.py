@@ -879,6 +879,7 @@ INFERENCE_ONLY_PARAMS: set[str] = {
     "inference_dfo_iteration_std",
     "inference_dfo_iteration_std_decay",
     "inference_dfo_num_uniform",
+    "inference_uniform_proposal",
     # Evaluation-only for BOTH algorithms: these change how a saved checkpoint
     # is queried, never what was trained, so reeval_trials.py may override them.
     "cp_selection",
@@ -1213,6 +1214,13 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     )
     inference_dfo_num_uniform = int(
         env_config.get("training", {}).get("inference_dfo_num_uniform", 0)
+    )
+    # Ablation control: discard the learned proposal at evaluation and draw the
+    # same number of candidates uniformly from the action box. Isolates how much
+    # of the method's performance comes from the control-point generator rather
+    # than from scoring a small candidate set at all. Training is untouched.
+    inference_uniform_proposal = bool(
+        env_config.get("training", {}).get("inference_uniform_proposal", False)
     )
     # Effective langevin hyperparams for INFERENCE chain. Starts from training
     # Langevin config (env_model.langevin_config + langevin_* training overrides),
@@ -1877,6 +1885,33 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
     # PushingSimulation has no n_dim arg (1-block/1-target, fixed schema)
     # but has its own goal_dist_tolerance knob (IBC paper used 0.02).
+    if inference_uniform_proposal:
+        # Wrap rather than branch at each call site: every downstream consumer
+        # (plain argmax, CP-DFO, inference-time Langevin, pixel and state envs)
+        # goes through cp_gen(obs) -> (B, N, A), so replacing the module here
+        # covers all of them and keeps the candidate count identical.
+        class _UniformProposal(torch.nn.Module):
+            def __init__(self, inner, n, action_dim, lo, hi):
+                super().__init__()
+                self.inner, self.n, self.action_dim = inner, int(n), int(action_dim)
+                self.lo, self.hi = float(lo), float(hi)
+
+            def forward(self, obs, *a, **k):
+                b = obs.shape[0]
+                dev = obs.device if hasattr(obs, "device") else None
+                return torch.empty(
+                    b, self.n, self.action_dim, device=dev
+                ).uniform_(self.lo, self.hi)
+
+            def encode(self, *a, **k):
+                return self.inner.encode(*a, **k)
+
+        cp_gen = _UniformProposal(
+            cp_gen, control_points, action_dim, action_bounds[0], action_bounds[1]
+        ).to(device).eval()
+        print(f"ABLATION: learned proposal replaced by {control_points} uniform "
+              f"candidates in [{action_bounds[0]}, {action_bounds[1]}]")
+
     sim_kwargs: dict = dict(
         control_point_generator=cp_gen,
         q_estimator=q_est,

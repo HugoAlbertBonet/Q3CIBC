@@ -1,0 +1,39 @@
+# Batch pushingI — ablation control: is the win from the LEARNED proposal?
+#
+# Every result so far shows Q3C matching or beating IBC while scoring ~20
+# candidates instead of 16,384. Two explanations are consistent with that:
+#
+#   (a) the control-point generator proposes good actions  (our claim), or
+#   (b) the task simply does not need many candidates, and 20 uniform draws
+#       would do just as well.
+#
+# Nothing in the existing results separates them. `inference_dfo_num_uniform`
+# only ADDS uniform samples to the control points; it never replaces them.
+#
+# This batch runs the missing control. `inference_uniform_proposal: true`
+# discards the generator at EVALUATION ONLY and draws the same number of
+# candidates (20) uniformly from the action box. Training is byte-identical to
+# pushingH, so these rows pair directly with pushingH trials 66-71:
+#
+#   pushingH 66-68  learned proposal, CP-argmax     99.0 +/- 1.0
+#   pushingH 69-71  learned proposal, CP-DFO 3 it   100  +/- 0
+#   pushingI below  uniform proposal, same two recipes, same three seeds
+#
+# Reading the outcome:
+#   uniform collapses  -> the generator is the contribution. Report as the
+#                         paper's key ablation.
+#   uniform matches    -> the method reduces to "IBC with far fewer samples",
+#                         which is still a result, but a different paper.
+#
+# Six jobs, 200k steps each, matching pushingH exactly except for the eval flag.
+# Training is unaffected by the flag, so if an eval-only path is added later
+# these can be replaced by re-evaluating the pushingH checkpoints.
+#
+# Run:  ./submit_experiments.sh batches/pushingI.txt pushingI
+
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":0,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000,"inference_uniform_proposal":true}'
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":0,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000,"inference_uniform_proposal":true}'
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":0,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000,"inference_uniform_proposal":true}'
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000,"inference_uniform_proposal":true}'
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000,"inference_uniform_proposal":true}'
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing --fixed-params '{"trial_seed":2,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":4,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":128,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-05,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":0,"inference_dfo_iterations":3,"inference_dfo_iteration_std":0.02,"inference_dfo_iteration_std_decay":0.5,"inference_dfo_num_uniform":0,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":200000,"cosine_t_max":200000,"inference_uniform_proposal":true}'
