@@ -232,12 +232,18 @@ def main():
         torch.save(ema_denoiser.state_dict(), os.path.join(MODEL_SAVE_DIR, "denoiser_ema.pt"))
 
     # norm_stats — SAME schema as combinedv2 so eval's PushingSimulation reuses it.
+    # Not every dataset carries action stats: ParticleDataset has no act_min /
+    # act_max (its actions are already in the model range), so reading them
+    # unconditionally crashes AFTER a full training run has completed. Emit them
+    # when present and leave them out otherwise — eval falls back to the model
+    # range exactly as it does for a checkpoint trained before these existed.
     norm_stats = {
-        "act_min": dataset.act_min,
-        "act_max": dataset.act_max,
         "action_norm_range": getattr(dataset, "action_norm_range", (-1.0, 1.0)),
         "state_shape": dataset.state_shape,
     }
+    if hasattr(dataset, "act_min"):
+        norm_stats["act_min"] = dataset.act_min
+        norm_stats["act_max"] = dataset.act_max
     if hasattr(dataset, "obs_mean"):
         norm_stats["obs_mean"] = dataset.obs_mean
         norm_stats["obs_std"] = dataset.obs_std

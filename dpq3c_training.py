@@ -556,9 +556,15 @@ def main():
             obs_mean=dataset.obs_mean, obs_std=dataset.obs_std)
         print("Observation normalizer: standardize")
     else:
+        # particle's min-max bounds are built PER DIMENSION, so the normalizer
+        # must be told n_dim or it sizes itself for the default and the first
+        # batch dies on a shape mismatch. combinedv2 passes it the same way.
+        particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
         obs_normalizer = ObservationNormalizer(
-            env_id=env_id, device=device, frame_stack=frame_stack)
-        print("Observation normalizer: minmax")
+            env_id=env_id, device=device, frame_stack=frame_stack,
+            particle_n_dim=particle_n_dim)
+        print(f"Observation normalizer: minmax"
+              + (f" (particle n_dim={particle_n_dim})" if particle_n_dim else ""))
 
     action_min_tensor = torch.full((action_dim,), action_bounds[0], device=device)
     action_max_tensor = torch.full((action_dim,), action_bounds[1], device=device)
