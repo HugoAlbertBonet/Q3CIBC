@@ -1021,8 +1021,31 @@ def extract_final_metrics(stdout: str) -> dict:
 
 # ─── Evaluation ──────────────────────────────────────────────────────────────
 
+class _NullCritic(torch.nn.Module):
+    """Constant-score stand-in for a policy that has no critic.
+
+    A plain diffusion policy is evaluated with a single candidate, so there is
+    nothing to rank — but every simulation calls `q.encode(obs)` then
+    `q.score(features, actions)` and takes an argmax. Returning zeros makes that
+    argmax pick the one candidate, which leaves the diffusion sample untouched
+    and keeps the simulations free of any special case.
+    """
+
+    def encode(self, images):
+        return torch.zeros(images.shape[0], 1, device=images.device)
+
+    def score(self, features, action):
+        # (B, N, A) -> (B, N, 1);  (B, A) -> (B, 1)
+        shape = action.shape[:-1] + (1,)
+        return torch.zeros(shape, device=action.device)
+
+    def forward(self, state, action):
+        return self.score(None, action)
+
+
 def _build_dpq3c_generator(weights_path, env_config, norm_stats, action_dim,
                            control_points, action_bounds, device, *, pixel,
+                           plain_dp=False,
                            in_channels=None, cond_dim=0, state_dim=None,
                            encoder_target_height=180, encoder_target_width=240,
                            encoder_feature_dim=256, encoder_kind="conv_maxpool",
@@ -1073,6 +1096,10 @@ def _build_dpq3c_generator(weights_path, env_config, norm_stats, action_dim,
     et = env_config.get("training", {})
     # Eval-only cloud size; falls back to the trained-against value.
     control_points = int(et.get("inference_control_points", control_points))
+    if plain_dp:
+        # No critic exists, so more than one candidate could not be chosen
+        # between. One sample IS the diffusion policy's action.
+        control_points = 1
     # Eval sampler knobs. Default the step count to the first entry the trainer
     # recorded in ddim_eval_steps, so a trial evaluates at the schedule it was
     # set up for rather than a hardcoded guess.
@@ -1221,22 +1248,36 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         cp_ema_path = os.path.join(checkpoint_dir, "control_point_generator_ema.pt")
     q_raw_path = os.path.join(checkpoint_dir, "q_estimator.pt")
     q_ema_path = os.path.join(checkpoint_dir, "q_estimator_ema.pt")
+
+    # A PLAIN diffusion policy (diffusion_policy_training.py) writes a denoiser
+    # and NO critic, so requiring q_estimator.pt rejected it before anything was
+    # loaded — which is why every dpParticle job recorded "Checkpoints not
+    # found" after training successfully for 300k steps. Evaluate it with a
+    # cloud of ONE (nothing to rank) and a constant-score stub critic, so the
+    # simulations' `cp_gen(obs)` then `q.score(...)` call pattern works unchanged
+    # and argmax over a single candidate trivially returns it.
+    is_plain_dp = is_dpq3c and not (
+        os.path.exists(q_raw_path) or os.path.exists(q_ema_path))
+
     eval_ema_decay = float(env_config.get("training", {}).get("ema_decay", 0.0))
     use_ema = (
         eval_ema_decay > 0.0
         and os.path.exists(cp_ema_path)
-        and os.path.exists(q_ema_path)
+        and (is_plain_dp or os.path.exists(q_ema_path))
     )
     cp_path = cp_ema_path if use_ema else cp_raw_path
     q_path = q_ema_path if use_ema else q_raw_path
     norm_stats_path = os.path.join(checkpoint_dir, "norm_stats.pt")
 
-    if not os.path.exists(cp_path) or not os.path.exists(q_path):
+    if not os.path.exists(cp_path) or (not is_plain_dp and not os.path.exists(q_path)):
         return {
             "success_rate": 0.0,
             "avg_reward": 0.0,
             "error": f"Checkpoints not found in {checkpoint_dir}",
         }
+    if is_plain_dp:
+        print("Plain diffusion policy detected (denoiser, no critic): evaluating "
+              "with a 1-candidate cloud and a null critic.")
     if eval_ema_decay > 0.0 and not use_ema:
         print(
             f"Warning: EMA requested (decay={eval_ema_decay}) but paired EMA "
@@ -1286,7 +1327,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             cp_gen = _build_dpq3c_generator(
                 cp_path, env_config, norm_stats or {}, action_dim_eff,
                 control_points, action_bounds, device,
-                pixel=True, in_channels=in_channels, cond_dim=cond_dim,
+                pixel=True, plain_dp=is_plain_dp,
+                in_channels=in_channels, cond_dim=cond_dim,
                 encoder_target_height=enc_h, encoder_target_width=enc_w,
                 encoder_feature_dim=int(_ns.get("encoder_feature_dim", 256)),
                 encoder_kind=encoder_kind, encoder_num_kp=encoder_num_kp,
@@ -1334,8 +1376,11 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             cond_fusion=cond_fusion,
             goal_dim=goal_dim,
         )
-        q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
-        q_est.to(device).eval()
+        if is_plain_dp:
+            q_est = _NullCritic().to(device).eval()
+        else:
+            q_est.load_state_dict(torch.load(q_path, map_location=device, weights_only=True))
+            q_est.to(device).eval()
     else:
         # libero_goal bakes the goal embedding into the state AFTER frame-stacking,
         # so its input dim is NOT state_dim*frame_stack. Same for kitchen when
@@ -1353,7 +1398,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             cp_gen = _build_dpq3c_generator(
                 cp_path, env_config, norm_stats or {}, flat_action_dim,
                 control_points, action_bounds, device,
-                pixel=False, state_dim=flat_input_dim,
+                pixel=False, plain_dp=is_plain_dp, state_dim=flat_input_dim,
             )
         else:
             cp_gen = ControlPointGenerator(
@@ -1382,9 +1427,12 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             depth=q_depth,
             resnet_final_activation=bool(em.get("q_resnet_final_activation", True)),
         )
-        q_est.load_state_dict(
-            torch.load(q_path, map_location=device, weights_only=True)
-        )
+        if is_plain_dp:
+            q_est = _NullCritic()
+        else:
+            q_est.load_state_dict(
+                torch.load(q_path, map_location=device, weights_only=True)
+            )
         q_est.to(device).eval()
 
     # ── Pixel envs: dedicated late-fused DFO / Langevin refinement ────────
@@ -1531,6 +1579,84 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
 
         else:
             sim_cls = SimulationCls
+
+    # libero_goal_pixels: the same late-fused refinement, but its simulation has
+    # a different select_action contract — it takes the raw obs dict, builds
+    # (image, cond) itself and must set `_cond` on both nets before any forward.
+    # Without this branch the inference_langevin_* / inference_dfo_* overrides
+    # were silently ignored on libero and every "refined" run returned the
+    # unrefined number.
+    elif active_env == "libero_goal_pixels" and (
+            inference_langevin_iterations > 0 or inference_dfo_iterations > 0):
+        _lv_iters = inference_langevin_iterations
+        _dfo_iters_l = inference_dfo_iterations
+        _dfo_std0_l = inference_dfo_iteration_std
+        _dfo_decay_l = inference_dfo_iteration_std_decay
+
+        class LiberoRefinedSimulation(SimulationCls):
+            """Encode once, then refine the chosen control point on cached features.
+
+            DFO takes precedence over Langevin when both are set, matching the
+            flat-state wrappers.
+            """
+
+            def select_action(self, live_obs):
+                img_t, cond_t = self._build_inputs(live_obs)
+                self.control_point_generator._cond = cond_t
+                self.q_estimator._cond = cond_t
+                A = None
+                with torch.no_grad():
+                    feats = self.q_estimator.encode(img_t)
+                    cps = self.control_point_generator(img_t)
+                    A = cps.shape[-1]
+                    qv = self.q_estimator.score(feats, cps).squeeze(-1)
+
+                amin = torch.full((A,), float(action_bounds[0]), device=self.device)
+                amax = torch.full((A,), float(action_bounds[1]), device=self.device)
+
+                if _dfo_iters_l > 0:
+                    with torch.no_grad():
+                        cand = cps.clone()
+                        N = cand.shape[1]
+                        std = float(_dfo_std0_l)
+                        for it in range(_dfo_iters_l):
+                            lp = self.q_estimator.score(feats, cand).squeeze(-1)
+                            idx = torch.multinomial(
+                                torch.softmax(lp.squeeze(0), dim=-1), N, replacement=True)
+                            cand = cand[:, idx, :]
+                            if it < _dfo_iters_l - 1:
+                                cand = (cand + torch.randn_like(cand) * std).clamp(
+                                    float(action_bounds[0]), float(action_bounds[1]))
+                                std *= _dfo_decay_l
+                        final = self.q_estimator.score(feats, cand).squeeze(-1)
+                        act = cand[0, int(final.argmax(dim=1)[0]), :].cpu().numpy()
+                else:
+                    best = cps[0, int(qv.argmax(dim=1)[0]), :].view(1, 1, -1).clone()
+                    for prm in self.q_estimator.parameters():
+                        prm.requires_grad_(False)
+
+                    def _neg_energy_fn(obs_lv, actions_lv):
+                        return -self.q_estimator.score(feats, actions_lv).squeeze(-1)
+
+                    refined = sample_langevin(
+                        energy_function=_neg_energy_fn, observations=feats,
+                        num_samples=1, action_min=amin, action_max=amax,
+                        num_iterations=_lv_iters,
+                        lr_init=float(langevin_cfg.get("lr_init", 0.1)),
+                        lr_final=float(langevin_cfg.get("lr_final", 1e-5)),
+                        polynomial_decay_power=float(langevin_cfg.get("polynomial_decay_power", 2.0)),
+                        delta_action_clip=float(langevin_cfg.get("delta_action_clip", 0.1)),
+                        noise_scale=float(langevin_cfg.get("noise_scale", 1.0)),
+                        initial_actions=best, device=self.device)
+                    for prm in self.q_estimator.parameters():
+                        prm.requires_grad_(True)
+                    act = refined[0, 0, :].cpu().numpy()
+
+                act = np.clip(act, action_bounds[0], action_bounds[1])
+                return self._denormalize_action(act)
+
+        sim_cls = LiberoRefinedSimulation
+
 
     elif inference_dfo_iterations > 0:
         # ── CP-DFO refinement (Q3CIBC inference). Cheaper than Langevin: no

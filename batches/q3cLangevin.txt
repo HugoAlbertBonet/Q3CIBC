@@ -1,0 +1,67 @@
+# q3c with LANGEVIN inference on both pixel environments.
+#
+# Submit with:  bash submit_experiments.sh batches/q3cLangevin.txt
+# Prereq:       uv sync --extra libero --extra pushing   (this file uses both)
+#
+# ── Why this is a re-score and not a retraining ────────────────────────────
+# Langevin refinement is an INFERENCE-time sampler: it starts from the control
+# points the generator already produced and walks them down the Q energy
+# surface. It changes nothing about training, so it can be applied to q3c
+# checkpoints that already exist. hyperparam_search exposes the whole chain as
+# inference-only parameters (inference_langevin_iterations, lr_init, lr_final,
+# decay_power, delta_clip, noise_scale), and reeval_trials.py accepts exactly
+# those. Eval cost only — no 20-hour trainings.
+#
+# ── What this fills in ─────────────────────────────────────────────────────
+# The comparison tables currently have q3c evaluated two ways: pure CP-argmax
+# (0 refinement iterations) and CP-DFO. IBC is evaluated with Langevin on states
+# and DFO on pixels. There is no q3c + Langevin row on either pixel environment,
+# so it is not possible to say whether Q3C's control-point cloud benefits from
+# the IBC-style gradient sampler or only from the derivative-free one. This
+# produces that row.
+#
+# It matters because the two samplers fail differently. DFO resamples and
+# jitters a finite cloud, so it can only concentrate mass on points it already
+# has; Langevin follows the energy gradient and can leave the cloud entirely.
+# On a well-shaped energy surface Langevin should win; on a badly-shaped one it
+# walks off the data manifold and does worse than not refining at all. Which of
+# those happens is exactly what the deployed policy's behaviour depends on.
+#
+# ── Checkpoints re-scored ──────────────────────────────────────────────────
+#   pushing_pixels   trials 95, 59, 64, 66, 99  (0.99 / 0.98 x4, n=100)
+#   libero           trials 76, 80, 54, 77, 67  (0.96 / 0.946 / 0.94 x2 / 0.938)
+# Five per environment so every row is a 5-checkpoint mean rather than a single
+# lucky run — the same discipline that overturned several earlier conclusions
+# here.
+#
+# ── The sweep ──────────────────────────────────────────────────────────────
+# Iteration count is the axis that matters; the step-size schedule is held at
+# the values the training-time chain uses (lr 0.1 -> 1e-5, polynomial decay
+# power 2.0, delta clip 0.1, noise 0.1) so the refinement is the same operator
+# the estimator was trained against. One line per environment then varies the
+# step size, because a sampler tuned for training negatives is not necessarily
+# tuned for inference — training wants hard negatives, inference wants the
+# minimum.
+#
+# 0 iterations is the existing published number and is NOT re-run here.
+#
+# Standard eval counts throughout (pushing_pixels 100, libero 50), never
+# overridden, so these drop straight into the existing tables.
+
+# ══════════════════ pushing_pixels ══════════════════
+# ── Langevin refinement at three iteration counts
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env pushing_pixels --trials 95 59 64 66 99 --param-overrides '{"inference_langevin_iterations":10,"inference_langevin_lr_init":0.1,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.1,"inference_langevin_noise_scale":0.1}'
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env pushing_pixels --trials 95 59 64 66 99 --param-overrides '{"inference_langevin_iterations":25,"inference_langevin_lr_init":0.1,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.1,"inference_langevin_noise_scale":0.1}'
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env pushing_pixels --trials 95 59 64 66 99 --param-overrides '{"inference_langevin_iterations":100,"inference_langevin_lr_init":0.1,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.1,"inference_langevin_noise_scale":0.1}'
+
+# ── gentler steps: inference wants the minimum, not hard negatives
+uv run --managed-python --extra pushing python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env pushing_pixels --trials 95 59 64 66 99 --param-overrides '{"inference_langevin_iterations":25,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-6,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.01}'
+
+# ══════════════════ libero_goal_pixels ══════════════════
+# ── Langevin refinement at three iteration counts
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 76 80 54 77 67 --param-overrides '{"inference_langevin_iterations":10,"inference_langevin_lr_init":0.1,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.1,"inference_langevin_noise_scale":0.1}'
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 76 80 54 77 67 --param-overrides '{"inference_langevin_iterations":25,"inference_langevin_lr_init":0.1,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.1,"inference_langevin_noise_scale":0.1}'
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 76 80 54 77 67 --param-overrides '{"inference_langevin_iterations":100,"inference_langevin_lr_init":0.1,"inference_langevin_lr_final":1e-5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.1,"inference_langevin_noise_scale":0.1}'
+
+# ── gentler steps
+uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 76 80 54 77 67 --param-overrides '{"inference_langevin_iterations":25,"inference_langevin_lr_init":0.01,"inference_langevin_lr_final":1e-6,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_noise_scale":0.01}'

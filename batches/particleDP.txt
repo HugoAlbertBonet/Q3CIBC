@@ -1,0 +1,53 @@
+# particle — the DP (DDIM/DDPM) table, via dpq3c checkpoints at cloud=1.
+#
+# Submit with:  bash submit_experiments.sh batches/particleDP.txt
+#
+# ── Why batches/dpParticle.txt produced nothing ────────────────────────────
+# All 12 jobs recorded `success_rate 0.0` with
+# `eval_error: "Checkpoints not found in ..."`. That is NOT the act_min crash I
+# patched, and it is not a training failure — n_dim was applied correctly (the
+# records carry 2/4/6/8/16/32) and training ran its full 300k steps.
+#
+# The cause is that hyperparam_search has no working evaluation path for a plain
+# diffusion policy any more. `evaluate_q3c` requires BOTH a proposal net and
+# `q_estimator.pt`; `diffusion_policy_training.py` writes only `denoiser.pt`, so
+# the existence check fails before anything is loaded. The older DP records in
+# results/hyperparam_search/diffusion_policy_training/pushing_pixels (July) carry
+# `ddpm_success_rate`, `ddim5_success_rate`, `ddim10_ms_per_step` and similar —
+# a schema no code in the current tree produces. That evaluator was removed or
+# never committed.
+#
+# ── Why this is the right way round it ─────────────────────────────────────
+# dpq3c's actor IS a diffusion policy: the critic's gradients never reach the
+# denoiser (no-grad sampling, detached features, separate optimizers,
+# q_actor_weight 0), so the denoiser is trained by the identical objective. With
+# a candidate cloud of ONE there is nothing to rank and the critic is not called,
+# so the policy reduces exactly to plain DP — and unlike a separate DP run it
+# shares the actor weights, dataset pipeline and seeds, which makes it a BETTER
+# controlled measurement, not a worse one.
+#
+# The dpq3c particle runs already exist (trials 1 and 2, 16D, scoring 0.62 and
+# 0.68 with the full 64-cloud). Re-scoring them at cloud=1 under each sampler
+# gives the DDIM-5/10/25 and DDPM rows on working code, at eval cost only.
+#
+# The alternative — restoring the deleted DP evaluator — is the right long-term
+# fix if DP needs to be a first-class row across every environment. It is a real
+# piece of work and worth doing deliberately rather than as a side effect here.
+#
+# ── Coverage limit, stated plainly ─────────────────────────────────────────
+# This covers 16D ONLY, because that is the only dimensionality dpq3c has been
+# trained at. The 2D/4D/6D/8D/32D sweep in dpParticle.txt cannot be recovered by
+# re-scoring — those checkpoints were never evaluable. Getting the full sweep
+# needs either the DP evaluator restored, or dpq3c trained at each n_dim (which
+# also yields the cloud=1 DP row for free).
+
+# ── DP via cloud=1: DDIM at three step counts
+uv run --managed-python python scripts/reeval_trials.py --script dpq3c_training.py --active-env particle --trials 1 2 --param-overrides '{"inference_control_points":1,"inference_dp_iters":5,"inference_dp_method":"ddim"}'
+uv run --managed-python python scripts/reeval_trials.py --script dpq3c_training.py --active-env particle --trials 1 2 --param-overrides '{"inference_control_points":1,"inference_dp_iters":10,"inference_dp_method":"ddim"}'
+uv run --managed-python python scripts/reeval_trials.py --script dpq3c_training.py --active-env particle --trials 1 2 --param-overrides '{"inference_control_points":1,"inference_dp_iters":25,"inference_dp_method":"ddim"}'
+
+# ── DP via cloud=1: ancestral DDPM (full training chain)
+uv run --managed-python python scripts/reeval_trials.py --script dpq3c_training.py --active-env particle --trials 1 2 --param-overrides '{"inference_control_points":1,"inference_dp_method":"ddpm"}'
+
+# ── and the ranking control at the trained-against cloud, for the same rows
+uv run --managed-python python scripts/reeval_trials.py --script dpq3c_training.py --active-env particle --trials 1 2 --param-overrides '{"inference_control_points":64,"inference_dp_method":"ddpm"}'
