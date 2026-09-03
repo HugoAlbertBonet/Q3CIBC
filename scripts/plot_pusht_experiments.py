@@ -63,6 +63,59 @@ MIN_POSITIONS = 8
 HORIZON_ANCHOR = {("ibc", "dfo", 5, "Ibc2c16_c256_imnet"): {1: "Ibc2c_c256_imnet"}}
 OUT_DIR = ROOT / "results" / "pusht" / "plots"
 
+# ── IoU mode ────────────────────────────────────────────────────────────────
+# measure_target_coverage.py reports covered_frac = covered / n_target, i.e. the
+# intersection as a fraction of the TARGET area (scripts/measure_target_coverage
+# .py:791). The block and the target are the same shape at the same size, so with
+# i = I/A the union is 2A - I and
+#
+#     IoU = i / (2 - i)
+#
+# --iou converts every coverage number through that before anything is plotted,
+# so the derived quantities (mean of the two cameras, worst camera, deltas vs
+# the BC baseline) are all computed on IoU. The transform is monotone, so
+# rankings never change; what changes is the SPACING. IoU is much harsher in the
+# middle of the range — half the target covered scores 0.33, and 0.5 IoU needs
+# two thirds coverage — so differences between mediocre runs compress and
+# differences between good ones expand.
+#
+# One bias worth carrying over: the block is tall and both cameras look at the
+# table at an angle, so the silhouette over-estimates the covered area. IoU
+# inherits that bias and, being convex, slightly amplifies it.
+IOU_MODE = False
+
+# ── Excluded start positions ────────────────────────────────────────────────
+# Only two q3c checkpoints were ever rolled out at 'right' (L2c_ch16_scratch and
+# L1c_ch16_scratch), so the S02_shared_k16_s29 horizon sweep — 12 configs — has
+# no 'right' data and is scored on 8 positions while everything else is scored
+# on 9. Because 'right' is one of the two hardest positions, that hands those
+# configs about +0.03 IoU for free, and they are all q3c, so the bias is not
+# spread evenly across methods.
+#
+# Borrowing 'right' from another checkpoint is not a fix here: excluding the
+# discarded L2c leaves a donor for exactly 1 of the 12, and relaxing the match
+# to "any exec_horizon" would mean imputing across the very axis the horizon
+# sweep is plotting.
+#
+# Dropping the position for EVERYONE is the honest alternative. It costs one
+# position of coverage and removes the imputation entirely, and every remaining
+# config is then scored on the identical 8-position set.
+EXCLUDE_POSITIONS: set[str] = set()
+
+
+def to_iou(i: float) -> float:
+    """Intersection-over-target -> intersection-over-union, equal-area shapes."""
+    return i / (2.0 - i)
+
+
+def _lab(text: str) -> str:
+    """Retitle coverage wording when the numbers are IoU."""
+    if not IOU_MODE or not isinstance(text, str):
+        return text
+    for a, b in (("coverage", "IoU"), ("Coverage", "IoU")):
+        text = text.replace(a, b)
+    return text
+
 # Composite encoding: hue = algorithm, lightness step = inference method within
 # that algorithm. So the three Q3C variants read as one family at a glance, and
 # DP and IBC read as separate algorithms rather than as two more variants.
@@ -201,9 +254,17 @@ def series_label(alg: str, inf: str) -> str:
 def load_rows() -> list[dict]:
     with CSV_PATH.open() as f:
         rows = list(csv.DictReader(f))
+    if EXCLUDE_POSITIONS:
+        rows = [r for r in rows if r["start_position"] not in EXCLUDE_POSITIONS]
     for r in rows:
         r["cam0"] = float(r["coverage_cam0"])
         r["cam1"] = float(r["coverage_cam1"])
+        if IOU_MODE:
+            # Transform BEFORE the derived quantities: each camera is an
+            # independent estimate of the same overlap, so we want the mean of
+            # two IoUs, not the IoU of a mean.
+            r["cam0"] = to_iou(r["cam0"])
+            r["cam1"] = to_iou(r["cam1"])
         r["min_cov"] = min(r["cam0"], r["cam1"])
         r["avg_cov"] = 0.5 * (r["cam0"] + r["cam1"])
         r["dist"] = float(r["dist_centroid"])
@@ -378,12 +439,12 @@ def grouped_plot(
 
     ax.set_xticks(x)
     ax.set_xticklabels([p.replace("_", " ") for p in positions], color=TEXT_SECONDARY)
-    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
-    ax.set_title(title, color=TEXT_PRIMARY, fontsize=13, loc="left", pad=18, weight="bold")
+    ax.set_ylabel(_lab(ylabel), color=TEXT_SECONDARY)
+    ax.set_title(_lab(title), color=TEXT_PRIMARY, fontsize=13, loc="left", pad=18, weight="bold")
     ax.text(
         0,
         1.02,
-        subtitle,
+        _lab(subtitle),
         transform=ax.transAxes,
         color=TEXT_SECONDARY,
         fontsize=9,
@@ -518,9 +579,9 @@ def best_iters_plot(
 
     ax.set_xticks(x)
     ax.set_xticklabels([lb.replace(" · ", "\n") for lb in labels], color=TEXT_SECONDARY)
-    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+    ax.set_ylabel(_lab(ylabel), color=TEXT_SECONDARY)
     ax.set_title(
-        title,
+        _lab(title),
         color=TEXT_PRIMARY,
         fontsize=13,
         loc="left",
@@ -667,7 +728,7 @@ def speed_tradeoff_plot(rows, stem: str, metric: str = "cam1", ylabel: str = "ca
             )
 
     ax.set_xlabel(f"mean inference time per step (ms, {DEVICE})", color=TEXT_SECONDARY)
-    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+    ax.set_ylabel(_lab(ylabel), color=TEXT_SECONDARY)
     ax.set_title(
         "Cost vs performance — refinement sweep",
         color=TEXT_PRIMARY,
@@ -908,9 +969,9 @@ def horizon_tradeoff_plot(
             place(ax, f"h{h}", (x, y))
 
     ax.set_xlabel(f"mean inference time per step (ms, {DEVICE})", color=TEXT_SECONDARY)
-    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+    ax.set_ylabel(_lab(ylabel), color=TEXT_SECONDARY)
     ax.set_title(
-        title,
+        _lab(title),
         color=TEXT_PRIMARY,
         fontsize=13,
         loc="left",
@@ -1225,7 +1286,7 @@ def baseline_delta_bars(
         [series_label(*s).replace(" · ", "\n") for s in series], color=TEXT_SECONDARY
     )
     ax.set_ylim(lo - 0.3 * span, hi + 0.28 * span)
-    ax.set_ylabel(ylabel, color=TEXT_SECONDARY)
+    ax.set_ylabel(_lab(ylabel), color=TEXT_SECONDARY)
     bl = f"{series_label(base[0], base[1])} · h{base[3]}"
     ax.set_title(
         "Best setting per method, relative to the BC baseline",
@@ -1264,6 +1325,31 @@ def write_table(path: Path, table: list[dict]) -> None:
 
 
 def main() -> None:
+    global OUT_DIR, IOU_MODE, MIN_POSITIONS
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--iou", action="store_true",
+                    help="plot IoU = i/(2-i) instead of the raw covered "
+                         "fraction i = I/A_target (equal-area shapes)")
+    ap.add_argument("--exclude-positions", nargs="*", default=None,
+                    help="start positions to drop from every config, so all are "
+                         "scored on an identical set (e.g. --exclude-positions right)")
+    ap.add_argument("--out-dir", type=Path, default=None,
+                    help=f"output directory (default {OUT_DIR})")
+    a = ap.parse_args()
+    IOU_MODE = a.iou
+    if a.out_dir is not None:
+        OUT_DIR = a.out_dir
+    if a.exclude_positions:
+        EXCLUDE_POSITIONS.update(a.exclude_positions)
+        # Every config must now cover the WHOLE surviving set, so the balanced
+        # means are all taken over identical positions. This also drops any
+        # config with a different gap (e.g. L2c_ch16_scratch, missing 'left').
+        MIN_POSITIONS = 9 - len(EXCLUDE_POSITIONS)
+        print(f"excluded positions: {sorted(EXCLUDE_POSITIONS)}   "
+              f"MIN_POSITIONS -> {MIN_POSITIONS} (all remaining required)")
+    print(f"metric: {'IoU = i/(2-i)' if IOU_MODE else 'covered fraction i = I/A'}"
+          f"   ->  {OUT_DIR}")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     rows = [
         r

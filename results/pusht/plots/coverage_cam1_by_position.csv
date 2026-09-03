@@ -2,7 +2,6 @@ algorithm,inference,start_position,metric,mean,std,n_runs
 dp,ddim,top,cam1,0.9441,0.0407,27
 dp,ddim,bottom,cam1,0.7283,0.2251,26
 dp,ddim,left,cam1,0.7465,0.1003,25
-dp,ddim,right,cam1,0.334,0.0495,25
 dp,ddim,top_right,cam1,0.6131,0.2583,28
 dp,ddim,bottom_right,cam1,0.7073,0.1281,26
 dp,ddim,turned_left,cam1,0.7054,0.0405,24
@@ -11,7 +10,6 @@ dp,ddim,upside_down,cam1,0.4448,0.0638,28
 dp,ddpm,top,cam1,0.859,0.2073,8
 dp,ddpm,bottom,cam1,0.9036,0.0418,8
 dp,ddpm,left,cam1,0.8005,0.0777,8
-dp,ddpm,right,cam1,0.3297,0.0347,8
 dp,ddpm,top_right,cam1,0.7728,0.1,8
 dp,ddpm,bottom_right,cam1,0.7274,0.0251,8
 dp,ddpm,turned_left,cam1,0.7106,0.0163,8
@@ -44,7 +42,6 @@ q3c,dfo,upside_down,cam1,0.5689,0.0146,8
 ibc,dfo,top,cam1,0.8582,0.194,31
 ibc,dfo,bottom,cam1,0.6163,0.328,24
 ibc,dfo,left,cam1,0.8026,0.2805,26
-ibc,dfo,right,cam1,0.3873,0.2606,22
 ibc,dfo,top_right,cam1,0.8356,0.2541,17
 ibc,dfo,bottom_right,cam1,0.6205,0.2668,13
 ibc,dfo,turned_left,cam1,0.442,0.1781,20
@@ -53,7 +50,6 @@ ibc,dfo,upside_down,cam1,0.1325,0.0911,12
 bc,deterministic,top,cam1,0.9233,0.0348,9
 bc,deterministic,bottom,cam1,0.7764,0.1101,11
 bc,deterministic,left,cam1,0.7667,0.075,8
-bc,deterministic,right,cam1,0.5399,0.0165,8
 bc,deterministic,top_right,cam1,0.4666,0.1174,9
 bc,deterministic,bottom_right,cam1,0.6246,0.26,10
 bc,deterministic,turned_left,cam1,0.7021,0.0167,8
