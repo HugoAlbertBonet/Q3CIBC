@@ -1201,6 +1201,11 @@ class RolloutVideo:
         self._dead: set = set()
         self._frames = 0
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        # Announce at construction, not at the first frame: a run that records
+        # nothing has to be distinguishable from a run where --highres never
+        # took effect, and the only difference between them is this line.
+        print(f"[highres] recording cameras {self.cam_ids} @ {self.fps:g} fps "
+              f"-> {self.out_dir.resolve()}")
 
     def _writer(self, cam: int, frame: np.ndarray):
         w = self._writers.get(cam)
@@ -1249,7 +1254,17 @@ class RolloutVideo:
             except Exception as exc:
                 print(f"[highres] cam{cam} did not close cleanly: {exc!r}")
         if self._writers:
-            print(f"[highres] {self._frames} frame(s) per camera -> {self.out_dir}")
+            for cam in self._writers:
+                path = self.out_dir / f"cam{cam}.mp4"
+                size = path.stat().st_size if path.is_file() else 0
+                print(f"[highres] cam{cam}: {self._frames} frame(s), "
+                      f"{size / 1e6:.1f} MB -> {path.resolve()}")
+        else:
+            # Reached when the episode ended before a single frame was appended
+            # -- an immediate Ctrl+C, or every camera failing on step 0. Silence
+            # here reads exactly like "--highres did nothing", so say it.
+            print("[highres] NO video written: not one frame reached the "
+                  "encoder. The rollout ended before its first logged step.")
         self._writers.clear()
 
 
