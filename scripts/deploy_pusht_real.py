@@ -454,6 +454,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dump-dir", type=Path, default=ROOT / "deploy_dryrun")
     p.add_argument("--log-dir", type=Path, default=None,
                    help="per-step forensic log: raw/*.npy, fed/*.png, steps.jsonl")
+    p.add_argument("--highres", action="store_true",
+                   help="with --log-dir: record video/cam<id>.mp4 -- one h264 "
+                        "file per REGISTERED camera at the sensor's own "
+                        "resolution -- instead of the fed/*.png stills, which "
+                        "are what the policy saw (model resolution, exposure "
+                        "gains applied, policy cameras only). Frame i is step i "
+                        "of steps.jsonl; playback fps comes from "
+                        "--step-duration. raw/*.npy is unaffected.")
     p.add_argument("--measure", action="store_true",
                    help="after the episode, score the final frame with "
                         "measure_target_coverage.py and append a row to "
@@ -1150,6 +1158,101 @@ def save_fed_png(path_stem: Path, block: np.ndarray, cam_ids: List[int]) -> None
                                            cv2.COLOR_RGB2BGR))
 
 
+def crop_even(img: np.ndarray) -> np.ndarray:
+    """Drop a trailing row/column so H and W are even.
+
+    yuv420p subsamples chroma 2x2 and ffmpeg refuses an odd dimension outright.
+    Cropping costs at most one border pixel and, unlike padding, never invents
+    image content -- these frames get scored by measure_target_coverage.py.
+    """
+    h, w = img.shape[:2]
+    return img[:h - (h % 2), :w - (w % 2)]
+
+
+class RolloutVideo:
+    """One h264 mp4 per camera, at the sensor's own resolution.
+
+    The `fed/` pngs record what the POLICY consumed: model resolution, exposure
+    gains applied, only the cameras the checkpoint reads. That is the right
+    artifact for debugging the input pipeline and the wrong one for looking at a
+    rollout -- 180x240 stills of a downsampled, re-exposed scene. This records
+    what the CAMERAS saw instead, over every registered topic, which is both what
+    a human needs to judge the episode and what measure_target_coverage.py scores.
+
+    Frames are encoded as they arrive rather than buffered to the end: 200 steps
+    of two 640x480 cameras is ~370 MB held in RAM, and an E-stop or a Ctrl-C has
+    to still leave a playable file. Frame i is step i of steps.jsonl, so the
+    per-step timestamps there are the authority on real timing -- `fps` only sets
+    playback speed, and a non-blocking run whose steps overrun --step-duration
+    will play back faster than it happened.
+    """
+
+    # Visually lossless for this rig while staying ~10x smaller than CRF 0. The
+    # videos are a record to look at; the npy dump is the lossless copy.
+    CRF = 18
+
+    def __init__(self, out_dir: Path, cam_ids: List[int], fps: float) -> None:
+        self.out_dir = Path(out_dir)
+        self.cam_ids = list(cam_ids)
+        # A 0 or negative period would otherwise reach ffmpeg as fps=inf.
+        self.fps = max(1.0, float(fps))
+        self._writers: Dict[int, Any] = {}
+        self._shapes: Dict[int, tuple] = {}
+        self._dead: set = set()
+        self._frames = 0
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _writer(self, cam: int, frame: np.ndarray):
+        w = self._writers.get(cam)
+        if w is None:
+            import imageio
+
+            path = self.out_dir / f"cam{cam}.mp4"
+            # macro_block_size=1: keep the sensor's exact size instead of
+            # letting imageio round it up to a multiple of 16, which would
+            # rescale the frames the coverage numbers are measured on.
+            w = imageio.get_writer(
+                path, fps=self.fps, codec="libx264", pixelformat="yuv420p",
+                output_params=["-crf", str(self.CRF)], macro_block_size=1)
+            self._writers[cam] = w
+            self._shapes[cam] = frame.shape
+            print(f"[highres] cam{cam}: {frame.shape[1]}x{frame.shape[0]} "
+                  f"@ {self.fps:g} fps -> {path}")
+        return w
+
+    def append(self, raw_obs: Dict[str, Any], topic_camera_ids: List[int]) -> None:
+        wrote = False
+        for cam in self.cam_ids:
+            if cam in self._dead:
+                continue
+            try:
+                frame = crop_even(frame_for_camera(raw_obs, cam, topic_camera_ids))
+                if self._shapes.get(cam, frame.shape) != frame.shape:
+                    raise ValueError(f"frame shape changed "
+                                     f"{self._shapes[cam]} -> {frame.shape}")
+                self._writer(cam, frame).append_data(np.ascontiguousarray(frame))
+                wrote = True
+            except Exception as exc:
+                # Never take a rollout down over logging: the arm is live and
+                # the episode is still worth scoring. Drop the camera, say so
+                # once, and let the others keep recording.
+                self._dead.add(cam)
+                print(f"[highres] cam{cam} disabled after {self._frames} "
+                      f"frame(s): {exc!r}")
+        if wrote:
+            self._frames += 1
+
+    def close(self) -> None:
+        for cam, w in self._writers.items():
+            try:
+                w.close()
+            except Exception as exc:
+                print(f"[highres] cam{cam} did not close cleanly: {exc!r}")
+        if self._writers:
+            print(f"[highres] {self._frames} frame(s) per camera -> {self.out_dir}")
+        self._writers.clear()
+
+
 def eef_x_from_obs(raw_obs: Dict[str, Any]) -> float | None:
     """Current end-effector x (metres). state[0] is x on this rig."""
     if raw_obs is None:
@@ -1644,6 +1747,11 @@ def project_action_to_env_mode(action_7d: np.ndarray, action_mode: str) -> np.nd
 
 def main() -> int:
     args = parse_args()
+    # Checked here rather than at the logging setup, which is past the robot
+    # connection and the arm's move to the start pose: a typo in the invocation
+    # should cost nothing.
+    if args.highres and args.log_dir is None:
+        raise SystemExit("--highres has nowhere to write; pass --log-dir too")
     if args.control_z is not None:
         if args.z_hold > 0:
             raise SystemExit(
@@ -1971,9 +2079,17 @@ def main() -> int:
 
     # --- forensic logging ----------------------------------------------------
     log_fh = None
+    video = None
     if args.log_dir is not None:
         (args.log_dir / "raw").mkdir(parents=True, exist_ok=True)
-        (args.log_dir / "fed").mkdir(parents=True, exist_ok=True)
+        if args.highres:
+            # Every registered topic, not just cam_ids: the point of the flag is
+            # to see the scene, and measure_target_coverage.py scores both
+            # cameras whether or not the checkpoint reads both.
+            video = RolloutVideo(args.log_dir / "video", topic_camera_ids,
+                                 fps=1.0 / max(float(args.step_duration), 1e-6))
+        else:
+            (args.log_dir / "fed").mkdir(parents=True, exist_ok=True)
         log_fh = (args.log_dir / "steps.jsonl").open("w")
         print(f"Forensic log -> {args.log_dir}")
 
@@ -2130,8 +2246,11 @@ def main() -> int:
             if log_fh is not None:
                 np.save(args.log_dir / "raw" / f"{step:04d}.npy",
                         np.ascontiguousarray(raw))
-                save_fed_png(args.log_dir / "fed" / f"{step:04d}",
-                             list(frame_buf)[-1], cam_ids)
+                if video is not None:
+                    video.append(raw_obs, topic_camera_ids)
+                else:
+                    save_fed_png(args.log_dir / "fed" / f"{step:04d}",
+                                 list(frame_buf)[-1], cam_ids)
                 st = raw_obs.get("state")
                 log_fh.write(json.dumps({
                     "step": step,
@@ -2151,6 +2270,11 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
     finally:
+        # Before anything else that can throw: an unflushed mp4 has no moov atom
+        # and no player will open it, so an interrupted rollout would lose the
+        # whole recording rather than the last frame.
+        if video is not None:
+            video.close()
         if log_fh is not None:
             log_fh.close()
         # Score before stopping the client: the observation stream is what the
