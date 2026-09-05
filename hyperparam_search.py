@@ -702,6 +702,27 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env",
     },
+    # ── wirefit_q3c_training.py ──────────────────────────────────────────────
+    # The estimator scores only the control points and every other action's
+    # value is wire-fit interpolated from them. Without these entries the keys
+    # are silently dropped and every trial trains the default recipe.
+    "wirefit_smoothing_param": {
+        "values": [0.01, 0.1, 1.0], "type": "float", "location": "env_training",
+    },
+    "wirefit_top_k": {
+        "values": [5, 10, 20], "type": "int", "location": "env_training",
+    },
+    "wirefit_include_cp_negatives": {
+        "values": [False, True], "type": "bool", "location": "env_training",
+    },
+    "wirefit_langevin_on_interpolant": {
+        "values": [True, False], "type": "bool", "location": "env_training",
+    },
+    # "swap" (combinedv2's adversarial sign) | "cooperative" | "off".
+    "generator_infonce_sign": {
+        "values": ["cooperative", "swap", "off"], "type": "str",
+        "location": "env_training",
+    },
     # Particle dimensionality. n_dim drives the dataset AND the obs/action
     # widths, so a batch that sweeps it must set all three together:
     # state_dim = 2 * n_dim * frame_stack, action_dim = n_dim.

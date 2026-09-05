@@ -1,0 +1,83 @@
+# D4RL kitchen — wire-fitting Q3C.
+#
+# Submit with:  bash submit_experiments.sh batches/wfKitchen.txt
+#
+# ── What this variant changes ──────────────────────────────────────────────
+# wirefit_q3c_training.py is a fork of combinedv2_cpascounter_training.py with
+# ONE substitution: the estimator scores only the CONTROL POINTS, and the value
+# at the expert and at every negative is wire-fit interpolated from those
+# (action, value) wires. Everything else — data pipeline, pixel models, EMA,
+# held-out val MAE, norm_stats, the negative mixture — is inherited unchanged,
+# so a line here is directly comparable to the q3c reference it is built from.
+#
+# Reference config = trial 83 (avg_reward 587.5, n=100).
+#
+# ── Why it might be worth having ───────────────────────────────────────────
+# Wire-fitting satisfies  max_a Q_interp(a) = max_i q_i,  attained AT a wire.
+# Verified numerically over 20k random probes per state. So picking the best
+# control point stops being a discrete approximation to argmax over the action
+# space and becomes the exact global argmax.
+#
+# CP-DFO exists to patch precisely that approximation error, and on pushing
+# states it costs 5.2x the inference time for +1pp:
+#     CP-DFO 0 iters (pure argmax)    99.0% +/- 1.0    0.89 ms
+#     CP-DFO 3 iters                 100.0% +/- 0.0    4.64 ms
+# If wire-fitting recovers that point at zero iterations, the same accuracy
+# arrives 5x cheaper AND with an exactness argument behind it.
+#
+# It also removes the train/deploy input mismatch this project spent months
+# diagnosing: the Q net is only ever queried at control points, in training and
+# at deploy, so it is never asked to extrapolate.
+#
+# ── inference_dfo_iterations is forced to 0 ────────────────────────────────
+# Not an oversight. Refinement moves off the wire, and the identity above bounds
+# the interpolated value there by max_i q_i — so DFO can only tie or hurt. That
+# is a falsifiable prediction: if a re-scored wirefit checkpoint IMPROVES with
+# DFO, the implementation is wrong. Worth checking once via reeval_trials.py
+# rather than burning a training axis on it.
+#
+# ── The sweep (12 jobs) ───────────────────────────────────────────────────
+# generator_infonce_sign at 3 seeds each — the real fork, see the module
+# docstring. In combinedv2 the generator cannot move the expert's energy at all;
+# under wire-fitting the expert's value is a function of the wire POSITIONS, so
+# the adversarial sign inverts from "propose competitive points" into "drag
+# high-value wires toward random negatives", which fights the MSE.
+#     cooperative  expected best: wires move toward the expert
+#     swap         combinedv2's legacy sign, expected degenerate here
+#     off          drops the term; under cooperative it may be redundant with MSE
+#
+# Then single-seed probes of the two knobs with no prior:
+#     wirefit_smoothing_param  c trades locality against how hard a low-value
+#                              wire is suppressed. Small c -> near nearest-wire
+#                              lookup; large c -> best wire dominates and the
+#                              interpolant flattens. 0.1 is the reference.
+#     wirefit_include_cp_negatives  True puts the control points back in the
+#                              InfoNCE set. Expected to stall: the bound above
+#                              makes "expert outscores the best wire"
+#                              unreachable, so the term can at best tie. Run it
+#                              once to confirm rather than assert.
+
+# ── sign=cooperative seed 0
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"cooperative","trial_seed":0}'
+# ── sign=cooperative seed 1
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"cooperative","trial_seed":1}'
+# ── sign=cooperative seed 2
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"cooperative","trial_seed":2}'
+# ── sign=swap seed 0
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"swap","trial_seed":0}'
+# ── sign=swap seed 1
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"swap","trial_seed":1}'
+# ── sign=swap seed 2
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"swap","trial_seed":2}'
+# ── sign=off seed 0
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"off","trial_seed":0}'
+# ── sign=off seed 1
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"off","trial_seed":1}'
+# ── sign=off seed 2
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"off","trial_seed":2}'
+# ── smoothing c=0.01
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.01,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"cooperative","trial_seed":0}'
+# ── smoothing c=1.0
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":1.0,"wirefit_top_k":10,"wirefit_include_cp_negatives":false,"generator_infonce_sign":"cooperative","trial_seed":0}'
+# ── include_cp_negatives=True (expected to stall)
+uv run --managed-python python hyperparam_search.py wirefit_q3c_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_langevin_negatives":16,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"inference_dfo_iterations":0,"wirefit_smoothing_param":0.1,"wirefit_top_k":10,"wirefit_include_cp_negatives":true,"generator_infonce_sign":"cooperative","trial_seed":0}'
