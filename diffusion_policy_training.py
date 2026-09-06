@@ -237,13 +237,23 @@ def main():
     # unconditionally crashes AFTER a full training run has completed. Emit them
     # when present and leave them out otherwise — eval falls back to the model
     # range exactly as it does for a checkpoint trained before these existed.
+    # Write norm_stats ONLY when the dataset has action stats. Emitting a
+    # partial file is worse than emitting none: the simulations treat a missing
+    # norm_stats.pt as "no denormalization needed" and carry on, but a file that
+    # exists and lacks act_min crashes them. ParticleDataset has no act_min (its
+    # actions are already in model range), which is why every dpParticle job
+    # died in eval with KeyError('act_min') after training successfully.
+    if not hasattr(dataset, "act_min"):
+        print("Dataset exposes no act_min/act_max; skipping norm_stats.pt "
+              "(eval falls back to the model action range).")
+        print(f"Done in {time.time() - start_time:.0f}s")
+        return
     norm_stats = {
+        "act_min": dataset.act_min,
+        "act_max": dataset.act_max,
         "action_norm_range": getattr(dataset, "action_norm_range", (-1.0, 1.0)),
         "state_shape": dataset.state_shape,
     }
-    if hasattr(dataset, "act_min"):
-        norm_stats["act_min"] = dataset.act_min
-        norm_stats["act_max"] = dataset.act_max
     if hasattr(dataset, "obs_mean"):
         norm_stats["obs_mean"] = dataset.obs_mean
         norm_stats["obs_std"] = dataset.obs_std

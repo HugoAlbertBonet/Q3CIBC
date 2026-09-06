@@ -642,6 +642,17 @@ def main():
                 norm_stats["cond_kind"] = "eef_xy"
                 norm_stats["cond_min"] = dataset.cond_min
                 norm_stats["cond_max"] = dataset.cond_max
+        if active_env == "libero_goal":
+            # Flat libero: the goal embedding is baked into the state AFTER
+            # frame-stacking, so the sim needs the obs schema and the exact
+            # input length to rebuild a byte-identical state vector. Without
+            # these LiberoGoalSimulation rejects the checkpoint outright.
+            norm_stats["libero_obs_keys"] = dataset.libero_obs_keys
+            norm_stats["libero_obs_dims"] = dataset.libero_obs_dims
+            norm_stats["goal_embeddings"] = dataset.goal_embeddings
+            norm_stats["goal_task_names"] = dataset.goal_task_names
+            norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
+            norm_stats["state_shape"] = dataset.state_shape
         if active_env == "libero_goal_pixels":
             norm_stats["libero_obs_keys"] = dataset.libero_obs_keys
             norm_stats["goal_embeddings"] = dataset.goal_embeddings

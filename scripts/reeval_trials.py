@@ -72,11 +72,27 @@ def main() -> None:
             continue
         ckpt_dir = rec.get("checkpoint_dir")
         cfg_path = Path(ckpt_dir) / "config.json"
-        if not cfg_path.exists():
-            print(f"trial #{tid}: per-run config missing at {cfg_path}; skipping")
-            continue
-        with open(cfg_path) as f:
-            config = json.load(f)
+        if cfg_path.exists():
+            with open(cfg_path) as f:
+                config = json.load(f)
+        else:
+            # Checkpoints written before per-run configs were saved beside them
+            # (anything from roughly mid-2026 and earlier) have no config.json,
+            # which used to make them permanently un-re-scorable. Rebuild it the
+            # same way hyperparam_search built it in the first place: the base
+            # config with this trial's recorded params applied.
+            #
+            # This is faithful for every parameter the record captured, which is
+            # every parameter in SEARCH_SPACE — the only ones a trial could have
+            # varied. Anything outside it was the base-config default then and
+            # is the base-config default now.
+            import hyperparam_search as _hs
+            base = _hs.load_config()
+            base["active_env"] = args.active_env
+            config = _hs.apply_params_to_config(base, rec.get("params") or {})
+            print(f"trial #{tid}: no per-run config at {cfg_path}; "
+                  f"RECONSTRUCTED from the base config + this trial's recorded "
+                  f"params ({len(rec.get('params') or {})} keys).")
         if config.get("active_env") != args.active_env:
             print(
                 f"trial #{tid}: config active_env={config.get('active_env')!r}, "
