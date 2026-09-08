@@ -1,0 +1,70 @@
+# LIBERO-Goal — plain behaviour cloning (MSE), scratch and ImageNet.
+#
+# Submit with:  bash submit_experiments.sh batches/lgBC.txt
+# Prereq:       uv sync --extra libero
+#
+# ── How this is BC, given it runs the q3c trainer ─────────────────────────
+# mse_training.py only has branches for pen, particle and dummy, so there is no
+# BC trainer for this environment. Rather than add an untested env branch to it,
+# this reduces combinedv2 to plain regression, which it does exactly when:
+#
+#   control_points = 1          the "cloud" is one point, so there is nothing
+#                               to rank and the Q estimator is never consulted
+#                               at eval (argmax over a single candidate)
+#   generator_infonce_weight=0  removes the only other term that reaches the
+#                               generator. The estimator already trains on
+#                               `predicted_actions.detach()`, so with this at 0
+#                               NO gradient from the critic touches the policy
+#   separation_weight = 0       belt and braces; the term is already identically
+#                               zero at N=1 (verified below)
+#
+# What is left is mse_weight * sum((cp - a)^2), i.e. explicit BC.
+#
+# ── Verified before writing this, not assumed ─────────────────────────────
+#   lossEntropyKDE at N=1 returns EXACTLY 0.0 for bandwidth in {0.01, 0.2, 1.0}
+#   and batch size in {1, 8, 128}.
+#   lossMSE at N=1 equals sum((cp - a)^2) to the digit.
+#   A 12-step run through the real combinedv2 path with this exact
+#   configuration printed "Sep: 0.0000", MSE falling 2.48 -> 1.63, no NaN, and
+#   Total == MSE + info_nce_weight * EST (1.6317 + 0.5*0.5952 = 1.9293) — so the
+#   generator-InfoNCE term contributed nothing, numerically confirmed.
+#   Separately, ablLibero already ran control_points=1 on this env end to end
+#   (5 runs, 94.0 +/- 3.2), so N=1 is proven through training AND evaluation here.
+#
+# ── Deliberately cheap ────────────────────────────────────────────────────
+# Uniform negatives, Langevin negatives and the gradient penalty are all set to
+# 0. They only ever shaped the Q estimator, which this policy does not use, and
+# the Langevin chain in the reference recipe is 8 negatives x 100 iterations per
+# step — a large cost for a component that cannot affect the result. The
+# estimator still trains (a 2-way InfoNCE between the expert and the single
+# control point) because combinedv2 always builds one; it is simply ignored.
+#
+# NOTE do not switch separation_loss to "separation" on these lines:
+# lossSeparation returns nan at N=1.
+#
+# ── Reference points on this env (all n=50 eval episodes) ─────────────────
+#   q3c film+scratch, N=100      91.7 +/- 4.5   (ablLibero reference, 6 runs)
+#   q3c film+scratch, N=1        94.0 +/- 3.2   (ablLibero, 5 runs)
+#   dpq3c ImageNet, cloud=1      91.3 +/- 3.1   (a diffusion policy, 3 runs)
+#   IBC (resnet18, unchunked)    42.0 +/- 8.8
+#
+# The N=1 q3c row is the one this batch is really testing. It scored highest of
+# anything on this environment, and the only thing separating it from plain BC
+# is the generator-InfoNCE term that these lines set to zero. If BC matches it,
+# then q3c at N=1 IS behaviour cloning and should be reported as such.
+#
+# Both encoders, 3 seeds each: scratch is the ablLibero reference condition,
+# ImageNet @ 0.1x LR is the one worth +9.9 points for dpq3c on this env.
+
+# ── BC-MSE scratch, seed 0
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":0}'
+# ── BC-MSE scratch, seed 1
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":1}'
+# ── BC-MSE scratch, seed 2
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":2}'
+# ── BC-MSE ImageNet @0.1x LR, seed 0
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":0}'
+# ── BC-MSE ImageNet @0.1x LR, seed 1
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":1}'
+# ── BC-MSE ImageNet @0.1x LR, seed 2
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":2}'
