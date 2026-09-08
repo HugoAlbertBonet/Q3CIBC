@@ -1,0 +1,47 @@
+# particle — the DDPM half of the DP sampler comparison. EVAL ONLY.
+#
+# Submit with:  bash submit_experiments.sh batches/dpParticleDDPM.txt
+#
+# ── Why this is needed ─────────────────────────────────────────────────────
+# batches/dpParticleV2.txt trained 12 diffusion policies (2/4/6/8/16/32 D, two
+# seeds each) and every one was scored with DDIM-10 ONLY. The batch did pass
+# eval_ddpm=True and ddim_eval_steps=[5,10,25], and both were recorded in the
+# trial params — but neither was honoured. Those keys belonged to the DP
+# evaluator that has since been removed from the tree; the path that actually
+# runs now (the _NullCritic branch in evaluate_q3c) reads inference_dp_method
+# and inference_dp_iters instead, which the batch pinned to ddim/10.
+#
+# So the DDIM column exists and the DDPM column does not. This fills it by
+# re-scoring the same twelve checkpoints — no retraining.
+#
+# ── What each line produces ────────────────────────────────────────────────
+# All at inference_control_points=1, which is what makes these plain diffusion
+# policy: one sample, nothing for a critic to rank, and the critic is not
+# consulted at all.
+#
+#   ddpm            the full ancestral chain over all num_train_timesteps (100),
+#                   i.e. 100 sequential denoiser passes per action
+#   ddim 5 / 25     the two sub-sampled chains the original batch intended to
+#                   record alongside ddim-10, included here because they cost
+#                   the same re-score and complete the sampler sweep
+#
+# Existing DDIM-10 results, for reference:
+#   n_dim   2    4    6    8    16    32
+#   sr    1.00 1.00 1.00 0.98  0.71  0.00
+# (32D is 0.00 for q3c as well, across 5 runs — that dimensionality is unsolved
+# by both algorithms, not a failure of either.)
+#
+# Trials 25-36 are the twelve dpParticleV2 checkpoints. Group results by
+# params.n_dim, NOT by directory: _results_dir partitions particle by the base
+# config's n_dim, so every record lands under particle/16 regardless.
+#
+# Standard eval protocol inherited from the env config, never overridden.
+
+# ── DDPM: the full ancestral chain
+uv run --managed-python python scripts/reeval_trials.py --script diffusion_policy_training.py --active-env particle --trials 25 26 27 28 29 30 31 32 33 34 35 36 --param-overrides '{"inference_control_points":1,"inference_dp_method":"ddpm"}'
+
+# ── DDIM 5 steps
+uv run --managed-python python scripts/reeval_trials.py --script diffusion_policy_training.py --active-env particle --trials 25 26 27 28 29 30 31 32 33 34 35 36 --param-overrides '{"inference_control_points":1,"inference_dp_method":"ddim","inference_dp_iters":5}'
+
+# ── DDIM 25 steps
+uv run --managed-python python scripts/reeval_trials.py --script diffusion_policy_training.py --active-env particle --trials 25 26 27 28 29 30 31 32 33 34 35 36 --param-overrides '{"inference_control_points":1,"inference_dp_method":"ddim","inference_dp_iters":25}'

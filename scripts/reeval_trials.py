@@ -123,14 +123,36 @@ def main() -> None:
         source_run_id = rec.get("run_id")
         new_params = dict(rec.get("params") or {})
         new_params.update(overrides)
+
+        # Clear every METRIC inherited from the source record before merging the
+        # new ones. Without this a failed re-score keeps the source's numbers for
+        # any field the failure path does not return, producing a record that
+        # looks like a real evaluation: success_rate 0.0 next to a healthy
+        # avg_min_dist_to_target copied verbatim from the run that worked. That
+        # is exactly how a batch of "Langevin destroys the policy" results was
+        # manufactured out of checkpoints that never loaded.
+        for k in ("success_rate", "success_rate_std", "avg_reward", "std_reward",
+                  "median_reward", "avg_episode_length", "avg_min_dist_to_target",
+                  "median_min_dist_to_target", "std_min_dist_to_target",
+                  "num_seeds", "eval_details"):
+            new_rec.pop(k, None)
         new_rec.update({k: v for k, v in eval_results.items() if k != "per_seed"})
+        # evaluate_q3c reports per-episode data under "eval_details"; "per_seed"
+        # was never one of its keys, so this used to blank the detail every time.
+        details = eval_results.get("eval_details", eval_results.get("per_seed", []))
+        # PRESERVE any error the evaluator reported. These were being forced to
+        # None immediately after being merged in, which silently turned
+        # "Checkpoints not found in ..." into a clean-looking 0.0 score.
+        err = eval_results.get("error") or eval_results.get("eval_error")
+        if err:
+            print(f"  EVALUATION FAILED: {err}")
         new_rec.update(
             run_id=hs._new_run_id(),
             source_run_id=source_run_id,
             params=new_params,
-            eval_details=eval_results.get("per_seed", []),
-            eval_error=None,
-            error=None,
+            eval_details=details,
+            eval_error=err,
+            error=err,
             training_failed=False,
             duration_seconds=round(eval_duration, 1),
             reeval_only=True,

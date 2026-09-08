@@ -19,23 +19,31 @@ doing so is also cheaper.
 
 Methods benchmarked
 -------------------
-1. **dpq3c (cloud=64)** — PixelDiffusionDenoiser (ResNet-18 + GroupNorm + 128
-   SpatialSoftmax keypoints, DenseResnet head 1024x1, time_emb 128) sampling 64
-   candidates with a 10-step DDIM chain, then PixelQEstimator
-   (DenseResnetValue 1024x1) scoring all 64 in ONE batched pass. The conv tower
-   runs once per action for the denoiser and once for the critic; the 64
-   candidates are width, not sequential depth.
+The actor is a PixelDiffusionDenoiser (ResNet-18 + GroupNorm + 128
+SpatialSoftmax keypoints, DenseResnet head 1024x1, time_emb 128, T=100) and the
+critic a PixelQEstimator (DenseResnetValue 1024x1). Six rows:
 
-2. **dpq3c (cloud=1)** — the identical actor with the cloud reduced to one
-   sample, which leaves the critic nothing to rank and so is not called at all.
-   This is plain diffusion policy, and it is the configuration that scores best
-   on this env.
+1. **DP DDIM-10 (cloud=1)** — one sample from a 10-step sub-sampled chain.
+   Nothing to rank, so the critic is never called: this is plain diffusion
+   policy, and the configuration that scores best on this env.
 
-3. **Q3CIBC** — PixelControlPointGenerator (same encoder, MLP head 512x4) →
+2. **DP DDPM-100 (cloud=1)** — the same actor walking all 100 training
+   timesteps ancestrally. Same weights, same output shape, TEN TIMES the
+   sequential denoiser passes. Isolating that cost is the point of this pair:
+   the sampler is a free runtime choice, so it should be chosen on the
+   speed/quality trade-off rather than by default.
+
+3-4. **dpq3c DDIM-10 / DDPM-100 (cloud=64 + Q)** — the same two samplers
+   drawing 64 candidates, then the critic scoring all 64 in ONE batched pass.
+   The conv tower runs once for the denoiser and once for the critic, and the
+   candidates are width rather than sequential depth, so the gap between these
+   and rows 1-2 is what the ranking machinery actually costs.
+
+5. **Q3CIBC** — PixelControlPointGenerator (same encoder, MLP head 512x4) ->
    100 control points, ranked by PixelQEstimator in one batched pass. No
    iterative refinement, matching the deployed recipe.
 
-4. **IBC (DFO)** — PixelQEstimator only, with derivative-free optimisation over
+6. **IBC (DFO)** — PixelQEstimator only, with derivative-free optimisation over
    2048 samples for 100 iterations on cached encoder features (late fusion), per
    the best libero IBC config we ran.
 
@@ -93,10 +101,24 @@ Q3C_CP_WIDTH, Q3C_CP_DEPTH = 512, 4
 IBC_SAMPLES, IBC_ITERS = 2048, 100
 
 # Seed-averaged success rates, measured elsewhere (see the module docstring).
+# Seed-averaged success rates, measured elsewhere (see the module docstring).
+# None = that cell has never been evaluated, and is left blank rather than
+# filled with a number from a different encoder.
+#   DDIM rows      pretrained ImageNet trunk, cloud=1 / cloud=64, n=50 eval eps
+#   DDPM rows      never run on the pretrained checkpoints. On the SCRATCH
+#                  checkpoints DDPM at cloud=1 scored 75.2 +/- 7.3 (5 runs)
+#                  against DDIM-10's 81.2 +/- 4.1, so DDIM is ~6 points better
+#                  there — but a scratch number does not belong in a column
+#                  whose other rows are pretrained.
+#   Q3CIBC         film fusion + scratch trunk, the ablation reference (n=3).
+#                  NOT the published 86.7, which was a different (ImageNet,
+#                  chunk 8) configuration.
 SUCCESS = {
-    "dpq3c (cloud=1, plain DP)": (91.3, 3.1, 3),
-    "dpq3c (cloud=64 + Q ranking)": (88.7, 4.2, 3),
-    "Q3CIBC (ImageNet, chunk 8)": (86.7, None, 3),
+    "DP DDIM-10 (cloud=1)": (91.3, 3.1, 3),
+    "DP DDPM-100 (cloud=1)": (None, None, None),
+    "dpq3c DDIM-10 (cloud=64 + Q)": (88.7, 4.2, 3),
+    "dpq3c DDPM-100 (cloud=64 + Q)": (None, None, None),
+    "Q3CIBC (film, scratch)": (92.7, 3.1, 3),
     "IBC (DFO 2048x100)": (42.0, 8.8, 3),
 }
 
@@ -181,12 +203,21 @@ def main() -> int:
     cp._cond = cond
 
     @torch.no_grad()
-    def dpq3c(cloud: int):
+    def dpq3c(cloud: int, sampler: str = "ddim"):
         # Encoder ONCE, broadcast over the cloud; only the small head runs in
         # the sampling loop. A cloud of one never calls the critic.
+        #
+        # DDIM-10 sub-samples the chain to 10 steps; DDPM walks all
+        # num_train_timesteps (100) ancestrally, so it is 10x the sequential
+        # denoiser passes for the same candidate count. That ratio is the whole
+        # reason the sampler belongs in a cost table.
         f = den.encode(obs).expand(cloud, -1)
-        cps = diffusion.ddim_sample(head, f, action_dim=ACTION_DIM,
-                                    num_steps=DDIM_STEPS, eta=0.0).unsqueeze(0)
+        if sampler == "ddim":
+            cps = diffusion.ddim_sample(head, f, action_dim=ACTION_DIM,
+                                        num_steps=DDIM_STEPS, eta=0.0)
+        else:
+            cps = diffusion.ddpm_sample(head, f, action_dim=ACTION_DIM)
+        cps = cps.unsqueeze(0)
         if cloud > 1:
             qf = q.encode(obs)
             return q.score(qf, cps).squeeze(-1).argmax(dim=1)
@@ -216,11 +247,15 @@ def main() -> int:
         return q.score(f, x).squeeze(-1).argmax(dim=1)
 
     methods = [
-        ("dpq3c (cloud=1, plain DP)", lambda: dpq3c(1), DDIM_STEPS, 0,
+        ("DP DDIM-10 (cloud=1)", lambda: dpq3c(1, "ddim"), DDIM_STEPS, 0,
          params_m(den)),
-        ("dpq3c (cloud=64 + Q ranking)", lambda: dpq3c(DPQ3C_CLOUD), DDIM_STEPS,
-         DPQ3C_CLOUD, params_m(den, q)),
-        ("Q3CIBC (ImageNet, chunk 8)", q3c, 0, Q3C_CONTROL_POINTS, params_m(cp, q)),
+        ("DP DDPM-100 (cloud=1)", lambda: dpq3c(1, "ddpm"), TIMESTEPS, 0,
+         params_m(den)),
+        ("dpq3c DDIM-10 (cloud=64 + Q)", lambda: dpq3c(DPQ3C_CLOUD, "ddim"),
+         DDIM_STEPS, DPQ3C_CLOUD, params_m(den, q)),
+        ("dpq3c DDPM-100 (cloud=64 + Q)", lambda: dpq3c(DPQ3C_CLOUD, "ddpm"),
+         TIMESTEPS, DPQ3C_CLOUD, params_m(den, q)),
+        ("Q3CIBC (film, scratch)", q3c, 0, Q3C_CONTROL_POINTS, params_m(cp, q)),
         ("IBC (DFO 2048x100)", ibc_dfo, 0, IBC_SAMPLES * IBC_ITERS, params_m(q)),
     ]
 

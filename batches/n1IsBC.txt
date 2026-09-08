@@ -1,0 +1,71 @@
+# Is q3c at N=1 just explicit behaviour cloning?
+#
+# Submit with:  bash submit_experiments.sh batches/n1IsBC.txt
+# Prereq:       uv sync --extra libero --extra pushing
+#
+# ── Why the question is sharp ──────────────────────────────────────────────
+# N=1 was the best or joint-best control-point count everywhere it was measured:
+#     pushing_pixels   N=1 91.7 +/- 4.0   vs  N=20 (ref) 90.0 +/- 2.6
+#     libero           N=1 94.0 (n=2)     vs  N=100 (ref) 92.7 +/- 3.1
+# With a single control point there is no cloud, so the Q estimator has nothing
+# to rank and is never consulted at eval. The question is what is left.
+#
+# Checked directly, at N=1:
+#     lossEntropyKDE(1 point)  = 0.0000 exactly     -> the separation term is DEAD
+#     lossSeparation(1 point)  = nan                -> and its alternative is a landmine
+#     lossMSE                  = active             -> plain regression to the expert
+# so of q3c's generator objective only the MSE survives... except for ONE term:
+#     generator_infonce_weight * loss_infonce_generator
+# which is still live and pulls the single control point toward the critic's
+# high-Q region. On pushing_pixels the reference weight is 0.05, and with no
+# uniform or Langevin negatives it reduces to a 2-way contrast between the
+# expert action and the generator's own output.
+#
+# So q3c at N=1 is NOT quite explicit BC. It is BC plus a small adversarial pull
+# from a learned critic. This batch measures whether that term does anything.
+#
+# ── The test ───────────────────────────────────────────────────────────────
+#   generator_infonce_weight = 0     -> MSE only = pure explicit BC
+#   generator_infonce_weight = 0.05  -> the N=1 cell as measured (control arm,
+#                                       re-run here so both arms share a seed
+#                                       set and an eval protocol)
+# 3 seeds each, both environments, everything else at the ablation reference
+# with top_k clamped to 1.
+#
+# If the two arms match, q3c at N=1 IS explicit BC and should be reported as
+# such — which would also mean the published ibc_mse row (87.0 +/- 4.1 on
+# pushing_pixels, 3 seeds) is the honest comparison point for it, and the
+# 91.7 vs 87.0 gap is worth a second look since it is currently only p=0.16.
+#
+# If gi=0 is clearly worse, the critic is contributing through the GENERATOR
+# during training even though it is never queried at inference — a more
+# interesting claim than anything the cloud-ranking experiments produced, and
+# one nothing in this project has tested.
+#
+# NOTE separation_loss is left at "entropy" on every line. Do not switch these
+# cells to "separation": lossSeparation returns nan at N=1.
+
+# ── pushing_pixels PURE BC (gi=0) seed 0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"control_points":1,"top_k_control_points":1,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":2,"cp_network_kind":"mlp","cp_width":256,"entropy_bandwidth":0.01,"estimator_learning_rate":0.0003,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":10.0,"langevin_num_iterations":0,"learning_rate":0.0003,"mse_weight":10.0,"num_langevin_negatives":0,"num_uniform_negatives":0,"q_depth":8,"scheduler_type":"cosine_warm_restarts","separation_loss":"entropy","separation_weight":0.1,"training_steps":150000,"generator_infonce_weight":0.0,"trial_seed":0}'
+# ── pushing_pixels PURE BC (gi=0) seed 1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"control_points":1,"top_k_control_points":1,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":2,"cp_network_kind":"mlp","cp_width":256,"entropy_bandwidth":0.01,"estimator_learning_rate":0.0003,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":10.0,"langevin_num_iterations":0,"learning_rate":0.0003,"mse_weight":10.0,"num_langevin_negatives":0,"num_uniform_negatives":0,"q_depth":8,"scheduler_type":"cosine_warm_restarts","separation_loss":"entropy","separation_weight":0.1,"training_steps":150000,"generator_infonce_weight":0.0,"trial_seed":1}'
+# ── pushing_pixels PURE BC (gi=0) seed 2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"control_points":1,"top_k_control_points":1,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":2,"cp_network_kind":"mlp","cp_width":256,"entropy_bandwidth":0.01,"estimator_learning_rate":0.0003,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":10.0,"langevin_num_iterations":0,"learning_rate":0.0003,"mse_weight":10.0,"num_langevin_negatives":0,"num_uniform_negatives":0,"q_depth":8,"scheduler_type":"cosine_warm_restarts","separation_loss":"entropy","separation_weight":0.1,"training_steps":150000,"generator_infonce_weight":0.0,"trial_seed":2}'
+# ── pushing_pixels N=1 with the critic term (gi=0.05) seed 0
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"control_points":1,"top_k_control_points":1,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":2,"cp_network_kind":"mlp","cp_width":256,"entropy_bandwidth":0.01,"estimator_learning_rate":0.0003,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":10.0,"langevin_num_iterations":0,"learning_rate":0.0003,"mse_weight":10.0,"num_langevin_negatives":0,"num_uniform_negatives":0,"q_depth":8,"scheduler_type":"cosine_warm_restarts","separation_loss":"entropy","separation_weight":0.1,"training_steps":150000,"generator_infonce_weight":0.05,"trial_seed":0}'
+# ── pushing_pixels N=1 with the critic term (gi=0.05) seed 1
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"control_points":1,"top_k_control_points":1,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":2,"cp_network_kind":"mlp","cp_width":256,"entropy_bandwidth":0.01,"estimator_learning_rate":0.0003,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":10.0,"langevin_num_iterations":0,"learning_rate":0.0003,"mse_weight":10.0,"num_langevin_negatives":0,"num_uniform_negatives":0,"q_depth":8,"scheduler_type":"cosine_warm_restarts","separation_loss":"entropy","separation_weight":0.1,"training_steps":150000,"generator_infonce_weight":0.05,"trial_seed":1}'
+# ── pushing_pixels N=1 with the critic term (gi=0.05) seed 2
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"control_points":1,"top_k_control_points":1,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":2,"cp_network_kind":"mlp","cp_width":256,"entropy_bandwidth":0.01,"estimator_learning_rate":0.0003,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"info_nce_weight":0.5,"infonce_logit_clamp":10.0,"langevin_num_iterations":0,"learning_rate":0.0003,"mse_weight":10.0,"num_langevin_negatives":0,"num_uniform_negatives":0,"q_depth":8,"scheduler_type":"cosine_warm_restarts","separation_loss":"entropy","separation_weight":0.1,"training_steps":150000,"generator_infonce_weight":0.05,"trial_seed":2}'
+# ── libero_goal_pixels PURE BC (gi=0) seed 0
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"langevin_num_iterations":100,"learning_rate":0.0002,"mse_weight":1.0,"num_langevin_negatives":8,"num_uniform_negatives":0,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.01,"training_steps":150000,"generator_infonce_weight":0.0,"trial_seed":0}'
+# ── libero_goal_pixels PURE BC (gi=0) seed 1
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"langevin_num_iterations":100,"learning_rate":0.0002,"mse_weight":1.0,"num_langevin_negatives":8,"num_uniform_negatives":0,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.01,"training_steps":150000,"generator_infonce_weight":0.0,"trial_seed":1}'
+# ── libero_goal_pixels PURE BC (gi=0) seed 2
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"langevin_num_iterations":100,"learning_rate":0.0002,"mse_weight":1.0,"num_langevin_negatives":8,"num_uniform_negatives":0,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.01,"training_steps":150000,"generator_infonce_weight":0.0,"trial_seed":2}'
+# ── libero_goal_pixels N=1 with the critic term (gi=0.05) seed 0
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"langevin_num_iterations":100,"learning_rate":0.0002,"mse_weight":1.0,"num_langevin_negatives":8,"num_uniform_negatives":0,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.01,"training_steps":150000,"generator_infonce_weight":0.05,"trial_seed":0}'
+# ── libero_goal_pixels N=1 with the critic term (gi=0.05) seed 1
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"langevin_num_iterations":100,"learning_rate":0.0002,"mse_weight":1.0,"num_langevin_negatives":8,"num_uniform_negatives":0,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.01,"training_steps":150000,"generator_infonce_weight":0.05,"trial_seed":1}'
+# ── libero_goal_pixels N=1 with the critic term (gi=0.05) seed 2
+uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"langevin_num_iterations":100,"learning_rate":0.0002,"mse_weight":1.0,"num_langevin_negatives":8,"num_uniform_negatives":0,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.01,"training_steps":150000,"generator_infonce_weight":0.05,"trial_seed":2}'
