@@ -1,0 +1,61 @@
+# Batch dummyBimodalIBCRetune — IBC retune on dummy_bimodal (Tier 1).
+#
+# Original Tier 1 IBC run (batches/dummyBimodalTier1.txt, dbT1_ibc) scored
+# 0.05/0.06 success — both seeds, consistently bad, and 3-4x slower per step
+# than Q3C for the same 50k steps (counter_examples=32 x LANGEVIN_TRAIN_
+# ITERATIONS=100 hardcoded in ibc_with_cpsv2_training.py = way more Langevin
+# compute per batch than Q3C's num_langevin_negatives=8 x 25 iters).
+#
+# Went back and checked whether the noise_scale/delta_clip constants
+# (LANGEVIN_NOISE_SCALE=1.0, LANGEVIN_DELTA_ACTION_CLIP=0.1, both hardcoded,
+# NOT config-overridable in this script) were actually the problem, as
+# speculated in the previous batch's writeup. They're not: delta_clip is
+# applied as a FRACTION of the normalized action range
+# (`delta_clip = LANGEVIN_DELTA_ACTION_CLIP * 0.5 * (act_max - act_min)`),
+# so it's already small (~5.5% of range per step) regardless of the raw
+# action space being 1D here vs 8D+ elsewhere — that hypothesis doesn't hold.
+#
+# What actually explains it: checked this script's OWN trial history on
+# particle/8D (results/hyperparam_search/ibc_with_cpsv2_training/particle/8/
+# trials.jsonl, 18 prior trials, never run through a checkpointed batch file
+# before — auto-search only) — same hardcoded Langevin constants, and
+# success rates there swing from 0.0 to 0.86 ACROSS RUNS with counter_
+# examples=64 and training_steps=150000. Two takeaways:
+#   1. This training method (Langevin-negatives-only, no generator-CP
+#      counter-example mixture) is just inherently high-variance/unstable —
+#      unlike Q3C, which was steady at 0.84 both seeds. dummy_bimodal's two
+#      seeds landing near 0 is plausibly within that same variance band, not
+#      a dummy_bimodal-specific failure.
+#   2. Every prior successful run used 150000 steps. Ours used 50000 —
+#      3x fewer. Under-training is the more likely single cause, not the
+#      noise constants.
+#
+# So the fix here is budget, not the Langevin knobs:
+#   training_steps      50000 -> 150000  (match particle's precedent)
+#   counter_examples     32 -> 16        (halves per-step Langevin cost,
+#                                          partially offsetting the 3x step
+#                                          increase -> ~1.5x total compute
+#                                          vs the original run, not 3x)
+#   cosine_t_max         50000 -> 150000 (keep the LR schedule matched to
+#                                          the new step count)
+# Everything else (control_points=30, architecture, learning rates)
+# unchanged from the original run.
+#
+# 3 seeds this time (not 2) given the observed run-to-run variance — with
+# swings like particle's, two seeds isn't enough to tell "unlucky seed" from
+# "still broken."
+#
+# Prediction: if under-training was the cause, at least one seed should land
+# well above 0.06 — plausibly into Q3C's 0.84 range, matching particle's
+# better trials. If all three seeds stay near-zero even at 150k steps,
+# suspect something dummy_bimodal-specific after all (worth then trying the
+# noise_scale-hardcoded-constants path with actual code changes, not config).
+
+# ── dbIBCretune seed 0 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":150000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"scheduler_type":"cosine","cosine_t_max":150000,"trial_seed":0}'
+
+# ── dbIBCretune seed 1 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":150000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"scheduler_type":"cosine","cosine_t_max":150000,"trial_seed":1}'
+
+# ── dbIBCretune seed 2 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":150000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"scheduler_type":"cosine","cosine_t_max":150000,"trial_seed":2}'

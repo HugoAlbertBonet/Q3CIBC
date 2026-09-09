@@ -1,0 +1,55 @@
+# Batch dummyBimodalQ3CRetune — Q3C retune on dummy_bimodal (Tier 1).
+#
+# Original Tier 1 Q3C run (batches/dummyBimodalTier1.txt, dbT1_q3c) scored
+# 0.84 success both seeds — clearly BELOW BC-MSE (0.86/0.92) and DP (0.97/0.97)
+# on the same task. That's backwards for the story we want (Q3C should match
+# or beat DP, and clearly beat BC-MSE by not collapsing). Two suspects in the
+# original config, both plausibly explained by it being copied from a
+# higher-D task without retuning for this 1D action space:
+#
+#   1. control_points=30 with NO inference-time refinement
+#      (inference_langevin_iterations was unset -> 0): the policy argmaxes
+#      over a fixed 30-point discrete cloud with no polishing step. DP
+#      denoises continuously and can land arbitrarily close to the true
+#      heading; Q3C was stuck at whatever the nearest of 30 candidates
+#      happened to be. Over a 200-step episode with goal_radius=0.1, that
+#      quantization error compounds.
+#   2. Training-time Langevin negatives used noise_scale=0.5 /
+#      delta_clip=0.5 on a [-1, 1] 1D action range — i.e. a single Langevin
+#      step could jump HALF the entire action range. That's a lot of noise
+#      for the Q-estimator to learn a clean landscape from in 1D; likely
+#      hurt CP-selection precision more than it helped hard-negative coverage.
+#
+# This batch changes ONLY those two things (+ the CP/counter-example counts
+# that scale with control_points), 2 seeds, keeping everything else
+# (architecture, training_steps, learning rates, separation loss) identical
+# to the original so the comparison stays clean:
+#   control_points        30 -> 60   (finer heading resolution)
+#   top_k_control_points  20 -> 30   (~50% ratio preserved)
+#   num_langevin_negatives 8 -> 16   (more hard negatives at the finer scale)
+#   langevin_noise_scale  0.5 -> 0.2 (tighter, less erratic negatives)
+#   langevin_delta_clip   0.5 -> 0.2 (tighter, matches noise_scale)
+#   inference_langevin_iterations: 0 -> 20 (NEW — polishes the argmax CP at
+#     eval/rollout time, using the model's existing langevin_config as the
+#     refinement chain's step-size/noise schedule. This is the same
+#     mechanism pen/pushing_multi already use, just never turned on here.)
+#
+# Smoke-tested locally (200 steps, both train + eval) after fixing a real
+# bug this surfaced: DummyBimodalSimulation was missing the
+# `_act_min_t`/`_act_rng_t = None` attributes every other Simulation class
+# sets, which the generic inference-Langevin-refinement wrapper in
+# hyperparam_search.py (LangevinRefinedParticleSimulation, triggered by
+# inference_langevin_iterations > 0) unconditionally reads — see
+# simulations/dummy_bimodal_simulation.py. Fixed before this batch.
+#
+# Prediction: if (1) was the bottleneck, success rate should close most of
+# the gap to DP's 0.97. If it doesn't move much, the gap is elsewhere
+# (worth revisiting mse_weight/separation_weight next — see loss.py
+# lossMSE, which only pulls the NEAREST CP so it shouldn't itself be
+# causing collapse, but the interaction with 60 CPs is untested).
+
+# ── dbQ3Cretune seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"trial_seed":0}'
+
+# ── dbQ3Cretune seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"trial_seed":1}'

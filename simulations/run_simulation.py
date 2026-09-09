@@ -24,8 +24,14 @@ from utils.models import ControlPointGenerator, QEstimator
 from simulations import PenHumanV2Simulation, ParticleSimulation
 from simulations.plots import save_simulation_plots
 
-# Load config
-config_path = Path(__file__).parent.parent / "config_json" / "config.json"
+# Load config. Honors Q3C_CONFIG_PATH (same convention as every training
+# script) so a manual diagnostic run doesn't need to mutate the shared
+# config.json's active_env — which would race with any hyperparam_search
+# trial running concurrently on the same machine.
+config_path = Path(
+    os.environ.get("Q3C_CONFIG_PATH")
+    or (Path(__file__).parent.parent / "config_json" / "config.json")
+)
 with open(config_path, "r") as f:
     config = json.load(f)
 

@@ -1,0 +1,41 @@
+# Batch dummyBimodalDiagnostics — generates the 5-panel visual diagnostic
+# (CP cloud + Q heatmap + twin-expert stars, panel 5's obstacle circle turns
+# red when the direct agent->goal line is blocked) for a trained Q3C/IBC
+# checkpoint on dummy_bimodal. Only applies to methods that carry a
+# control-point + Q cloud (Q3C, IBC) — BC-MSE has one action, DP has a
+# denoiser, neither maps onto this plot; their evidence is the success-rate
+# numbers already in trials.jsonl.
+#
+# RUN THIS LAST — after both batches/dummyBimodalQ3CRetune.txt AND
+# batches/dummyBimodalIBCRetune.txt have finished. Both lines below are
+# placeholders: the original Tier 1 checkpoints (Q3C 0.84, IBC 0.05-0.06)
+# are superseded by those retunes, so there is nothing worth plotting yet —
+# don't submit the old IBC checkpoint that used to be filled in here, it's
+# stale.
+#
+# Each line: writes a throwaway per-job config (active_env=dummy_bimodal)
+# to a job-private temp file via `mktemp` — avoids two things:
+#   - mutating the shared config_json/config.json's active_env, which would
+#     race any hyperparam_search trial running concurrently on the same
+#     filesystem
+#   - collisions between the parallel jobs in this same batch
+# then points Q3C_CONFIG_PATH at it before invoking
+# `python -m simulations.run_simulation` (fixed to honor that env var —
+# see simulations/run_simulation.py).
+#
+# Output: plots/<output-dir>/ep<episode>_step<NNN>_seed<seed>.png
+
+# ── Q3C retune (batches/dummyBimodalQ3CRetune.txt) — TODO, fill in ──
+# Read the checkpoint_dir from the newest record in
+# results/hyperparam_search/combinedv2_cpascounter_training/dummy_bimodal/trials.jsonl
+# after that batch finishes, then uncomment + fill in below.
+#
+# CFGPATH=$(mktemp --suffix=.json) && python3 -c "import json,sys; c=json.load(open('config_json/config.json')); c['active_env']='dummy_bimodal'; json.dump(c, open(sys.argv[1],'w'))" "$CFGPATH" && Q3C_CONFIG_PATH="$CFGPATH" uv run --managed-python python -m simulations.run_simulation --checkpoint <Q3C_RETUNE_CHECKPOINT_DIR>/control_point_generator.pt --seeds 0 1 2 --episodes 6 --output-dir plots/dummy_bimodal_q3c_retune --device cpu
+
+# ── IBC retune (batches/dummyBimodalIBCRetune.txt) — TODO, fill in ──
+# Read the checkpoint_dir from the BEST of the 3 seeds (highest success_rate)
+# in results/hyperparam_search/ibc_with_cpsv2_training/dummy_bimodal/trials.jsonl
+# after that batch finishes — the whole point of 3 seeds was picking up
+# whichever one didn't land near 0. Then uncomment + fill in below.
+#
+# CFGPATH=$(mktemp --suffix=.json) && python3 -c "import json,sys; c=json.load(open('config_json/config.json')); c['active_env']='dummy_bimodal'; json.dump(c, open(sys.argv[1],'w'))" "$CFGPATH" && Q3C_CONFIG_PATH="$CFGPATH" uv run --managed-python python -m simulations.run_simulation --checkpoint <IBC_RETUNE_CHECKPOINT_DIR>/control_point_generator.pt --seeds 0 1 2 --episodes 6 --output-dir plots/dummy_bimodal_ibc_retune --device cpu

@@ -52,6 +52,14 @@ class DummyBimodalSimulation(BaseSimulation):
         self.step_size = step_size
         self.goal_radius = goal_radius
         self.obstacle_radius = obstacle_radius
+        # No action renormalization needed (dummy_bimodal trains directly in
+        # the env's [-1, 1] action box) — None here is what tells the generic
+        # inference-Langevin-refinement wrapper in hyperparam_search.py
+        # (LangevinRefinedParticleSimulation, used whenever
+        # inference_langevin_iterations > 0) to skip the CP renormalization
+        # step. Every other Simulation class sets these for the same reason.
+        self._act_min_t = None
+        self._act_rng_t = None
 
     def create_env(self) -> DummyBimodalEnv:
         return DummyBimodalEnv(
