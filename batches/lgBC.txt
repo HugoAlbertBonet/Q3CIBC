@@ -1,70 +1,68 @@
-# LIBERO-Goal — plain behaviour cloning (MSE), scratch and ImageNet.
+# LIBERO-Goal — explicit behaviour cloning (MSE regression), scratch and ImageNet.
 #
 # Submit with:  bash submit_experiments.sh batches/lgBC.txt
-# Prereq:       uv sync --extra libero
+# Prereq:       uv sync --extra libero --extra pushing
 #
-# ── How this is BC, given it runs the q3c trainer ─────────────────────────
-# mse_training.py only has branches for pen, particle and dummy, so there is no
-# BC trainer for this environment. Rather than add an untested env branch to it,
-# this reduces combinedv2 to plain regression, which it does exactly when:
+# ── What runs ─────────────────────────────────────────────────────────────
+# bc_mse_training.py — a standalone trainer, NOT combinedv2 with control_points=1.
+# The earlier version of this batch used that reduction; it is arithmetically
+# the same objective, but it still builds and trains a Q estimator, and a
+# reviewer is entitled to object that the BC baseline is the proposed method
+# wearing a flag. This trains a regression network and nothing else:
 #
-#   control_points = 1          the "cloud" is one point, so there is nothing
-#                               to rank and the Q estimator is never consulted
-#                               at eval (argmax over a single candidate)
-#   generator_infonce_weight=0  removes the only other term that reaches the
-#                               generator. The estimator already trains on
-#                               `predicted_actions.detach()`, so with this at 0
-#                               NO gradient from the critic touches the policy
-#   separation_weight = 0       belt and braces; the term is already identically
-#                               zero at N=1 (verified below)
+#     policy(obs) -> action          ONE forward pass, no control-point axis
+#     loss = mean((policy(obs) - a_expert)^2)
 #
-# What is left is mse_weight * sum((cp - a)^2), i.e. explicit BC.
+# No control points, no energy function, no InfoNCE, no negatives, no critic —
+# `utils.models.BCPolicy` has no critic submodule at all (asserted in the smoke
+# test). At eval, hyperparam_search detects `bc_policy.pt`, builds BCPolicy,
+# pairs it with the null critic, and forces control_points=1 with every
+# refinement loop off, so the reported number is the regressed action itself.
+#
+# ── Matched to the q3c reference, so the objective is the only difference ──
+# Encoder, conditioning, chunking, crop, schedule, optimiser and step count are
+# copied from the ablLibero reference config: resnet18 / gn / 128 kp, FiLM goal
+# conditioning, action_chunk 16, crop 116, cosine over 150k steps, lr 2e-4,
+# batch 128, ema 0.999. bc_width/bc_depth = 512x4 matches cp_width/cp_depth
+# there, so the regression trunk has the same capacity as the CP head it
+# replaces. (bc_* are separate SEARCH_SPACE keys precisely so sweeping the BC
+# baseline can never move the q3c generator.)
 #
 # ── Verified before writing this, not assumed ─────────────────────────────
-#   lossEntropyKDE at N=1 returns EXACTLY 0.0 for bandwidth in {0.01, 0.2, 1.0}
-#   and batch size in {1, 8, 128}.
-#   lossMSE at N=1 equals sum((cp - a)^2) to the digit.
-#   A 12-step run through the real combinedv2 path with this exact
-#   configuration printed "Sep: 0.0000", MSE falling 2.48 -> 1.63, no NaN, and
-#   Total == MSE + info_nce_weight * EST (1.6317 + 0.5*0.5952 = 1.9293) — so the
-#   generator-InfoNCE term contributed nothing, numerically confirmed.
-#   Separately, ablLibero already ran control_points=1 on this env end to end
-#   (5 runs, 94.0 +/- 3.2), so N=1 is proven through training AND evaluation here.
-#
-# ── Deliberately cheap ────────────────────────────────────────────────────
-# Uniform negatives, Langevin negatives and the gradient penalty are all set to
-# 0. They only ever shaped the Q estimator, which this policy does not use, and
-# the Langevin chain in the reference recipe is 8 negatives x 100 iterations per
-# step — a large cost for a component that cannot affect the result. The
-# estimator still trains (a 2-way InfoNCE between the expert and the single
-# control point) because combinedv2 always builds one; it is simply ignored.
-#
-# NOTE do not switch separation_loss to "separation" on these lines:
-# lossSeparation returns nan at N=1.
+# A 12-step run of bc_mse_training.py through its real path on a LIBERO-shaped
+# dataset (this machine has no LIBERO data, so the loader was stubbed; the
+# trainer, model, optimiser, EMA and checkpoint writer are the real ones):
+#   13.29M params, "no critic, no control points"
+#   MSE 0.339 -> 0.327 over 12 steps, no NaN
+#   wrote bc_policy.pt, bc_policy_ema.pt, norm_stats.pt
+#   the eval-side rebuild from norm_stats.pt strict-load()s that state_dict and
+#   returns (1, 1, 112) = (B, N=1, action_dim 7 x chunk 16), in range
+#   _NullCritic().score(...) -> (1, 1, 1), argmax 0 (picks the one action)
+#   no submodule matching "critic"/"q_estimator" in the policy
 #
 # ── Reference points on this env (all n=50 eval episodes) ─────────────────
-#   q3c film+scratch, N=100      91.7 +/- 4.5   (ablLibero reference, 6 runs)
 #   q3c film+scratch, N=1        94.0 +/- 3.2   (ablLibero, 5 runs)
+#   q3c film+scratch, N=100      91.7 +/- 4.5   (ablLibero reference, 6 runs)
 #   dpq3c ImageNet, cloud=1      91.3 +/- 3.1   (a diffusion policy, 3 runs)
 #   IBC (resnet18, unchunked)    42.0 +/- 8.8
 #
-# The N=1 q3c row is the one this batch is really testing. It scored highest of
-# anything on this environment, and the only thing separating it from plain BC
-# is the generator-InfoNCE term that these lines set to zero. If BC matches it,
-# then q3c at N=1 IS behaviour cloning and should be reported as such.
+# The N=1 q3c row is what this is really testing. It is the best number on this
+# environment, and the only thing between it and plain regression is the
+# generator-InfoNCE term. If BC matches it, q3c at N=1 IS behaviour cloning and
+# the paper should say so rather than let the reduction go unremarked.
 #
-# Both encoders, 3 seeds each: scratch is the ablLibero reference condition,
-# ImageNet @ 0.1x LR is the one worth +9.9 points for dpq3c on this env.
+# 3 seeds per encoder. Scratch is the ablLibero reference condition; ImageNet
+# @ 0.1x LR is the setting worth +9.9 points to dpq3c on this env.
 
 # ── BC-MSE scratch, seed 0
-uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":0}'
+uv run --managed-python --extra libero python hyperparam_search.py bc_mse_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"bc_depth":4,"bc_width":512,"cond_fusion":"film","cosine_t0":75000,"cosine_t_max":150000,"ema_decay":0.999,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"scheduler_type":"cosine","training_steps":150000,"trial_seed":0}'
 # ── BC-MSE scratch, seed 1
-uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":1}'
+uv run --managed-python --extra libero python hyperparam_search.py bc_mse_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"bc_depth":4,"bc_width":512,"cond_fusion":"film","cosine_t0":75000,"cosine_t_max":150000,"ema_decay":0.999,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"scheduler_type":"cosine","training_steps":150000,"trial_seed":1}'
 # ── BC-MSE scratch, seed 2
-uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":2}'
+uv run --managed-python --extra libero python hyperparam_search.py bc_mse_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"bc_depth":4,"bc_width":512,"cond_fusion":"film","cosine_t0":75000,"cosine_t_max":150000,"ema_decay":0.999,"encoder_kind":"resnet18","encoder_lr_scale":1.0,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":false,"frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"scheduler_type":"cosine","training_steps":150000,"trial_seed":2}'
 # ── BC-MSE ImageNet @0.1x LR, seed 0
-uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":0}'
+uv run --managed-python --extra libero python hyperparam_search.py bc_mse_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"bc_depth":4,"bc_width":512,"cond_fusion":"film","cosine_t0":75000,"cosine_t_max":150000,"ema_decay":0.999,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"scheduler_type":"cosine","training_steps":150000,"trial_seed":0}'
 # ── BC-MSE ImageNet @0.1x LR, seed 1
-uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":1}'
+uv run --managed-python --extra libero python hyperparam_search.py bc_mse_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"bc_depth":4,"bc_width":512,"cond_fusion":"film","cosine_t0":75000,"cosine_t_max":150000,"ema_decay":0.999,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"scheduler_type":"cosine","training_steps":150000,"trial_seed":1}'
 # ── BC-MSE ImageNet @0.1x LR, seed 2
-uv run --managed-python --extra libero python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cond_fusion":"film","control_points":1,"top_k_control_points":1,"generator_infonce_weight":0.0,"separation_weight":0.0,"separation_loss":"entropy","cosine_t0":75000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"mlp","cp_width":512,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","entropy_bandwidth":0.2,"estimator_learning_rate":0.0002,"frame_stack":1,"image_crop_size":116,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"learning_rate":0.0002,"mse_weight":1.0,"scheduler_type":"cosine","training_steps":150000,"num_uniform_negatives":0,"num_langevin_negatives":0,"langevin_num_iterations":0,"gradient_penalty_weight":0.0,"gradient_penalty_margin":1.0,"trial_seed":2}'
+uv run --managed-python --extra libero python hyperparam_search.py bc_mse_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"bc_depth":4,"bc_width":512,"cond_fusion":"film","cosine_t0":75000,"cosine_t_max":150000,"ema_decay":0.999,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"scheduler_type":"cosine","training_steps":150000,"trial_seed":2}'

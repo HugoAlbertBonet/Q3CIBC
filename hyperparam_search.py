@@ -732,6 +732,19 @@ SEARCH_SPACE: dict[str, dict] = {
     # Diffusion-policy eval samplers (read by diffusion_policy_training.py and
     # by resolve_dp_params). Without these, a batch passing them is silently
     # ignored and every trial evaluates at the config default.
+    # Explicit-BC regression trunk (bc_mse_training.py). Separate from
+    # cp_width/cp_depth so sweeping the BC baseline never moves the Q3C
+    # generator, and vice versa.
+    "bc_width": {
+        "values": [256, 512, 1024],
+        "type": "int",
+        "location": "env_model",
+    },
+    "bc_depth": {
+        "values": [1, 2, 3],
+        "type": "int",
+        "location": "env_model",
+    },
     "ddim_eval_steps": {"values": [[5], [10], [5, 10, 25]], "type": "list",
                         "location": "env_training"},
     "ddim_eta": {"values": [0.0, 0.5, 1.0], "type": "float", "location": "env_training"},
@@ -1270,7 +1283,17 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     dpq3c_ema_path = os.path.join(checkpoint_dir, "denoiser_ema.pt")
     is_dpq3c = os.path.exists(dpq3c_raw_path) or os.path.exists(dpq3c_ema_path)
 
-    if is_dpq3c:
+    # bc_mse_training.py writes a single regression network and no critic. It is
+    # the explicit-BC baseline, so there is exactly one candidate per state:
+    # evaluate it like a plain diffusion policy (null critic, cloud of one) but
+    # with a BCPolicy in place of the sampler.
+    bc_raw_path = os.path.join(checkpoint_dir, "bc_policy.pt")
+    bc_ema_path = os.path.join(checkpoint_dir, "bc_policy_ema.pt")
+    is_bc = os.path.exists(bc_raw_path) or os.path.exists(bc_ema_path)
+
+    if is_bc:
+        cp_raw_path, cp_ema_path = bc_raw_path, bc_ema_path
+    elif is_dpq3c:
         cp_raw_path, cp_ema_path = dpq3c_raw_path, dpq3c_ema_path
     else:
         cp_raw_path = os.path.join(checkpoint_dir, "control_point_generator.pt")
@@ -1285,8 +1308,18 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     # cloud of ONE (nothing to rank) and a constant-score stub critic, so the
     # simulations' `cp_gen(obs)` then `q.score(...)` call pattern works unchanged
     # and argmax over a single candidate trivially returns it.
-    is_plain_dp = is_dpq3c and not (
+    is_plain_dp = (is_dpq3c or is_bc) and not (
         os.path.exists(q_raw_path) or os.path.exists(q_ema_path))
+
+    if is_bc:
+        # One candidate, no energy to climb: any refinement loop would be a
+        # no-op that still costs a forward pass per iteration, and top-k over a
+        # single action is meaningless. Hard-off so a stray config value cannot
+        # silently change what "BC" means.
+        control_points = 1
+        inference_dfo_iterations = 0
+        inference_langevin_iterations = 0
+        inference_langevin_again_iterations = 0
 
     eval_ema_decay = float(env_config.get("training", {}).get("ema_decay", 0.0))
     use_ema = (
@@ -1304,7 +1337,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             "avg_reward": 0.0,
             "error": f"Checkpoints not found in {checkpoint_dir}",
         }
-    if is_plain_dp:
+    if is_bc:
+        print("Explicit BC policy detected (bc_policy, no critic): evaluating "
+              "its single regressed action with a null critic.")
+    elif is_plain_dp:
         print("Plain diffusion policy detected (denoiser, no critic): evaluating "
               "with a 1-candidate cloud and a null critic.")
     if eval_ema_decay > 0.0 and not use_ema:
@@ -1352,7 +1388,29 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         # Action chunking: model output = action_dim * K per CP.
         action_chunk = int(_ns.get("action_chunk", 1) or 1)
         action_dim_eff = action_dim * action_chunk
-        if is_dpq3c:
+        if is_bc:
+            from utils.models import BCPolicy
+            cp_gen = BCPolicy(
+                action_dim_eff,
+                in_channels=in_channels,
+                cond_dim=cond_dim,
+                width=int(_ns.get("bc_width", em.get("bc_width", em.get("cp_width", 256)))),
+                depth=int(_ns.get("bc_depth", em.get("bc_depth", em.get("cp_depth", 2)))),
+                action_bounds=(action_bounds[0], action_bounds[1]),
+                encoder_target_height=enc_h,
+                encoder_target_width=enc_w,
+                encoder_feature_dim=int(_ns.get("encoder_feature_dim", 256)),
+                encoder_kind=encoder_kind,
+                encoder_pretrained=encoder_pretrained,
+                encoder_num_kp=encoder_num_kp,
+                encoder_norm_kind=encoder_norm_kind,
+                encoder_per_camera=encoder_per_camera,
+                cond_fusion=cond_fusion,
+                goal_dim=goal_dim,
+            )
+            cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
+            cp_gen.to(device).eval()
+        elif is_dpq3c:
             cp_gen = _build_dpq3c_generator(
                 cp_path, env_config, norm_stats or {}, action_dim_eff,
                 control_points, action_bounds, device,
@@ -1423,7 +1481,20 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         # its output/action dim is action_dim*K (norm_stats carries K).
         flat_action_chunk = int((norm_stats or {}).get("action_chunk", 1) or 1)
         flat_action_dim = action_dim * flat_action_chunk
-        if is_dpq3c:
+        if is_bc:
+            from utils.models import BCPolicy
+            _ns = norm_stats or {}
+            cp_gen = BCPolicy(
+                flat_action_dim,
+                state_dim=flat_input_dim,
+                cond_dim=int(_ns.get("cond_dim", 0)),
+                width=int(_ns.get("bc_width", em.get("bc_width", em.get("cp_width", 256)))),
+                depth=int(_ns.get("bc_depth", em.get("bc_depth", em.get("cp_depth", 2)))),
+                action_bounds=(action_bounds[0], action_bounds[1]),
+            )
+            cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
+            cp_gen.to(device).eval()
+        elif is_dpq3c:
             cp_gen = _build_dpq3c_generator(
                 cp_path, env_config, norm_stats or {}, flat_action_dim,
                 control_points, action_bounds, device,

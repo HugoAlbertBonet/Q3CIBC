@@ -860,3 +860,90 @@ class PixelQEstimator(nn.Module):
 			state = state[:, 0]
 		return self.score(self.encode(state), action)
 
+
+
+class BCPolicy(nn.Module):
+    """Explicit behaviour cloning: observation -> action in ONE forward pass.
+
+    A genuinely separate baseline, not a configuration of another method. There
+    is no control-point dimension, no energy function and no critic anywhere in
+    the module — it is a regression network and nothing else.
+
+    It returns (B, 1, action_dim) rather than (B, action_dim) purely so it drops
+    into the evaluation stack's `proposal(state) -> (B, N, A)` contract with
+    N = 1. That is presentation, not architecture: nothing is ranked, because
+    there is only ever one candidate.
+
+    Handles both observation kinds: pass `in_channels` for pixels (a shared
+    encoder is built) or `state_dim` for flat states.
+    """
+
+    def __init__(self, action_dim: int, *, in_channels: int | None = None,
+                 state_dim: int | None = None, width: int = 256, depth: int = 2,
+                 cond_dim: int = 0, action_bounds: tuple[float, float] = (-1.0, 1.0),
+                 encoder_target_height: int = 180, encoder_target_width: int = 240,
+                 encoder_feature_dim: int = 256, encoder_kind: str = "conv_maxpool",
+                 encoder_pretrained: bool | str = False, encoder_num_kp: int = 64,
+                 encoder_norm_kind: str = "bn", encoder_per_camera: bool = False,
+                 cond_fusion: str = "concat", goal_dim: int = 0,
+                 network_kind: str = "mlp") -> None:
+        super().__init__()
+        if (in_channels is None) == (state_dim is None):
+            raise ValueError("pass exactly one of in_channels (pixels) or state_dim (flat)")
+        self.action_dim = int(action_dim)
+        self.cond_dim = int(cond_dim)
+        self._cond: torch.Tensor | None = None
+        self.action_bounds = (float(action_bounds[0]), float(action_bounds[1]))
+        # Same conditioning options as PixelControlPointGenerator, so the BC
+        # baseline can be run with the exact encoder recipe it is compared
+        # against — otherwise a gap between BC and q3c would be confounded by
+        # FiLM rather than by the objective, which is the only thing under test.
+        if cond_fusion not in ("concat", "film"):
+            raise ValueError(f"cond_fusion must be concat|film, got {cond_fusion!r}")
+        if cond_fusion == "film" and (goal_dim <= 0 or encoder_kind != "resnet18"):
+            raise ValueError("cond_fusion='film' needs encoder_kind='resnet18' and goal_dim>0")
+        self.cond_fusion = cond_fusion
+        self.goal_dim = int(goal_dim)
+        if in_channels is not None:
+            self.encoder, feat_dim = _build_pixel_encoder(
+                encoder_kind, in_channels, encoder_target_height,
+                encoder_target_width, encoder_feature_dim, encoder_pretrained,
+                encoder_num_kp, encoder_norm_kind, encoder_per_camera,
+                film_dim=(self.goal_dim if cond_fusion == "film" else 0))
+        else:
+            self.encoder, feat_dim = None, int(state_dim)
+            self.cond_fusion = "concat"
+        self.head = _build_backbone(
+            input_dim=feat_dim + self.cond_dim, output_dim=self.action_dim,
+            network_kind=network_kind, hidden_dims=[width] * depth,
+            width=width, depth=depth, activation=nn.ReLU, use_spectral_norm=False)
+
+    def _film_vec(self) -> torch.Tensor | None:
+        if self.cond_fusion != "film":
+            return None
+        if self._cond is None:
+            raise RuntimeError("cond_fusion='film' but ._cond not set.")
+        return self._cond[:, -self.goal_dim:]
+
+    def encode(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.encoder is None:
+            return obs
+        fv = self._film_vec()
+        return self.encoder(obs, fv) if fv is not None else self.encoder(obs)
+
+    def features(self, obs: torch.Tensor) -> torch.Tensor:
+        x = self.encode(obs)
+        if self.cond_dim:
+            if self._cond is None:
+                raise RuntimeError("cond_dim > 0 but ._cond not set")
+            x = torch.cat([x, self._cond], dim=-1)
+        return x
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        a = self.head(self.features(obs))
+        lo, hi = self.action_bounds
+        # tanh-squash to the action box, as explicit BC baselines conventionally
+        # do; without it a regression head can emit out-of-range actions that
+        # the environment silently clips.
+        a = torch.tanh(a) * (hi - lo) / 2.0 + (hi + lo) / 2.0
+        return a.unsqueeze(1)

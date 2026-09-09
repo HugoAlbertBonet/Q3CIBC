@@ -47,6 +47,17 @@ critic a PixelQEstimator (DenseResnetValue 1024x1). Six rows:
    2048 samples for 100 iterations on cached encoder features (late fusion), per
    the best libero IBC config we ran.
 
+7-9. **Q3CIBC + Langevin-K**, K in {10, 25, 100} — row 5 followed by Langevin
+   MCMC on the single argmax control point, against the cached features, which
+   is exactly what `inference_langevin_iterations` does on this env (see
+   hyperparam_search.LiberoRefinedSimulation). This is the only refinement that
+   has ever moved the libero number: at K=25 with lr_init 0.1 it is worth
+   +2.9 +/- 3.6 points paired over 9 checkpoints (t=+2.39, p=0.017), while
+   K=100 gives it all back (-0.7). Each iteration is a forward AND a backward
+   through the value head (Langevin needs dE/da), so unlike DFO the cost per
+   iteration cannot be amortised across candidates — which is why K belongs in
+   a cost table next to the 2.9 points it buys.
+
 Random weights note
 -------------------
 Inference wall-clock depends on tensor shapes and the algorithm graph, not on
@@ -99,6 +110,12 @@ DPQ3C_CLOUD = 64
 Q3C_CONTROL_POINTS = 100
 Q3C_CP_WIDTH, Q3C_CP_DEPTH = 512, 4
 IBC_SAMPLES, IBC_ITERS = 2048, 100
+# Inference-time Langevin refinement of the chosen control point. The lr/clip/
+# noise triple is the one the winning reeval used (q3cLangevinV2, lr_init 0.1);
+# the iteration counts are the three that were actually scored.
+LANGEVIN_ITERS = (10, 25, 100)
+LANGEVIN_LR_INIT, LANGEVIN_LR_FINAL = 0.1, 1e-5
+LANGEVIN_DECAY_POWER, LANGEVIN_DELTA_CLIP, LANGEVIN_NOISE = 2.0, 0.1, 0.1
 
 # Seed-averaged success rates, measured elsewhere (see the module docstring).
 # Seed-averaged success rates, measured elsewhere (see the module docstring).
@@ -120,7 +137,17 @@ SUCCESS = {
     "dpq3c DDPM-100 (cloud=64 + Q)": (None, None, None),
     "Q3CIBC (film, scratch)": (92.7, 3.1, 3),
     "IBC (DFO 2048x100)": (42.0, 8.8, 3),
+    # Langevin rows: the q3cLangevin/q3cLangevinV2 re-evaluations, mean +/- std
+    # over the SAME 9 q3c checkpoints (so they are paired with each other and
+    # with their own 0-iteration baseline of 89.6 +/- 5.4). These 9 span several
+    # q3c configurations, which is why the baseline here is not the 92.7 of the
+    # single ablation-reference row above.
+    "Q3CIBC + Langevin-10": (90.2, 4.4, 9),
+    "Q3CIBC + Langevin-25": (92.4, 2.8, 9),
+    "Q3CIBC + Langevin-100": (88.9, 4.8, 9),
 }
+# The paired baseline for the three Langevin rows (same 9 checkpoints, 0 iters).
+LANGEVIN_BASELINE = (89.6, 5.4, 9)
 
 
 def parse_args() -> argparse.Namespace:
@@ -168,6 +195,7 @@ def main() -> int:
 
     from utils.models import PixelQEstimator, PixelControlPointGenerator
     from utils.diffusion import build_dpq3c_denoiser, build_diffusion, resolve_dp_params
+    from utils.sampling import sample_langevin
 
     enc = dict(encoder_target_height=ENC_HW, encoder_target_width=ENC_HW,
                encoder_kind=ENC_KIND, encoder_pretrained=False,
@@ -246,6 +274,39 @@ def main() -> int:
                 std *= 0.5
         return q.score(f, x).squeeze(-1).argmax(dim=1)
 
+    act_lo = torch.full((ACTION_DIM,), -1.0, device=device)
+    act_hi = torch.full((ACTION_DIM,), 1.0, device=device)
+
+    def q3c_langevin(iters: int):
+        """Row 5, then Langevin on the winning control point.
+
+        Mirrors LiberoRefinedSimulation: encode once, rank the cloud under
+        no_grad, then run the chain against the cached features. The chain is
+        NOT under no_grad — sample_langevin differentiates the energy w.r.t.
+        the action — so this row pays a backward pass per iteration.
+        """
+        with torch.no_grad():
+            cps = cp(obs)
+            f = q.encode(obs)
+            best = cps[0, q.score(f, cps).squeeze(-1).argmax(dim=1)[0], :].view(1, 1, -1)
+
+        def neg_energy(_obs_lv, actions_lv):
+            return -q.score(f, actions_lv).squeeze(-1)
+
+        return sample_langevin(
+            energy_function=neg_energy, observations=f, num_samples=1,
+            action_min=act_lo, action_max=act_hi, num_iterations=iters,
+            lr_init=LANGEVIN_LR_INIT, lr_final=LANGEVIN_LR_FINAL,
+            polynomial_decay_power=LANGEVIN_DECAY_POWER,
+            delta_action_clip=LANGEVIN_DELTA_CLIP, noise_scale=LANGEVIN_NOISE,
+            initial_actions=best, device=device)
+
+    # sample_langevin flips requires_grad on the action, not on the model, but
+    # the real path freezes the critic around the chain; do the same so the
+    # timed graph matches (no parameter grads accumulated).
+    for _p in q.parameters():
+        _p.requires_grad_(False)
+
     methods = [
         ("DP DDIM-10 (cloud=1)", lambda: dpq3c(1, "ddim"), DDIM_STEPS, 0,
          params_m(den)),
@@ -257,6 +318,12 @@ def main() -> int:
          TIMESTEPS, DPQ3C_CLOUD, params_m(den, q)),
         ("Q3CIBC (film, scratch)", q3c, 0, Q3C_CONTROL_POINTS, params_m(cp, q)),
         ("IBC (DFO 2048x100)", ibc_dfo, 0, IBC_SAMPLES * IBC_ITERS, params_m(q)),
+    ] + [
+        # scoring_evals counts Q calls: the 100-CP ranking pass plus one per
+        # Langevin iteration (each of which is also a backward).
+        (f"Q3CIBC + Langevin-{k}", (lambda k=k: q3c_langevin(k)), 0,
+         Q3C_CONTROL_POINTS + k, params_m(cp, q))
+        for k in LANGEVIN_ITERS
     ]
 
     print(f"device={device}  obs={tuple(obs.shape)}  action_dim={ACTION_DIM}  "
@@ -272,8 +339,9 @@ def main() -> int:
                          params_m=round(pm, 2),
                          inference_time_ms=round(mean_ms, 3),
                          inference_time_median_ms=round(med_ms, 3)))
+        srtxt = "n/a" if sr is None else (f"{sr:.1f}" + (f" +/- {sd:.1f}" if sd is not None else ""))
         print(f"  {name:32s} {mean_ms:8.2f} ms   scoring_evals={scoring_evals:>6}  "
-              f"params={pm:6.2f}M")
+              f"params={pm:6.2f}M   SR={srtxt}")
 
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     with args.csv.open("w", newline="") as fh:
