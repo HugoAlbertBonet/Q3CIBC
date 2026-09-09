@@ -702,6 +702,15 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env",
     },
+    # Episode step budget. LIBERO's own default is 600
+    # (third_party/LIBERO/libero/configs/eval/default.yaml); this repo has
+    # always used 300 for libero_goal_pixels. Searchable so the protocol can be
+    # matched deliberately instead of by editing config.json under running jobs.
+    "max_episode_steps": {
+        "values": [50, 100, 200, 300, 600],
+        "type": "int",
+        "location": "env",
+    },
     # ── wirefit_q3c_training.py ──────────────────────────────────────────────
     # The estimator scores only the control points and every other action's
     # value is wire-fit interpolated from them. Without these entries the keys
@@ -924,6 +933,13 @@ INFERENCE_ONLY_PARAMS: set[str] = {
     "inference_dp_method",
     "inference_dp_eta",
     "inference_control_points",
+    # Protocol knobs. Neither touches what was trained — they change how many
+    # episodes a saved checkpoint is scored over and for how long — so a reeval
+    # may set them. num_eval_seeds also has a dedicated --num-eval-seeds flag on
+    # scripts/reeval_trials.py; this entry makes it settable via
+    # --param-overrides too, and is what lets max_episode_steps be set at all.
+    "num_eval_seeds",
+    "max_episode_steps",
 }
 
 

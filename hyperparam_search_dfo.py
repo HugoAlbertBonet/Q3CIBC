@@ -1147,6 +1147,7 @@ def run_trial(
     quick: bool = False,
     reeval_checkpoint: str | None = None,
     active_env: str = "particle",
+    num_eval_seeds: int | None = None,
 ):
     """If `reeval_checkpoint` is given, skip training and just evaluate that
     checkpoint with the inference params from `params_override`. Useful for
@@ -1247,8 +1248,14 @@ def run_trial(
         # Env-driven eval seed count: pen=100 (paper), particle=50 (legacy).
         cfg_for_eval = load_config()
         eval_env_cfg = cfg_for_eval["environments"].get(active_env, {})
+        # An explicit --num-eval-seeds wins over config.json. Without this the
+        # only way to run IBC at the full LIBERO protocol was to edit
+        # config.json, which is racy across concurrent sbatch jobs and has
+        # already drifted mid-batch once.
         num_eval = int(
-            eval_env_cfg.get("num_eval_seeds", _DEFAULT_NUM_EVAL_SEEDS.get(active_env, NUM_EVAL_SEEDS))
+            num_eval_seeds if num_eval_seeds is not None
+            else eval_env_cfg.get("num_eval_seeds",
+                                  _DEFAULT_NUM_EVAL_SEEDS.get(active_env, NUM_EVAL_SEEDS))
         )
         print(f"\n  Evaluating on {num_eval} seeds...")
         try:
@@ -1517,6 +1524,12 @@ def main():
              "Use 'pen' for IBC-paper-faithful pen-human-v2 runs.",
     )
     parser.add_argument(
+        "--num-eval-seeds", type=int, default=None,
+        help="Override the eval episode count (e.g. 500 for the full LIBERO "
+             "protocol: 10 tasks x 50 init states). Default = config.json's "
+             "per-env value.",
+    )
+    parser.add_argument(
         "--min-trial-id", type=int, default=0,
         help="When analyzing, skip trials with id below this value (scope "
              "to recent batch).",
@@ -1541,6 +1554,7 @@ def main():
                 quick=args.quick,
                 reeval_checkpoint=args.reeval_checkpoint,
                 active_env=args.active_env,
+                num_eval_seeds=args.num_eval_seeds,
             )
         return
 
