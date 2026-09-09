@@ -1,0 +1,128 @@
+# Batch dummyBimodalQ3CBigSweep — broad one-at-a-time hyperparameter sweep
+# for Q3C on dummy_bimodal (Tier 1). Supersedes/expands
+# dummyBimodalQ3CRetune.txt's single guess (control_points=60 + inference
+# refinement, which only moved ambiguous-subset success 44%->52% — not
+# enough to conclude it was the right lever). Runs alongside
+# dummyBimodalQ3CSweep.txt (the ambiguous_frac-only sweep); this batch fixes
+# ambiguous_frac=0.5 (a reasonable default pending that sweep's result,
+# since 0.5 can only help or be neutral for THIS batch's questions) and
+# instead varies architecture/optimization knobs, including directly testing
+# the suspicion that control_points=60 was too many.
+#
+# Lever-decomposition style (same pattern as batches/Q.txt): one shared
+# BASELINE, then each axis changes ONE thing from it. All at
+# training_steps=50000, batch_size=128, learning_rate=0.001.
+#
+# BASELINE (dbBig_base): control_points=30, top_k_control_points=15,
+#   num_langevin_negatives=16, langevin_noise_scale=0.2,
+#   langevin_delta_clip=0.2, inference_langevin_iterations=20,
+#   ambiguous_frac=0.5.
+#
+# Axis A — control_points (top_k held at ~50%): 10, 15, 20, 45, 60, 90.
+#   Directly tests "60 is too many" — if a SMALLER cloud does as well or
+#   better, the CP-count lever was a red herring in the original retune;
+#   if success keeps climbing past 60, the retune undershot.
+# Axis B — num_langevin_negatives: 0, 8, 32 (baseline 16 sits between).
+#   0 isolates whether Langevin negatives help AT ALL vs pure generator-CP
+#   counter-examples; 32 checks if more still helps at this CP count.
+# Axis C — inference_langevin_iterations: 0, 10, 40 (baseline 20).
+#   0 = the ORIGINAL (un-retuned) inference behavior, at the new baseline's
+#   other settings — isolates how much of the retune's gain was actually
+#   the refinement step vs. everything else changed alongside it.
+# Axis D — langevin_noise_scale/delta_clip (paired): 0.1/0.1, 0.5/0.5
+#   (baseline 0.2/0.2; 0.5/0.5 is the ORIGINAL untuned value from
+#   dummyBimodalTier1.txt). Checks whether tightening these actually mattered
+#   independent of everything else, or if the retune's gain came from
+#   elsewhere.
+#
+# 1 baseline + 6 (A) + 3 (B) + 3 (C) + 2 (D) = 15 configs x 2 seeds = 30 jobs.
+
+# ── dbBig_base seed 0 (shared baseline, anchor point for every axis) ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── dbBig_base seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis A: control_points=10 (top_k=5) seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":10,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":5,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis A: control_points=10 (top_k=5) seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":10,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":5,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis A: control_points=15 (top_k=8) seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":15,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":8,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis A: control_points=15 (top_k=8) seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":15,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":8,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis A: control_points=20 (top_k=10) seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":20,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":10,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis A: control_points=20 (top_k=10) seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":20,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":10,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis A: control_points=45 (top_k=23) seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":45,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":23,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis A: control_points=45 (top_k=23) seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":45,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":23,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis A: control_points=60 (top_k=30) seed 0 — matches dummyBimodalQ3CRetune.txt's arch, replayed here for a like-for-like axis comparison under the SAME ambiguous_frac=0.5 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis A: control_points=60 (top_k=30) seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis A: control_points=90 (top_k=45) seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":90,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":45,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis A: control_points=90 (top_k=45) seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":90,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":45,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis B: num_langevin_negatives=0 seed 0 (isolates: do Langevin negatives help at all?) ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis B: num_langevin_negatives=0 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":0,"langevin_num_iterations":0,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis B: num_langevin_negatives=8 seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis B: num_langevin_negatives=8 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis B: num_langevin_negatives=32 seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":32,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis B: num_langevin_negatives=32 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":32,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis C: inference_langevin_iterations=0 seed 0 (original un-retuned inference behavior, isolates how much of the retune's gain was JUST the refinement step) ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":0,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis C: inference_langevin_iterations=0 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":0,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis C: inference_langevin_iterations=10 seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":10,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis C: inference_langevin_iterations=10 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":10,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis C: inference_langevin_iterations=40 seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":40,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis C: inference_langevin_iterations=40 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":40,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis D: langevin_noise_scale/delta_clip=0.1/0.1 seed 0 (tighter than baseline) ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis D: langevin_noise_scale/delta_clip=0.1/0.1 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── Axis D: langevin_noise_scale/delta_clip=0.5/0.5 seed 0 (the ORIGINAL untuned value) ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.5,"langevin_delta_clip":0.5,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── Axis D: langevin_noise_scale/delta_clip=0.5/0.5 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":15,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.5,"langevin_delta_clip":0.5,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
