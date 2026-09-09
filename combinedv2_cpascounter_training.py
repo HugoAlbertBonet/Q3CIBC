@@ -400,6 +400,7 @@ def load_dataset(split="train"):
             goal_radius=env_config.get("goal_radius", 0.05),
             obstacle_radius=env_config.get("obstacle_radius", 0.25),
             frame_stack=frame_stack,
+            ambiguous_frac=env_config.get("ambiguous_frac"),
         )
     else:
         raise ValueError(f"Unknown environment: {active_env}")

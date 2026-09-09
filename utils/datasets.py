@@ -536,6 +536,15 @@ class DummyBimodalDataset(Dataset):
     genuinely bimodal near the obstacle while staying unimodal everywhere
     else (mirrors real geometry: only truly ambiguous states are ambiguous).
 
+    Under PLAIN uniform (agent, goal) sampling, only ~27% of episodes end up
+    genuinely blocked-at-start (measured empirically) — the bimodal case is
+    a minority of the training signal by construction, not by choice. Set
+    `ambiguous_frac` to override that natural rate: per episode, a coin flip
+    decides whether THIS episode must start blocked or must start clear, then
+    (agent, goal) are rejection-sampled until that target is met. Leave it
+    `None` to keep the original unweighted distribution (default, matches
+    every dummy_bimodal run before this parameter existed).
+
     State: [goal_x, goal_y, agent_x, agent_y] (before frame stacking) — same
     layout as DummyDataset, so it drops into the exact same normalizer /
     model code with no changes.
@@ -552,11 +561,13 @@ class DummyBimodalDataset(Dataset):
         obstacle_radius: float = 0.25,
         detour_margin: float = 0.15,
         frame_stack: int = 1,
+        ambiguous_frac: float | None = None,
     ):
         self.frame_stack = frame_stack
         self.step_size = step_size
         self.goal_radius = goal_radius
         self.obstacle_radius = obstacle_radius
+        self.ambiguous_frac = ambiguous_frac
 
         obstacle_center = np.zeros(2, dtype=np.float32)
 
@@ -565,6 +576,8 @@ class DummyBimodalDataset(Dataset):
         episode_starts = []
 
         total_samples = 0
+        n_ambiguous_episodes = 0
+        n_episodes = 0
         rng = np.random.default_rng(seed=42)
 
         def sample_point_outside_obstacle():
@@ -584,10 +597,29 @@ class DummyBimodalDataset(Dataset):
             return float(np.linalg.norm(p - closest))
 
         while total_samples < size:
+            want_ambiguous = (
+                None if ambiguous_frac is None
+                else bool(rng.random() < ambiguous_frac)
+            )
             goal = sample_point_outside_obstacle()
             agent_pos = sample_point_outside_obstacle()
             while np.linalg.norm(agent_pos - goal) < goal_radius * 3:
                 agent_pos = sample_point_outside_obstacle()
+            if want_ambiguous is not None:
+                # Rejection-sample the WHOLE (agent, goal) pair until its
+                # start-blocked status matches the target for this episode.
+                # Both classes occur often enough under plain uniform
+                # sampling (~27%/~73%) that this converges in a handful of
+                # tries; no retry cap needed in practice.
+                is_blocked = segment_dist_to_point(agent_pos, goal, obstacle_center) < obstacle_radius
+                while is_blocked != want_ambiguous:
+                    goal = sample_point_outside_obstacle()
+                    agent_pos = sample_point_outside_obstacle()
+                    while np.linalg.norm(agent_pos - goal) < goal_radius * 3:
+                        agent_pos = sample_point_outside_obstacle()
+                    is_blocked = segment_dist_to_point(agent_pos, goal, obstacle_center) < obstacle_radius
+                n_ambiguous_episodes += int(is_blocked)
+            n_episodes += 1
 
             # Fixed per-episode coin flip: which side of the obstacle the
             # expert detours around whenever the direct path is blocked.
@@ -650,6 +682,13 @@ class DummyBimodalDataset(Dataset):
 
         self.state_shape = self.observations.shape[1]
         self.action_shape = self.actions.shape[1]
+
+        if ambiguous_frac is not None:
+            achieved = n_ambiguous_episodes / max(n_episodes, 1)
+            print(
+                f"DummyBimodalDataset: {n_episodes} episodes, "
+                f"ambiguous_frac target={ambiguous_frac:.2f} achieved={achieved:.2f}"
+            )
 
     def __getitem__(self, index):
         return {'state': self.observations[index], 'action': self.actions[index]}

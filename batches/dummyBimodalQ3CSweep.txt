@@ -1,0 +1,47 @@
+# Batch dummyBimodalQ3CSweep — Q3C sweep on dummy_bimodal (Tier 1), targeting
+# the data-imbalance hypothesis, not architecture.
+#
+# Context: the previous retune (batches/dummyBimodalQ3CRetune.txt) barely
+# moved the needle (44%->52% success on the genuinely-ambiguous eval subset;
+# see conversation). Checked why: under PLAIN uniform (agent, goal) sampling,
+# only ~27% of TRAINING episodes are geometrically ambiguous (measured
+# empirically, matches the eval set's 25/100 split almost exactly) — the
+# bimodal case the whole test exists to probe is a minority of the training
+# signal by construction. Added `ambiguous_frac` to DummyBimodalDataset
+# (utils/datasets.py) to control this directly: per episode, rejection-sample
+# (agent, goal) until its blocked-at-start status matches a target coin flip
+# at the given rate, instead of leaving it to fall out of uniform sampling.
+#
+# This sweep holds the winning retune architecture fixed (control_points=60,
+# top_k_control_points=30, num_langevin_negatives=16, langevin_noise_scale/
+# delta_clip=0.2, inference_langevin_iterations=20 — all from
+# dummyBimodalQ3CRetune.txt) and varies ONLY ambiguous_frac:
+#   0.50 : even coverage, matches user's "at least make them 50/50" ask
+#   0.75 : oversample the hard case, since it's specifically where the
+#          method is failing (12/25 ambiguous seeds timing out on the best
+#          retune checkpoint) — worth checking if MORE than 50/50 helps
+#          further before assuming 50/50 is the ceiling
+# (0.27, i.e. the untouched natural rate, is NOT re-run here — that's
+# exactly what dummyBimodalQ3CRetune.txt already gives as the baseline to
+# compare against.)
+#
+# 2 seeds each = 4 jobs.
+#
+# Prediction: if training-data imbalance was the dominant cause (as opposed
+# to, say, the hard-collision env dynamics genuinely trapping the agent
+# regardless of how well the policy has learned the two headings), ambiguous-
+# subset success should climb well past the retune's 52%. If it doesn't move
+# much even at 0.75, the bottleneck is elsewhere (env dynamics / Q-landscape
+# near the blocked/unblocked geometric boundary, not training exposure).
+
+# ── dbQ3Csweep ambiguous_frac=0.50 seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":0}'
+
+# ── dbQ3Csweep ambiguous_frac=0.50 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.5,"trial_seed":1}'
+
+# ── dbQ3Csweep ambiguous_frac=0.75 seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.75,"trial_seed":0}'
+
+# ── dbQ3Csweep ambiguous_frac=0.75 seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":60,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":30,"sampling_method":"uniform","num_langevin_negatives":16,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.2,"langevin_delta_clip":0.2,"inference_langevin_iterations":20,"ambiguous_frac":0.75,"trial_seed":1}'

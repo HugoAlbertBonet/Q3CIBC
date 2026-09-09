@@ -117,6 +117,7 @@ def load_dataset():
             goal_radius=env_config.get("goal_radius", 0.05),
             obstacle_radius=env_config.get("obstacle_radius", 0.25),
             frame_stack=frame_stack,
+            ambiguous_frac=env_config.get("ambiguous_frac"),
         )
     raise ValueError(f"Unknown / unsupported environment for DP: {active_env}")
 

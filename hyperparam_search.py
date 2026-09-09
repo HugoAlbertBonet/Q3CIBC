@@ -216,6 +216,15 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env",
     },
+    # dummy_bimodal only: fraction of training episodes forced to start
+    # blocked-by-the-obstacle (genuinely ambiguous). None (unset) keeps the
+    # natural ~27% rate from plain uniform (agent, goal) sampling — see
+    # utils.datasets.DummyBimodalDataset.
+    "ambiguous_frac": {
+        "values": [0.27, 0.5, 0.75],
+        "type": "float",
+        "location": "env",
+    },
     # Predict a chunk of K consecutive actions per CP (executed open-loop at
     # eval). 1 = single-step (legacy). DP predicts 16, executes 8.
     "action_chunk": {
