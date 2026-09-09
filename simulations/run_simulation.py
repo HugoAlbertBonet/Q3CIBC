@@ -123,6 +123,23 @@ def create_simulation(
             snapshot_steps=dummy_sim_config.get("snapshot_steps", [1, 5, 10, 20, 50]),
             langevin_config=langevin_config,
         )
+    elif active_env == "dummy_bimodal":
+        from simulations.dummy_bimodal_simulation import DummyBimodalDiagnosticSimulation
+        langevin_config = env_config.get("model", {}).get("langevin_config", {})
+        dummy_sim_config = env_config.get("simulation", {})
+        return DummyBimodalDiagnosticSimulation(
+            control_point_generator=model,
+            q_estimator=q_estimator,
+            device=device,
+            render_mode=render_mode,
+            step_size=env_config.get("step_size", 0.1),
+            goal_radius=env_config.get("goal_radius", 0.1),
+            obstacle_radius=env_config.get("obstacle_radius", 0.25),
+            max_episode_steps=max_steps,
+            frame_stack=FRAME_STACK,
+            snapshot_steps=dummy_sim_config.get("snapshot_steps", [1, 5, 10, 20, 50, 100]),
+            langevin_config=langevin_config,
+        )
     else:
         raise ValueError(f"Unknown environment: {active_env}")
 

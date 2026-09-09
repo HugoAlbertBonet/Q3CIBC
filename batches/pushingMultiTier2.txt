@@ -1,0 +1,79 @@
+# Batch pushingMultiTier2 — Tier 2 multimodality benchmark (see conversation
+# "design a test that can visually show Q3C's capability to adapt to
+# multimodality"). Companion to Tier 1 (batches/dummyBimodalTier1.txt): where
+# Tier 1 is a controllable toy for qualitative CP-cloud/Q-heatmap figures,
+# Tier 2 is IBC's OWN literature-established multimodal benchmark
+# (BlockPushMultimodal — 2 blocks, 2 targets, Florence et al. 2021 Table 3),
+# used for a quantitative "mode coverage" number that also appears in the
+# Diffusion Policy paper's multimodality comparison.
+#
+# Four methods, 2 seeds each:
+#   pmT2_q3c*  : Q3C (combinedv2_cpascounter_training.py). Hyperparams mirror
+#                pushingMultiA4 (batches/pushingMultiA.txt) — the first
+#                IBC-paper-faithful recipe PLUS training-time Langevin
+#                negatives, the config most likely to actually solve this env
+#                (see that file's header for why multiA1-3 were predicted to
+#                sit near 0%).
+#   pmT2_ibc*  : Paper-faithful Implicit BC (ibc_with_cpsv2_training.py) —
+#                Langevin-MCMC-negatives-only, no generator-side CP mixture.
+#                num_hidden_layers/num_neurons chosen to match Q3C's
+#                estimator capacity (128-wide x 8 layers ~= q_width=128
+#                q_depth=8 resnet); counter_examples=8 matches IBC paper's
+#                ImplicitBCAgent.num_counter_examples for this task.
+#   pmT2_bc*   : Explicit BC-MSE (bc_mse_training.py) — mode-collapse
+#                control, SAME cp_width/cp_depth (256x2 MLP) as Q3C's
+#                generator as its regression head, so any success-rate gap
+#                is attributable to the objective, not capacity — same
+#                rationale as batches/pushtWidowXbc.txt.
+#   pmT2_dp*   : Diffusion Policy (diffusion_policy_training.py, run through
+#                hyperparam_search_dp.py so DDPM + every DDIM step count are
+#                evaluated from one checkpoint) — second mode-preserving
+#                reference; recipe mirrors batches/pushingDPA.txt (the
+#                single-target DP arm) unchanged except active_env.
+#
+# Prereqs (one-time, off-cluster, before submitting):
+#   - Download + unzip the IBC multimodal oracle TFRecords:
+#       https://storage.googleapis.com/brain-reach-public/ibc_data/block_push_multimodal_states_location.zip
+#     -> datasets/block_push/block_push_multimodal_states_location/
+#   - uv sync --extra pushing   (PyBullet + gym; NOT on the base .venv)
+#
+# After all arms finish, run the Tier 2 mode-coverage analysis (add
+# --checkpoint-dir/--label pairs for however many methods you want compared):
+#   uv run --extra pushing python -m simulations.run_pushing_multi_multimodality_eval \
+#     --checkpoint-dir checkpoints/hpsearch/<q3c_trial_dir> --label Q3C \
+#     --checkpoint-dir checkpoints/hpsearch/<ibc_trial_dir> --label IBC \
+#     --checkpoint-dir checkpoints/hpsearch/<bc_trial_dir>  --label BC-MSE \
+#     --output-dir results/pushing_multi
+# (DP isn't wired into that eval script yet — it needs the DDPM/DDIM sampler
+# from hyperparam_search_dp.evaluate_dp instead of evaluate_q3c; extend
+# evaluate_checkpoint() there the same way if you want DP on the same plot.)
+# -> results/pushing_multi/mode_coverage.png + mode_coverage.csv:
+#    success rate on genuinely-ambiguous start configs (both block->target
+#    assignments similarly short) vs unambiguous ones, per method. Expect
+#    BC-MSE's gap (unambiguous - ambiguous success rate) to be much larger
+#    than Q3C's/IBC's/DP's if mode-collapse is actually costing it task
+#    success, not just "wrong-looking but still fine" trajectories.
+
+# ── pmT2_q3c seed 0 (= pushingMultiA4 recipe) ──
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pmT2_q3c seed 1 ──
+uv run --managed-python --extra pushing python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":1,"control_points":20,"top_k_control_points":8,"q_network_kind":"resnet","q_width":128,"q_depth":8,"q_use_spectral_norm":false,"cp_network_kind":"mlp","cp_width":256,"cp_depth":2,"num_uniform_negatives":0,"num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":1e-5,"langevin_noise_scale":0.1,"langevin_delta_clip":0.1,"langevin_decay_power":2.0,"inference_langevin_iterations":100,"noisy_expert_count":0,"gradient_penalty_weight":1.0,"gradient_penalty_margin":1.0,"training_steps":100000,"cosine_t_max":100000}'
+
+# ── pmT2_ibc seed 0 (paper-faithful IBC, Langevin negatives only) ──
+uv run --managed-python --extra pushing python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"control_points":20,"num_hidden_layers":8,"num_neurons":128,"counter_examples":8,"learning_rate":0.001,"estimator_learning_rate":0.001,"batch_size":512,"scheduler_type":"cosine","cosine_t_max":100000,"training_steps":100000}'
+
+# ── pmT2_ibc seed 1 ──
+uv run --managed-python --extra pushing python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":1,"control_points":20,"num_hidden_layers":8,"num_neurons":128,"counter_examples":8,"learning_rate":0.001,"estimator_learning_rate":0.001,"batch_size":512,"scheduler_type":"cosine","cosine_t_max":100000,"training_steps":100000}'
+
+# ── pmT2_bc seed 0 (mode-collapse control, capacity-matched to Q3C's cp generator) ──
+uv run --managed-python --extra pushing python hyperparam_search.py bc_mse_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"bc_width":256,"bc_depth":2,"batch_size":512,"learning_rate":0.001,"scheduler_type":"cosine","cosine_t_max":100000,"ema_decay":0.999,"training_steps":100000}'
+
+# ── pmT2_bc seed 1 ──
+uv run --managed-python --extra pushing python hyperparam_search.py bc_mse_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":1,"bc_width":256,"bc_depth":2,"batch_size":512,"learning_rate":0.001,"scheduler_type":"cosine","cosine_t_max":100000,"ema_decay":0.999,"training_steps":100000}'
+
+# ── pmT2_dp seed 0 (mirrors batches/pushingDPA.txt) ──
+uv run --managed-python --extra pushing python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":0,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'
+
+# ── pmT2_dp seed 1 ──
+uv run --managed-python --extra pushing python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env pushing_multi --fixed-params '{"trial_seed":1,"learning_rate":1e-3,"batch_size":512,"training_steps":100000,"num_train_timesteps":100,"beta_schedule":"cosine","time_emb_dim":128,"denoiser_network_kind":"mlp","denoiser_width":256,"denoiser_depth":2,"denoiser_use_spectral_norm":false,"ema_decay":0.999,"ddim_eval_steps":[5,10,25],"ddim_eta":0.0,"eval_ddpm":true}'

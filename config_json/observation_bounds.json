@@ -648,6 +648,57 @@
             ]
         }
     },
+    "DummyBimodal-v0": {
+        "description": "Observation bounds for DummyBimodal-v0 (2D Grid Navigation with a fixed circular obstacle). Same state layout as Dummy-v0 — the obstacle is a constant world feature, not part of the observation.",
+        "source": "Synthetic",
+        "observation_dim": 4,
+        "bounds": {
+            "goal_pos": {
+                "description": "Goal position (x, y)",
+                "indices": [
+                    0,
+                    1
+                ],
+                "min": [
+                    -1.0,
+                    -1.0
+                ],
+                "max": [
+                    1.0,
+                    1.0
+                ]
+            },
+            "agent_pos": {
+                "description": "Agent position (x, y)",
+                "indices": [
+                    2,
+                    3
+                ],
+                "min": [
+                    -1.0,
+                    -1.0
+                ],
+                "max": [
+                    1.0,
+                    1.0
+                ]
+            }
+        },
+        "flat_bounds": {
+            "min": [
+                -1.0,
+                -1.0,
+                -1.0,
+                -1.0
+            ],
+            "max": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ]
+        }
+    },
     "FrankaKitchen-v1": {
         "description": "Stub observation bounds for FrankaKitchen-v1. Kitchen training/eval uses dataset-derived standardization; this fallback only prevents minmax-normalizer JSON lookup failures.",
         "source": "Stub \u2014 standardize-mode norm_stats.pt is authoritative for kitchen.",

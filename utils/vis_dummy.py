@@ -16,6 +16,17 @@ import torch
 import os
 
 
+def _segment_dist_to_point(a, b, p):
+    """Shortest distance from point p to segment a->b (numpy 2-vectors)."""
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom < 1e-8:
+        return float(np.linalg.norm(p - a))
+    t = np.clip(float(np.dot(p - a, ab)) / denom, 0.0, 1.0)
+    closest = a + t * ab
+    return float(np.linalg.norm(p - closest))
+
+
 def plot_dummy_debug(
     model,
     estimator,
@@ -29,6 +40,8 @@ def plot_dummy_debug(
     episode_idx,
     langevin_fn=None,
     title="Dummy Diagnostic",
+    obstacle_center=None,
+    obstacle_radius=None,
 ):
     """
     Generates a 1x5 row (or 2-row layout) of diagnostic plots for one snapshot.
@@ -46,6 +59,14 @@ def plot_dummy_debug(
         episode_idx: current episode index.
         langevin_fn: callable(model, estimator, device, state) -> (samples, trajs).
         title: figure title prefix.
+        obstacle_center: optional (2,) numpy array — fixed obstacle position
+            (dummy_bimodal only). When set, panel 5 draws the obstacle disk
+            and, whenever the direct agent->goal line crosses it, panels 1-4
+            plot BOTH valid detour headings (clockwise / counterclockwise) as
+            twin experts instead of one — making the ground-truth bimodality
+            explicit next to the model's control-point cloud.
+        obstacle_radius: obstacle disk radius; required together with
+            obstacle_center.
     """
     model.eval()
     estimator.eval()
@@ -56,17 +77,37 @@ def plot_dummy_debug(
     if state.ndim == 1:
         state = state.unsqueeze(0)
 
+    has_obstacle = obstacle_center is not None and obstacle_radius is not None
+    blocked = False
+    if has_obstacle:
+        blocked = _segment_dist_to_point(agent_pos, goal, obstacle_center) < obstacle_radius
+
     with torch.no_grad():
         # Control points: (1, N, 1) -> angles in [-1, 1]
         control_points = model(state)
         cp_actions = control_points.squeeze(0).cpu().numpy()  # (N, 1)
         cp_angles_rad = cp_actions[:, 0] * np.pi  # Map to [-π, π]
 
-        # Expert action: optimal angle towards goal
-        diff = goal - agent_pos
-        expert_angle_rad = np.arctan2(diff[1], diff[0])
-        expert_action = np.array([[expert_angle_rad / np.pi]])  # [-1, 1]
-        expert_action_t = torch.from_numpy(expert_action).float().to(device)
+        # Expert heading(s): direct-to-goal, UNLESS the direct line crosses
+        # the obstacle, in which case there are two equally valid detours.
+        if blocked:
+            to_goal = goal - agent_pos
+            norm = np.linalg.norm(to_goal) + 1e-8
+            perp = np.array([-to_goal[1], to_goal[0]], dtype=np.float32) / norm
+            margin = 0.15
+            aim_points = [
+                obstacle_center + side * perp * (obstacle_radius + margin)
+                for side in (1.0, -1.0)
+            ]
+        else:
+            aim_points = [goal]
+
+        expert_diffs = [ap - agent_pos for ap in aim_points]
+        expert_angles_rad = np.array(
+            [np.arctan2(d[1], d[0]) for d in expert_diffs]
+        )  # (K,), K=1 or 2
+        expert_actions = (expert_angles_rad / np.pi).reshape(-1, 1).astype(np.float32)
+        expert_actions_t = torch.from_numpy(expert_actions).float().to(device)
 
         # Q-values for CPs
         state_expanded = state.unsqueeze(1).expand(-1, control_points.shape[1], -1)
@@ -74,16 +115,26 @@ def plot_dummy_debug(
         if q_cps.ndim == 0:
             q_cps = np.array([q_cps.item()])
 
-        # Q-value for expert
-        q_expert = estimator(state, expert_action_t).item()
+        # Q-values for expert(s), K=1 or 2
+        state_for_experts = state.repeat(expert_actions_t.shape[0], 1)
+        q_experts = estimator(state_for_experts, expert_actions_t).squeeze(-1).cpu().numpy()
+        if q_experts.ndim == 0:
+            q_experts = np.array([q_experts.item()])
 
-        # Softmax probabilities (including expert)
-        q_all_for_softmax = np.concatenate([q_cps, [q_expert]])
+        # Legacy single-expert aliases (used by panels that only show ONE
+        # reference star, e.g. panel 4's "Expert" legend entry).
+        expert_angle_rad = expert_angles_rad[0]
+        q_expert = float(q_experts[0])
+
+        # Softmax probabilities (including expert(s))
+        q_all_for_softmax = np.concatenate([q_cps, q_experts])
         max_q = np.max(q_all_for_softmax)
         exps_all = np.exp(q_all_for_softmax - max_q)
         probs_all = exps_all / np.sum(exps_all)
-        probs = probs_all[:-1]       # CP probabilities
-        prob_expert = probs_all[-1]  # Expert probability
+        n_experts = len(q_experts)
+        probs = probs_all[:-n_experts]        # CP probabilities
+        probs_experts = probs_all[-n_experts:]  # Expert probabilities
+        prob_expert = probs_experts[0]
 
     # --- Figure: 2x3 grid (5 plots + 1 empty) ---
     fig = plt.figure(figsize=(18, 12))
@@ -94,7 +145,7 @@ def plot_dummy_debug(
     ax1.set_title("1. CPs & Expert\n(color = Q-value)", fontsize=10, pad=15)
 
     # Normalize Q for sizing
-    q_all = np.concatenate([q_cps, [q_expert]])
+    q_all = np.concatenate([q_cps, q_experts])
     q_min, q_max = q_all.min(), q_all.max()
     q_range = q_max - q_min if q_max > q_min else 1.0
 
@@ -110,13 +161,21 @@ def plot_dummy_debug(
     cb1 = plt.colorbar(sc1, ax=ax1, pad=0.12, shrink=0.6)
     cb1.set_label('Q-value', fontsize=8)
 
-    # Expert (same color scale, star marker)
-    ax1.scatter(
-        [expert_angle_rad], [1.0],
-        c=[q_expert], cmap='Blues', norm=norm1,
-        marker='*', s=300, edgecolors='black', linewidths=0.8, zorder=5,
-        label=f'Expert ★ Q={q_expert:.2f}'
+    # Expert(s) — one star if unambiguous, TWO if this state is blocked
+    # (genuinely bimodal: both detour headings are equally valid experts).
+    expert_labels = (
+        [f'Expert ★ Q={q_experts[0]:.2f}']
+        if n_experts == 1
+        else [f'Expert {i+1} (side {"+" if i == 0 else "-"}) ★ Q={q_experts[i]:.2f}'
+              for i in range(n_experts)]
     )
+    for i in range(n_experts):
+        ax1.scatter(
+            [expert_angles_rad[i]], [1.0],
+            c=[q_experts[i]], cmap='Blues', norm=norm1,
+            marker='*', s=300, edgecolors='black', linewidths=0.8, zorder=5,
+            label=expert_labels[i]
+        )
 
     ax1.set_yticks([])
     ax1.legend(loc='lower center', bbox_to_anchor=(0.5, -0.2), fontsize=7)
@@ -146,8 +205,9 @@ def plot_dummy_debug(
     cb = plt.colorbar(sm, ax=ax2, pad=0.1, shrink=0.6)
     cb.set_label('Q-value', fontsize=8)
 
-    # Mark expert
-    ax2.scatter([expert_angle_rad], [0.5], c='green', marker='*', s=200, zorder=5)
+    # Mark expert(s)
+    ax2.scatter(expert_angles_rad, np.full(n_experts, 0.5), c='green', marker='*',
+                s=200, zorder=5)
     ax2.set_yticks([])
 
     # ========== Plot 3: Probability Polar ==========
@@ -155,8 +215,8 @@ def plot_dummy_debug(
     ax3.set_title("3. CP Probabilities\n(color = softmax prob)", fontsize=10, pad=15)
 
     safe_probs_all = probs_all if (np.isfinite(probs_all).all() and probs_all.max() > 0) else np.ones_like(probs_all) / len(probs_all)
-    safe_probs = safe_probs_all[:-1]
-    safe_prob_expert = safe_probs_all[-1]
+    safe_probs = safe_probs_all[:-n_experts]
+    safe_probs_experts = safe_probs_all[-n_experts:]
     prob_sizes = 50 + 250 * (safe_probs / safe_probs_all.max())
 
     # Color CPs by probability
@@ -169,10 +229,12 @@ def plot_dummy_debug(
     cb3 = plt.colorbar(sc3, ax=ax3, pad=0.12, shrink=0.6)
     cb3.set_label('Probability', fontsize=8)
 
-    # Expert (distinct green star)
-    ax3.scatter([expert_angle_rad], [1.0], c='green', marker='*', s=300,
-                edgecolors='black', linewidths=0.8, zorder=5,
-                label=f'Expert ★ p={safe_prob_expert:.3f}')
+    # Expert(s) — distinct green star(s); TWO when this state is blocked
+    for i in range(n_experts):
+        lbl = (f'Expert ★ p={safe_probs_experts[i]:.3f}' if n_experts == 1
+               else f'Expert {i+1} ★ p={safe_probs_experts[i]:.3f}')
+        ax3.scatter([expert_angles_rad[i]], [1.0], c='green', marker='*', s=300,
+                    edgecolors='black', linewidths=0.8, zorder=5, label=lbl)
     # Selected CP (highest Q-value, matching action selection) as triangle
     sel_idx = np.argmax(q_cps)
     ax3.scatter([cp_angles_rad[sel_idx]], [1.0],
@@ -228,6 +290,15 @@ def plot_dummy_debug(
     rect = plt.Rectangle((-1, -1), 2, 2, linewidth=1, edgecolor='gray',
                           facecolor='lightyellow', alpha=0.3)
     ax5.add_patch(rect)
+
+    # Fixed obstacle (dummy_bimodal only) — highlighted red if the direct
+    # agent->goal line is currently blocked by it.
+    if has_obstacle:
+        obstacle_patch = plt.Circle(
+            obstacle_center, obstacle_radius,
+            color='red' if blocked else 'gray', alpha=0.35, zorder=2,
+        )
+        ax5.add_patch(obstacle_patch)
 
     # Trajectory
     traj_arr = np.array(trajectory)

@@ -1,0 +1,68 @@
+# Batch dummyBimodalTier1 — Tier 1 multimodality visual demo (see
+# conversation "design a test that can visually show Q3C's capability to
+# adapt to multimodality").
+#
+# Env: dummy_bimodal (simulations/dummy_bimodal_env.py) — 2D nav toy with a
+# fixed circular obstacle at the origin. Whenever the direct agent->goal line
+# crosses the obstacle, TWO equally valid detours exist (clockwise vs
+# counterclockwise); the synthetic oracle (utils.datasets.DummyBimodalDataset)
+# flips a coin ONCE per episode to pick a side, so the dataset is genuinely
+# bimodal near the obstacle and unimodal everywhere else — the toy analog of
+# IBC's own energy-landscape multimodality figure.
+#
+# Four methods, 2 seeds each, on the SAME dataset/env:
+#   dbT1_q3c*   : Q3C (combinedv2_cpascounter_training.py) — control-point
+#                 cloud + wire-fit Q should split into two clusters near the
+#                 obstacle. Diagnostic plots (CP cloud, Q heatmap, twin-expert
+#                 stars) via `python -m simulations.run_simulation` after
+#                 training (set active_env=dummy_bimodal in config.json).
+#   dbT1_ibc*   : Paper-faithful Implicit BC (ibc_with_cpsv2_training.py) —
+#                 Langevin-MCMC-negatives-only variant, no generator-side CP
+#                 mixture. The literature baseline Q3C is actually compared
+#                 against; should also preserve both modes (energy-based).
+#   dbT1_bc*    : Explicit BC-MSE (bc_mse_training.py) — the mode-collapse
+#                 control. Expect it to regress toward the AVERAGE of the two
+#                 valid headings near the obstacle, i.e. aim roughly straight
+#                 at the obstacle and stall (hard-collision env punishes this
+#                 visibly in success rate).
+#   dbT1_dp*    : Diffusion Policy (diffusion_policy_training.py, run through
+#                 hyperparam_search_dp.py so DDPM + every DDIM step count are
+#                 evaluated from the one checkpoint) — second mode-preserving
+#                 reference (stochastic sampler should also cover both
+#                 detours).
+#
+# Prereqs: none beyond the base .venv — dummy_bimodal's dataset is synthetic
+# (generated on the fly, no download). No --extra needed.
+#
+# After training, generate the visual diagnostic (5-panel snapshot plots,
+# CP cloud + Q heatmap + twin-expert stars — works for q3c AND ibc
+# checkpoints, both write control_point_generator.pt + q_estimator.pt) with:
+#   1. Set "active_env": "dummy_bimodal" in config_json/config.json (or point
+#      Q3C_CONFIG_PATH at a copy).
+#   2. python -m simulations.run_simulation --checkpoint <ckpt_dir>/control_point_generator.pt \
+#        --seeds 0 1 2 --episodes 6 --device cpu
+#      -> plots/dummy_bimodal/ep*_step*.png
+
+# ── dbT1_q3c seed 0 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":20,"sampling_method":"uniform","num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.5,"langevin_delta_clip":0.5,"trial_seed":0}'
+
+# ── dbT1_q3c seed 1 ──
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"top_k_control_points":20,"sampling_method":"uniform","num_langevin_negatives":8,"langevin_init_kind":"uniform","langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_noise_scale":0.5,"langevin_delta_clip":0.5,"trial_seed":1}'
+
+# ── dbT1_ibc seed 0 (paper-faithful IBC, Langevin negatives only) ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":32,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":0}'
+
+# ── dbT1_ibc seed 1 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":32,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":1}'
+
+# ── dbT1_bc seed 0 (mode-collapse control) ──
+uv run --managed-python python hyperparam_search.py bc_mse_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"bc_width":128,"bc_depth":4,"scheduler_type":"cosine","cosine_t_max":50000,"ema_decay":0.999,"trial_seed":0}'
+
+# ── dbT1_bc seed 1 (mode-collapse control) ──
+uv run --managed-python python hyperparam_search.py bc_mse_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"bc_width":128,"bc_depth":4,"scheduler_type":"cosine","cosine_t_max":50000,"ema_decay":0.999,"trial_seed":1}'
+
+# ── dbT1_dp seed 0 (second mode-preserving reference) ──
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"scheduler_type":"cosine","cosine_t_max":50000,"ema_decay":0.999,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"mlp","denoiser_width":128,"denoiser_depth":2,"time_emb_dim":64,"ddim_eval_steps":[10,25],"ddim_eta":0.0,"eval_ddpm":true,"trial_seed":0}'
+
+# ── dbT1_dp seed 1 (second mode-preserving reference) ──
+uv run --managed-python python hyperparam_search_dp.py diffusion_policy_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"scheduler_type":"cosine","cosine_t_max":50000,"ema_decay":0.999,"num_train_timesteps":50,"beta_schedule":"cosine","prediction_type":"epsilon","denoiser_network_kind":"mlp","denoiser_width":128,"denoiser_depth":2,"time_emb_dim":64,"ddim_eval_steps":[10,25],"ddim_eta":0.0,"eval_ddpm":true,"trial_seed":1}'

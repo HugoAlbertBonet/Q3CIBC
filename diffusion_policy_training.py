@@ -109,6 +109,15 @@ def load_dataset():
             n_dim=env_config.get("n_dim", 2),
             frame_stack=frame_stack,
         )
+    elif active_env == "dummy_bimodal":
+        from utils.datasets import DummyBimodalDataset
+        return DummyBimodalDataset(
+            size=10000,
+            step_size=env_config.get("step_size", 0.1),
+            goal_radius=env_config.get("goal_radius", 0.05),
+            obstacle_radius=env_config.get("obstacle_radius", 0.25),
+            frame_stack=frame_stack,
+        )
     raise ValueError(f"Unknown / unsupported environment for DP: {active_env}")
 
 

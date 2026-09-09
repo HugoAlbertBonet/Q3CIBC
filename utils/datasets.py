@@ -522,6 +522,142 @@ class DummyDataset(Dataset):
         return len(self.observations)
 
 
+class DummyBimodalDataset(Dataset):
+    """Synthetic dataset for the obstacle-bypass variant of Dummy 2D nav.
+
+    Same generation loop as `DummyDataset`, but the expert routes around a
+    fixed circular obstacle at the origin instead of beelining for the goal.
+    Whenever the direct agent->goal line would cross the obstacle, the
+    expert commits to one of two equally valid detours (clockwise /
+    counterclockwise) — the coin flip is drawn ONCE per episode and held
+    fixed, so it plays the same role as the discrete "mode" latent in a
+    multimodal policy-learning benchmark. Nearby (agent, goal) pairs across
+    different episodes land on either side roughly 50/50, so the dataset is
+    genuinely bimodal near the obstacle while staying unimodal everywhere
+    else (mirrors real geometry: only truly ambiguous states are ambiguous).
+
+    State: [goal_x, goal_y, agent_x, agent_y] (before frame stacking) — same
+    layout as DummyDataset, so it drops into the exact same normalizer /
+    model code with no changes.
+    Action: Scalar in [-1, 1], representing angle / pi.
+    """
+
+    def __init__(
+        self,
+        size: int = 10000,
+        step_size: float = 0.1,
+        goal_radius: float = 0.05,
+        max_steps_per_episode: int = 200,
+        expert_noise_std: float = 0.05,
+        obstacle_radius: float = 0.25,
+        detour_margin: float = 0.15,
+        frame_stack: int = 1,
+    ):
+        self.frame_stack = frame_stack
+        self.step_size = step_size
+        self.goal_radius = goal_radius
+        self.obstacle_radius = obstacle_radius
+
+        obstacle_center = np.zeros(2, dtype=np.float32)
+
+        all_observations = []
+        all_actions = []
+        episode_starts = []
+
+        total_samples = 0
+        rng = np.random.default_rng(seed=42)
+
+        def sample_point_outside_obstacle():
+            pos = rng.uniform(-0.9, 0.9, size=2).astype(np.float32)
+            while np.linalg.norm(pos - obstacle_center) < obstacle_radius + 0.05:
+                pos = rng.uniform(-0.9, 0.9, size=2).astype(np.float32)
+            return pos
+
+        def segment_dist_to_point(a, b, p):
+            """Shortest distance from point p to segment a->b."""
+            ab = b - a
+            denom = float(np.dot(ab, ab))
+            if denom < 1e-8:
+                return float(np.linalg.norm(p - a))
+            t = np.clip(float(np.dot(p - a, ab)) / denom, 0.0, 1.0)
+            closest = a + t * ab
+            return float(np.linalg.norm(p - closest))
+
+        while total_samples < size:
+            goal = sample_point_outside_obstacle()
+            agent_pos = sample_point_outside_obstacle()
+            while np.linalg.norm(agent_pos - goal) < goal_radius * 3:
+                agent_pos = sample_point_outside_obstacle()
+
+            # Fixed per-episode coin flip: which side of the obstacle the
+            # expert detours around whenever the direct path is blocked.
+            side = 1.0 if rng.random() < 0.5 else -1.0
+
+            ep_obs = []
+            ep_acts = []
+
+            for step_i in range(max_steps_per_episode):
+                obs = np.concatenate([goal, agent_pos]).astype(np.float32)
+
+                blocked = segment_dist_to_point(
+                    agent_pos, goal, obstacle_center
+                ) < obstacle_radius
+                if blocked:
+                    to_goal = goal - agent_pos
+                    norm = np.linalg.norm(to_goal) + 1e-8
+                    perp = np.array([-to_goal[1], to_goal[0]], dtype=np.float32) / norm
+                    aim_point = obstacle_center + side * perp * (obstacle_radius + detour_margin)
+                else:
+                    aim_point = goal
+
+                diff = aim_point - agent_pos
+                optimal_angle = np.arctan2(diff[1], diff[0])
+                optimal_action = optimal_angle / np.pi
+                noise = rng.normal(0, expert_noise_std)
+                action = np.clip(optimal_action + noise, -1.0, 1.0).astype(np.float32)
+
+                ep_obs.append(obs)
+                ep_acts.append(np.array([action], dtype=np.float32))
+
+                angle = action * np.pi
+                dx = step_size * np.cos(angle)
+                dy = step_size * np.sin(angle)
+                candidate = np.clip(
+                    agent_pos + np.array([dx, dy], dtype=np.float32), -1.0, 1.0
+                )
+                if np.linalg.norm(candidate - obstacle_center) >= obstacle_radius:
+                    agent_pos = candidate
+
+                if np.linalg.norm(agent_pos - goal) < goal_radius:
+                    break
+
+            ep_starts = np.zeros(len(ep_obs), dtype=bool)
+            ep_starts[0] = True
+
+            all_observations.append(np.array(ep_obs))
+            all_actions.append(np.array(ep_acts))
+            episode_starts.append(ep_starts)
+            total_samples += len(ep_obs)
+
+        self.observations = np.concatenate(all_observations)[:size]
+        self.actions = np.concatenate(all_actions)[:size]
+        self._episode_starts = np.concatenate(episode_starts)[:size]
+
+        if frame_stack > 1:
+            self.observations = stack_frames(
+                self.observations, self._episode_starts, frame_stack
+            )
+
+        self.state_shape = self.observations.shape[1]
+        self.action_shape = self.actions.shape[1]
+
+    def __getitem__(self, index):
+        return {'state': self.observations[index], 'action': self.actions[index]}
+
+    def __len__(self):
+        return len(self.observations)
+
+
 class PushingDataset(Dataset):
     """Dataset for the IBC paper's Simulated Pushing task (single target).
 

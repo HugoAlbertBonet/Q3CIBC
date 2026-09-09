@@ -173,17 +173,40 @@ def load_dataset():
             n_dim=env_config.get("n_dim", 2),
             frame_stack=frame_stack,
         )
+    elif active_env == "dummy_bimodal":
+        from utils.datasets import DummyBimodalDataset
+        return DummyBimodalDataset(
+            size=10000,
+            step_size=env_config.get("step_size", 0.1),
+            goal_radius=env_config.get("goal_radius", 0.05),
+            obstacle_radius=env_config.get("obstacle_radius", 0.25),
+            frame_stack=frame_stack,
+        )
+    elif active_env == "pushing_multi":
+        from utils.datasets import PushingMultiDataset
+        data_dir = env_config["data_dir"]
+        return PushingMultiDataset(data_dir=data_dir, frame_stack=frame_stack)
     else:
         raise ValueError(f"Unknown environment: {active_env}")
 
 
 def compute_dataset_stats(dataset):
-    """Compute min/max statistics from dataset for action normalization."""
+    """Compute min/max statistics from dataset for action normalization.
+
+    Also carries obs_mean/obs_std through when the dataset exposes them
+    (pushing_multi's PushingMultiDataset, standardize-mode obs) so both
+    training-time and eval-time normalizers agree — see obs_normalizer
+    construction below and PushingMultiSimulation.__init__.
+    """
     acts = dataset.actions
-    return {
+    stats = {
         "act_min": acts.min(axis=0).astype(np.float32),
         "act_max": acts.max(axis=0).astype(np.float32),
     }
+    if hasattr(dataset, "obs_mean") and hasattr(dataset, "obs_std"):
+        stats["obs_mean"] = dataset.obs_mean
+        stats["obs_std"] = dataset.obs_std
+    return stats
 
 
 def normalize_actions(actions, act_min, act_max, device):
@@ -366,14 +389,28 @@ def main():
         dataset, batch_size=batch_size, shuffle=True, drop_last=True,
     )
 
-    # Observation normalizer
-    particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
-    obs_normalizer = ObservationNormalizer(
-        env_id=env_id,
-        device=device,
-        frame_stack=frame_stack,
-        particle_n_dim=particle_n_dim,
-    )
+    # Observation normalizer. pushing_multi's flat_bounds in
+    # observation_bounds.json are a stub (see that file's comment) — real
+    # normalization comes from dataset-derived per-dim mean/std, matching
+    # combinedv2_cpascounter_training.py's standardize branch and what
+    # PushingMultiSimulation rebuilds at eval time from norm_stats.pt.
+    if "obs_mean" in norm_stats and "obs_std" in norm_stats:
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_id,
+            device=device,
+            frame_stack=frame_stack,
+            obs_mean=norm_stats["obs_mean"],
+            obs_std=norm_stats["obs_std"],
+        )
+        print("Observation normalizer: standardize (per-dim mean/std from dataset)")
+    else:
+        particle_n_dim = env_config.get("n_dim") if active_env == "particle" else None
+        obs_normalizer = ObservationNormalizer(
+            env_id=env_id,
+            device=device,
+            frame_stack=frame_stack,
+            particle_n_dim=particle_n_dim,
+        )
 
     # Training timing
     start_time = time.time()

@@ -128,6 +128,9 @@ def _resolve_simulation_cls(active_env: str):
     if active_env == "libero_goal":
         from simulations.libero_goal_simulation import LiberoGoalSimulation
         return LiberoGoalSimulation
+    if active_env == "dummy_bimodal":
+        from simulations.dummy_bimodal_simulation import DummyBimodalSimulation
+        return DummyBimodalSimulation
     from simulations.particle_simulation import ParticleSimulation
     return ParticleSimulation
 

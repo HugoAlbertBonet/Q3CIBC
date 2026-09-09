@@ -1189,6 +1189,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env == "libero_goal_pixels":
         from simulations.libero_goal_pixels_simulation import LiberoGoalPixelsSimulation
         SimulationCls = LiberoGoalPixelsSimulation
+    elif active_env == "dummy_bimodal":
+        from simulations.dummy_bimodal_simulation import DummyBimodalSimulation
+        SimulationCls = DummyBimodalSimulation
     else:
         from simulations.particle_simulation import ParticleSimulation
         SimulationCls = ParticleSimulation
@@ -2046,6 +2049,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         sim_kwargs["num_eval_seeds"] = int(
             env_config.get("num_eval_seeds", len(seeds))
         )
+    elif active_env == "dummy_bimodal":
+        sim_kwargs["step_size"] = float(env_config.get("step_size", 0.1))
+        sim_kwargs["goal_radius"] = float(env_config.get("goal_radius", 0.1))
+        sim_kwargs["obstacle_radius"] = float(env_config.get("obstacle_radius", 0.25))
     else:
         sim_kwargs["n_dim"] = n_dim
     sim = sim_cls(**sim_kwargs)
