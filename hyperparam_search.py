@@ -756,6 +756,14 @@ SEARCH_SPACE: dict[str, dict] = {
     # Diffusion-policy eval samplers (read by diffusion_policy_training.py and
     # by resolve_dp_params). Without these, a batch passing them is silently
     # ignored and every trial evaluates at the config default.
+    # combinedv2: CPs within this L2 radius of the expert count as extra InfoNCE
+    # positives (0 = off, plain InfoNCE). Lives in env_training, the block the
+    # trainer reads first, so config.json can never shadow it.
+    "infonce_positive_cp_radius": {
+        "values": [0.0, 0.02, 0.05, 0.1],
+        "type": "float",
+        "location": "env_training",
+    },
     # Control-point generator output head. "tanh" (default, historical) squashes
     # into the action box; "linear" leaves bounding to the consumer. tanh's
     # vanishing gradient near the bounds capped particle-16D argmax at 0%.

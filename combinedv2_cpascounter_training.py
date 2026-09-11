@@ -233,6 +233,14 @@ infonce_logit_clamp = env_training.get(
     "infonce_logit_clamp",
     training_shared.get("infonce_logit_clamp", 50.0),
 )
+# Control points closer than this L2 radius to the expert action are scored as
+# additional InfoNCE POSITIVES rather than negatives. With a precise generator
+# (cp_output_activation="linear") the nearest CP sits ~0.01 from the expert, so
+# plain InfoNCE trains the critic to reject the correct answer. 0 = off: the
+# unmodified lossInfoNCE call runs, bit-identical to before this option existed.
+infonce_positive_cp_radius = float(env_training.get(
+    "infonce_positive_cp_radius", training_shared.get("infonce_positive_cp_radius", 0.0)
+))
 
 # S6: Spectral norm on estimator
 use_spectral_norm = env_model.get(
@@ -1177,7 +1185,22 @@ def main():
             energies = q_score_candidates(states, all_actions).squeeze(-1)
 
             # InfoNCE loss: expert action should have the highest Q value (lowest energy equivalent)
-            loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
+            if infonce_positive_cp_radius > 0.0:
+                # cp_counter_samples occupy columns 1..k of all_actions (ahead of
+                # uniform / Langevin / noisy-expert negatives). Multi-positive
+                # InfoNCE over the same clamped logits lossInfoNCE uses.
+                k_cp = cp_counter_samples.shape[1]
+                near_expert = (cp_counter_samples - actions.unsqueeze(1)).norm(dim=-1) < infonce_positive_cp_radius
+                pos_mask = torch.zeros_like(energies, dtype=torch.bool)
+                pos_mask[:, 0] = True
+                pos_mask[:, 1:1 + k_cp] = near_expert
+                clamped = energies.clamp(-infonce_logit_clamp, infonce_logit_clamp)
+                loss_estimator = -(
+                    torch.logsumexp(clamped.masked_fill(~pos_mask, float("-inf")), dim=1)
+                    - torch.logsumexp(clamped, dim=1)
+                ).mean()
+            else:
+                loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
 
             # ─── Gradient penalty on the estimator (IBC App. B / WGAN-GP style) ─
             # Bounds ||∇_a E(s, a)|| around `gradient_penalty_margin` so the energy
