@@ -756,6 +756,13 @@ SEARCH_SPACE: dict[str, dict] = {
     # Diffusion-policy eval samplers (read by diffusion_policy_training.py and
     # by resolve_dp_params). Without these, a batch passing them is silently
     # ignored and every trial evaluates at the config default.
+    # Elitist CP-DFO (flat-state envs): keep the initial candidates in every
+    # resample and in the final argmax. Inference-only.
+    "inference_dfo_elitist": {
+        "values": [False, True],
+        "type": "bool",
+        "location": "env_training",
+    },
     # combinedv2: CPs within this L2 radius of the expert count as extra InfoNCE
     # positives (0 = off, plain InfoNCE). Lives in env_training, the block the
     # trainer reads first, so config.json can never shadow it.
@@ -953,6 +960,7 @@ INFERENCE_ONLY_PARAMS: set[str] = {
     "inference_dfo_iteration_std",
     "inference_dfo_iteration_std_decay",
     "inference_dfo_num_uniform",
+    "inference_dfo_elitist",
     "inference_uniform_proposal",
     # Evaluation-only for BOTH algorithms: these change how a saved checkpoint
     # is queried, never what was trained, so reeval_trials.py may override them.
@@ -1300,6 +1308,14 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     inference_dfo_num_uniform = int(
         env_config.get("training", {}).get("inference_dfo_num_uniform", 0)
     )
+    # Elitist CP-DFO: the untouched initial candidates re-enter every resample and
+    # the final argmax, so jitter can never erase a precise control point. The
+    # plain procedure jitters every candidate each iteration and on particle-16D
+    # scores 0% even with a critic whose argmax gets 86.7%.
+    inference_dfo_elitist = bool(env_config.get("training", {}).get("inference_dfo_elitist", False))
+    if inference_dfo_elitist and inference_dfo_iterations > 0 and active_env in ("pushing_pixels", "libero_goal_pixels"):
+        raise NotImplementedError("inference_dfo_elitist is implemented for flat-state envs only; "
+                                  "the pixel DFO loops have not been patched")
     # Ablation control: discard the learned proposal at evaluation and draw the
     # same number of candidates uniformly from the action box. Isolates how much
     # of the method's performance comes from the control-point generator rather
@@ -1823,6 +1839,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         _dfo_std0 = inference_dfo_iteration_std
         _dfo_decay = inference_dfo_iteration_std_decay
         _dfo_n_uniform = inference_dfo_num_uniform
+        _dfo_elitist = inference_dfo_elitist
 
         class DFORefinedSimulation(SimulationCls):
             """Refines the CP cloud with iterative DFO before acting."""
@@ -1856,16 +1873,24 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                     N = candidates.shape[1]
                     obs_expanded = obs_tensor.unsqueeze(1).expand(-1, N, -1)
                     std = float(_dfo_std0)
+                    _orig = candidates.clone()
                     for it in range(_dfo_iters):
-                        log_probs = self.q_estimator(obs_expanded, _norm(candidates)).squeeze(-1)
+                        # Elitist: the initial candidates re-enter every resample.
+                        pool = torch.cat([candidates, _orig], dim=1) if _dfo_elitist else candidates
+                        log_probs = self.q_estimator(
+                            obs_tensor.unsqueeze(1).expand(-1, pool.shape[1], -1), _norm(pool)
+                        ).squeeze(-1)
                         probs = torch.softmax(log_probs.squeeze(0), dim=-1)
                         # IBC-style category-ordered resample.
                         idx = torch.multinomial(probs, N, replacement=True)
-                        counts = torch.bincount(idx, minlength=N)
-                        repeat_idx = torch.repeat_interleave(
-                            torch.arange(N, device=self.device), counts
-                        )
-                        candidates = candidates[:, repeat_idx, :]
+                        if _dfo_elitist:
+                            candidates = pool[:, idx, :]
+                        else:
+                            counts = torch.bincount(idx, minlength=N)
+                            repeat_idx = torch.repeat_interleave(
+                                torch.arange(N, device=self.device), counts
+                            )
+                            candidates = candidates[:, repeat_idx, :]
                         if it < _dfo_iters - 1:
                             candidates = candidates + torch.randn_like(candidates) * std
                             candidates = candidates.clamp(
@@ -1878,6 +1903,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                     # scoring and indexed into the reordered candidates, picking
                     # the wrong action when softmax mass was spread (the bug was
                     # masked on pushing where Q is sharply peaked).
+                    if _dfo_elitist:
+                        candidates = torch.cat([candidates, _orig], dim=1)
+                        obs_expanded = obs_tensor.unsqueeze(1).expand(-1, candidates.shape[1], -1)
                     final_log_probs = self.q_estimator(obs_expanded, _norm(candidates)).squeeze(-1)
                     sel = final_log_probs.argmax(dim=1)
                     action_normalized = candidates[0, sel[0], :].cpu().numpy()
