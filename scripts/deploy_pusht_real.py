@@ -1437,6 +1437,10 @@ def build_models(env: dict, in_channels: int, device, cond_dim: int = 0,
         hidden_dims=[cp_width for _ in range(cp_depth)],
         action_bounds=(float(a_lo), float(a_hi)),
         network_kind=cp_network_kind,
+        # Must match training: a generator trained with a linear head
+        # rebuilt here as tanh would load the same weights and emit
+        # different actions, silently.
+        output_activation=m.get("cp_output_activation", "tanh"),
         width=cp_width,
         depth=cp_depth,
         use_spectral_norm=cp_use_spectral_norm,

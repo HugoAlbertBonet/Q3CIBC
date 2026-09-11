@@ -373,6 +373,7 @@ q_use_spectral_norm = env_model.get("q_use_spectral_norm", use_spectral_norm)
 cp_network_kind = env_model.get("cp_network_kind", "mlp")
 cp_width = env_model.get("cp_width", num_neurons)
 cp_depth = env_model.get("cp_depth", num_hidden_layers)
+cp_output_activation = env_model.get("cp_output_activation", "tanh")
 cp_use_spectral_norm = env_model.get("cp_use_spectral_norm", False)
 
 # Environment parameters
@@ -645,6 +646,7 @@ def main():
             hidden_dims=[cp_width for _ in range(cp_depth)],
             action_bounds=(action_bounds[0], action_bounds[1]),
             network_kind=cp_network_kind,
+            output_activation=cp_output_activation,
             width=cp_width,
             depth=cp_depth,
             use_spectral_norm=cp_use_spectral_norm,
@@ -669,6 +671,7 @@ def main():
             hidden_dims=[cp_width for _ in range(cp_depth)],
             action_bounds=(action_bounds[0], action_bounds[1]),
             network_kind=cp_network_kind,
+            output_activation=cp_output_activation,
             width=cp_width,
             depth=cp_depth,
             use_spectral_norm=cp_use_spectral_norm,

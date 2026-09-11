@@ -99,12 +99,25 @@ class ControlPointGenerator(nn.Module):
 		width: int | None = None,
 		depth: int | None = None,
 		use_spectral_norm: bool = False,
+		output_activation: str = "tanh",
 	) -> None:
 		super().__init__()
 		self.output_dim = output_dim
 		self.control_points = control_points
 		self.action_min = action_bounds[0]
 		self.action_max = action_bounds[1]
+		# "tanh" squashes into the action box (the historical behaviour, and the
+		# default so every existing checkpoint is unchanged). "linear" emits the
+		# raw head output and leaves bounding to the consumer (every simulation
+		# clips, DFO and Langevin clamp). tanh costs precision near the box
+		# edges: its gradient vanishes exactly where a target coordinate sits
+		# close to a bound. On particle-16D, where goals are uniform in [0,1]^16
+		# so some coordinate is almost always near an edge, the same 256x2 MLP
+		# scores 0% with tanh and 69% with a linear head (held-out action L2
+		# 0.186 vs 0.047) — tanh is what capped q3c's argmax there.
+		if output_activation not in ("tanh", "linear"):
+			raise ValueError(f"output_activation must be tanh|linear, got {output_activation!r}")
+		self.output_activation = output_activation
 
 		self.network = _build_backbone(
 			input_dim=input_dim,
@@ -121,6 +134,8 @@ class ControlPointGenerator(nn.Module):
 		batch = x.shape[0]
 		out = self.network(x)
 		out = out.view(batch, self.control_points, self.output_dim)
+		if self.output_activation == "linear":
+			return out
 		# Tanh maps to [-1, 1], then scale to [action_min, action_max]
 		out = torch.tanh(out) * ((self.action_max - self.action_min) / 2) + (self.action_max + self.action_min) / 2
 		return out
@@ -665,6 +680,7 @@ class PixelControlPointGenerator(nn.Module):
 		cond_fusion: str = "concat",
 		goal_dim: int = 0,
 		share_encoder_from: nn.Module | None = None,
+		output_activation: str = "tanh",
 	) -> None:
 		super().__init__()
 		# `cond_dim` > 0 conditions the CP head on an extra per-state vector
@@ -711,6 +727,7 @@ class PixelControlPointGenerator(nn.Module):
 			width=width,
 			depth=depth,
 			use_spectral_norm=use_spectral_norm,
+			output_activation=output_activation,
 		)
 
 	def _film_vec(self) -> torch.Tensor | None:

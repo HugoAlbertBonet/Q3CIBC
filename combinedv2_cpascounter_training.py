@@ -262,6 +262,7 @@ q_use_spectral_norm = env_model.get("q_use_spectral_norm", use_spectral_norm)
 cp_network_kind = env_model.get("cp_network_kind", "mlp")
 cp_width = env_model.get("cp_width", num_neurons)
 cp_depth = env_model.get("cp_depth", num_hidden_layers)
+cp_output_activation = env_model.get("cp_output_activation", "tanh")
 cp_use_spectral_norm = env_model.get("cp_use_spectral_norm", False)
 
 # Environment parameters
@@ -558,9 +559,11 @@ def main():
             encoder_per_camera=encoder_per_camera,
             cond_fusion=cond_fusion,
             goal_dim=goal_dim,
+            output_activation=cp_output_activation,
         ).to(device)
     else:
-        print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
+        print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm} "
+              f"out={cp_output_activation}")
         control_point_generator = ControlPointGenerator(
             input_dim=dataset.state_shape,
             output_dim=dataset.action_shape,
@@ -571,6 +574,7 @@ def main():
             width=cp_width,
             depth=cp_depth,
             use_spectral_norm=cp_use_spectral_norm,
+            output_activation=cp_output_activation,
         ).to(device)
 
         q_resnet_final_act = bool(env_model.get("q_resnet_final_activation", True))

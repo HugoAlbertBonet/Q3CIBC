@@ -750,6 +750,14 @@ SEARCH_SPACE: dict[str, dict] = {
     # Diffusion-policy eval samplers (read by diffusion_policy_training.py and
     # by resolve_dp_params). Without these, a batch passing them is silently
     # ignored and every trial evaluates at the config default.
+    # Control-point generator output head. "tanh" (default, historical) squashes
+    # into the action box; "linear" leaves bounding to the consumer. tanh's
+    # vanishing gradient near the bounds capped particle-16D argmax at 0%.
+    "cp_output_activation": {
+        "values": ["tanh", "linear"],
+        "type": "str",
+        "location": "env_model",
+    },
     # Explicit-BC regression trunk (bc_mse_training.py). Separate from
     # cp_width/cp_depth so sweeping the BC baseline never moves the Q3C
     # generator, and vice versa.
@@ -1241,6 +1249,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     cp_width = em.get("cp_width", num_neurons)
     cp_depth = em.get("cp_depth", num_hidden_layers)
     cp_use_spectral_norm = em.get("cp_use_spectral_norm", False)
+    cp_output_activation = em.get("cp_output_activation", "tanh")
     # Per-env override wins over the shared simulation.max_episode_steps.
     # Pushing needs 100 (IBC paper BlockPush-v0); particle uses the global 50.
     max_episode_steps = env_config.get(
@@ -1471,6 +1480,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                 encoder_per_camera=encoder_per_camera,
                 cond_fusion=cond_fusion,
                 goal_dim=goal_dim,
+                output_activation=cp_output_activation,
             )
             cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
             cp_gen.to(device).eval()
@@ -1539,6 +1549,7 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
                 width=cp_width,
                 depth=cp_depth,
                 use_spectral_norm=cp_use_spectral_norm,
+                output_activation=cp_output_activation,
             )
             cp_gen.load_state_dict(
                 torch.load(cp_path, map_location=device, weights_only=True)
