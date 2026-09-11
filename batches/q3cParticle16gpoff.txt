@@ -1,0 +1,35 @@
+# particle 16D — q3c, the 82.7% argmax configuration, 3 seeds.
+#
+# Submit with:  bash submit_experiments.sh batches/q3cParticle16gpoff.txt
+#
+# Every key below is the TRAINER-EFFECTIVE value of the local run that scored
+# 82 / 86 / 80 (82.7 +/- 3.1) with plain argmax over 50 episodes, read from its
+# saved config — not just the keys that run passed explicitly. The rest came
+# from config.json defaults, and the cluster's config.json can differ, so all of
+# them are pinned. The only unpinned env keys are data_dir, env_id and
+# action_bounds [0, 1], which SEARCH_SPACE cannot set.
+#
+# The recipe:
+#   cp_output_activation linear   tanh caps precision near the box edges
+#   gradient_penalty_weight 0     a margin-1 GP caps critic score gaps -> 0%
+#   infonce_positive_cp_radius .05  CPs within 0.05 of the expert are positives
+#   generator_infonce_weight 0, control_points 5 (top_k 5), 30k steps
+# (gradient_penalty_form "target" is inert at weight 0; pinned only so the config
+# is byte-identical to the verified run.)
+#
+# Local numbers came from oracle demos generated with the env's own dynamics
+# (IBC's tfrecords are not on that machine). These jobs use the real dataset,
+# so expect movement; these are the numbers to report.
+#
+# Local argmax latency for this model: 0.50 ms/step GPU, 0.11 ms/step CPU.
+# Eval: plain argmax, the env's standard 50 episodes (num_eval_seeds untouched).
+
+
+# ── seed 0
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env particle --fixed-params '{"action_chunk":1,"action_dim":16,"batch_size":512,"control_points":5,"cosine_t0":50000,"cosine_t_max":30000,"counter_examples":64,"cp_depth":2,"cp_network_kind":"mlp","cp_output_activation":"linear","cp_width":256,"ema_decay":0.999,"entropy_bandwidth":0.1,"estimator_learning_rate":0.001,"frame_stack":2,"generator_infonce_weight":0.0,"gradient_penalty_form":"target","gradient_penalty_margin":1.0,"gradient_penalty_weight":0.0,"inference_dfo_iterations":0,"inference_langevin_iterations":0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"infonce_positive_cp_radius":0.05,"langevin_num_iterations":0,"learning_rate":0.001,"mse_weight":10.0,"n_dim":16,"noisy_expert_count":16,"noisy_expert_sigma_final":0.02,"noisy_expert_sigma_start":0.3,"noisy_expert_std":0.05,"num_hidden_layers":2,"num_langevin_negatives":0,"num_neurons":256,"num_uniform_negatives":0,"q_depth":2,"q_network_kind":"mlp","q_width":256,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"state_dim":64,"top_k_control_points":5,"training_steps":30000,"trial_seed":0,"wirefit_smoothing_param":0.1}'
+
+# ── seed 1
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env particle --fixed-params '{"action_chunk":1,"action_dim":16,"batch_size":512,"control_points":5,"cosine_t0":50000,"cosine_t_max":30000,"counter_examples":64,"cp_depth":2,"cp_network_kind":"mlp","cp_output_activation":"linear","cp_width":256,"ema_decay":0.999,"entropy_bandwidth":0.1,"estimator_learning_rate":0.001,"frame_stack":2,"generator_infonce_weight":0.0,"gradient_penalty_form":"target","gradient_penalty_margin":1.0,"gradient_penalty_weight":0.0,"inference_dfo_iterations":0,"inference_langevin_iterations":0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"infonce_positive_cp_radius":0.05,"langevin_num_iterations":0,"learning_rate":0.001,"mse_weight":10.0,"n_dim":16,"noisy_expert_count":16,"noisy_expert_sigma_final":0.02,"noisy_expert_sigma_start":0.3,"noisy_expert_std":0.05,"num_hidden_layers":2,"num_langevin_negatives":0,"num_neurons":256,"num_uniform_negatives":0,"q_depth":2,"q_network_kind":"mlp","q_width":256,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"state_dim":64,"top_k_control_points":5,"training_steps":30000,"trial_seed":1,"wirefit_smoothing_param":0.1}'
+
+# ── seed 2
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env particle --fixed-params '{"action_chunk":1,"action_dim":16,"batch_size":512,"control_points":5,"cosine_t0":50000,"cosine_t_max":30000,"counter_examples":64,"cp_depth":2,"cp_network_kind":"mlp","cp_output_activation":"linear","cp_width":256,"ema_decay":0.999,"entropy_bandwidth":0.1,"estimator_learning_rate":0.001,"frame_stack":2,"generator_infonce_weight":0.0,"gradient_penalty_form":"target","gradient_penalty_margin":1.0,"gradient_penalty_weight":0.0,"inference_dfo_iterations":0,"inference_langevin_iterations":0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"infonce_positive_cp_radius":0.05,"langevin_num_iterations":0,"learning_rate":0.001,"mse_weight":10.0,"n_dim":16,"noisy_expert_count":16,"noisy_expert_sigma_final":0.02,"noisy_expert_sigma_start":0.3,"noisy_expert_std":0.05,"num_hidden_layers":2,"num_langevin_negatives":0,"num_neurons":256,"num_uniform_negatives":0,"q_depth":2,"q_network_kind":"mlp","q_width":256,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"state_dim":64,"top_k_control_points":5,"training_steps":30000,"trial_seed":2,"wirefit_smoothing_param":0.1}'
