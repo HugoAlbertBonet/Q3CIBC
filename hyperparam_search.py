@@ -510,30 +510,36 @@ SEARCH_SPACE: dict[str, dict] = {
         "location": "training_shared",
     },
     # IBC gradient penalty (Florence et al., 2021, App. B).
+    # GP keys live in env_training: combinedv2 / dpq3c / wirefit read the env
+    # training block FIRST, and config.json defines gradient_penalty_weight and
+    # _margin there for pen, door, kitchen, libero_goal(_pixels) and particle.
+    # Written to training_shared (as before) the override was shadowed and
+    # silently ignored on all six — every GP override on those envs trained
+    # with the config value instead.
     "gradient_penalty_weight": {
         "values": [0.0, 0.1, 1.0, 10.0],
         "type": "float",
-        "location": "training_shared",
+        "location": "env_training",
     },
     "gradient_penalty_margin": {
         # 0.05–0.2 is the firing range for our 2x256 MLP on [0,1]^8;
         # 0.5–2.0 stays in line with the IBC paper at larger scales.
         "values": [0.05, 0.1, 0.2, 0.5, 1.0, 2.0],
         "type": "float",
-        "location": "training_shared",
+        "location": "env_training",
     },
     "gradient_penalty_form": {
         # "hinge"  = IBC-faithful one-sided: penalty = max(0, |grad|-margin)^2
         # "target" = WGAN-GP two-sided:      penalty = (|grad|-margin)^2
         "values": ["hinge", "target"],
         "type": "str",
-        "location": "training_shared",
+        "location": "env_training",
     },
     "gradient_penalty_norm": {
         # Official IBC uses linf; l2 is retained for old Q3C compatibility.
         "values": ["l2", "linf"],
         "type": "str",
-        "location": "training_shared",
+        "location": "env_training",
     },
     "ema_decay": {
         "values": [0.0, 0.99, 0.999],
