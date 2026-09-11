@@ -27,6 +27,7 @@
 # episodes, 30k steps, cp5, linear head, GP off, generator-InfoNCE 0:
 #
 #     plain InfoNCE                                  argmax 54%
+#     plain InfoNCE, trained 150k steps              argmax 72%   d1 0.035  d2 0.186
 #     + near-CP positives, radius 0.05               argmax 82%   d1 0.029  d2 0.013
 #         same checkpoint, plain DFO-10 s0.005 x0.9  DFO    72%
 #         same checkpoint, ELITIST DFO-10 s0.01 x0.8 DFO    80%
@@ -48,7 +49,8 @@
 # ── Arms (3 seeds each, 27 jobs, ~30-45 min each) ─────────────────────────
 #   fixed        the verified recipe                 argmax / dfo_plain / dfo_elitist / lv300
 #   fixed_gpm10  keeps a GP, cap loosened 1 -> 10    argmax / dfo_elitist / lv300
-#   abl_nopos    ABLATION: no near-CP positives      argmax
+#   abl_nopos    ABLATION: no near-CP positives      argmax   (54% at 30k but 72% at
+#                150k locally: at 300k this tests whether positives still add anything)
 #   abl_tanh     ABLATION: tanh head restored        argmax
 # Inference settings are evaluation-only, but each condition retrains rather
 # than reevaluating, so the batch stays self-contained (checkpoints were gone
