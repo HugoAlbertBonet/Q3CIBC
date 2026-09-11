@@ -37,8 +37,13 @@
 # 0.05, then goal 2), at 30k steps. These jobs use the real dataset at 300k.
 # Expect the numbers to move; the cluster result is the one to report.
 #
-# NOT yet measured with this recipe: the Langevin-300 control and the
-# margin-10 GP arm on argmax+positives. They are in the batch for that reason.
+# Langevin needs a gradient penalty; argmax needs its cap loosened. Measured on
+# 30k-step checkpoints WITHOUT near-CP positives:
+#     GP off           argmax 54%   Langevin-300  0%  (unbounded dQ/da, chain runs away)
+#     GP hinge m=10    argmax 54%   Langevin-300 62%   DFO plain 60% / elitist 56%
+# So EXPECT fixed/lv300 (GP off) to read ~0% — that is by design, not a bug.
+# fixed_gpm10 is the recipe that can serve argmax, DFO and Langevin at once;
+# it has not been run locally WITH positives, which is why it is in the batch.
 #
 # ── Arms (3 seeds each, 27 jobs, ~30-45 min each) ─────────────────────────
 #   fixed        the verified recipe                 argmax / dfo_plain / dfo_elitist / lv300
