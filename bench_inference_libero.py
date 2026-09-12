@@ -110,6 +110,9 @@ DPQ3C_CLOUD = 64
 Q3C_CONTROL_POINTS = 100
 Q3C_CP_WIDTH, Q3C_CP_DEPTH = 512, 4
 IBC_SAMPLES, IBC_ITERS = 2048, 100
+# Explicit BC (bc_mse_training.py, batches/lgBC.txt): same encoder, FiLM goal
+# conditioning, a 512x4 regression head, one forward pass per chunk.
+BC_WIDTH, BC_DEPTH = 512, 4
 # Inference-time Langevin refinement of the chosen control point. The lr/clip/
 # noise triple is the one the winning reeval used (q3cLangevinV2, lr_init 0.1);
 # the iteration counts are the three that were actually scored.
@@ -137,6 +140,10 @@ SUCCESS = {
     "dpq3c DDPM-100 (cloud=64 + Q)": (None, None, None),
     "Q3CIBC (film, scratch)": (92.7, 3.1, 3),
     "IBC (DFO 2048x100)": (42.0, 8.8, 3),
+    # BC-MSE is quoted at the FULL 500-episode protocol (10 tasks x 50 init
+    # states): ImageNet trunk 95.8 +/- 0.7 (n=3); scratch 94.1 +/- 1.9. The
+    # other rows above are 50-episode numbers.
+    "BC-MSE (film, ImageNet)": (95.8, 0.7, 3),
     # Langevin rows: the q3cLangevin/q3cLangevinV2 re-evaluations, mean +/- std
     # over the SAME 9 q3c checkpoints (so they are paired with each other and
     # with their own 0-iteration baseline of 89.6 +/- 5.4). These 9 span several
@@ -193,7 +200,7 @@ def main() -> int:
                           else "cpu")
     torch.manual_seed(0)
 
-    from utils.models import PixelQEstimator, PixelControlPointGenerator
+    from utils.models import PixelQEstimator, PixelControlPointGenerator, BCPolicy
     from utils.diffusion import build_dpq3c_denoiser, build_diffusion, resolve_dp_params
     from utils.sampling import sample_langevin
 
@@ -229,6 +236,16 @@ def main() -> int:
         use_spectral_norm=False, in_channels=IN_CHANNELS, cond_dim=COND_DIM,
         cond_fusion="concat", goal_dim=GOAL_DIM, **enc).to(device).eval()
     cp._cond = cond
+
+    bc_policy = BCPolicy(ACTION_DIM, in_channels=IN_CHANNELS, cond_dim=COND_DIM, width=BC_WIDTH,
+                         depth=BC_DEPTH, action_bounds=(-1.0, 1.0), encoder_feature_dim=256,
+                         cond_fusion="film", goal_dim=GOAL_DIM, **enc).to(device).eval()
+    bc_policy._cond = cond
+
+    @torch.no_grad()
+    def bc():
+        # One encoder pass, one head pass: the whole policy.
+        return bc_policy(obs)
 
     @torch.no_grad()
     def dpq3c(cloud: int, sampler: str = "ddim"):
@@ -317,6 +334,7 @@ def main() -> int:
         ("dpq3c DDPM-100 (cloud=64 + Q)", lambda: dpq3c(DPQ3C_CLOUD, "ddpm"),
          TIMESTEPS, DPQ3C_CLOUD, params_m(den, q)),
         ("Q3CIBC (film, scratch)", q3c, 0, Q3C_CONTROL_POINTS, params_m(cp, q)),
+        ("BC-MSE (film, ImageNet)", bc, 0, 0, params_m(bc_policy)),
         ("IBC (DFO 2048x100)", ibc_dfo, 0, IBC_SAMPLES * IBC_ITERS, params_m(q)),
     ] + [
         # scoring_evals counts Q calls: the 100-CP ranking pass plus one per
