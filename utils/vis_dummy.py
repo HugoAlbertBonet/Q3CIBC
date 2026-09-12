@@ -333,3 +333,122 @@ def plot_dummy_debug(
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=150)
     plt.close(fig)
+
+
+def plot_dummy_dp_debug(
+    sample_fn,
+    save_path,
+    state,
+    trajectory,
+    goal,
+    agent_pos,
+    step_idx,
+    episode_idx,
+    n_samples=64,
+    title="Dummy Diagnostic (DP)",
+    obstacle_center=None,
+    obstacle_radius=None,
+):
+    """DP analog of `plot_dummy_debug`. A diffusion policy has no control-point
+    cloud or Q function — the only thing directly comparable to Q3C/IBC's "CPs
+    & Expert" panel is the SET of independently-drawn stochastic samples at
+    one state, which is what the caller's `sample_fn` produces. Two panels
+    only (no Q-heatmap/probabilities/Langevin-evolution equivalents to draw):
+
+    1. Radial scatter of `n_samples` independently-sampled headings (each a
+       fresh denoising chain from random noise), overlaid with the same
+       twin-expert-star geometry as plot_dummy_debug — a mode-preserving
+       sampler should visibly split into two angular clusters matching the
+       two expert stars whenever the state is blocked.
+    2. 2D navigation map — identical in content to plot_dummy_debug's panel 5.
+
+    Args:
+        sample_fn: callable(n_samples) -> np.ndarray of shape (n_samples,)
+            action values in [-1, 1] (angle / pi), drawn independently at
+            the CURRENT state (caller closes over state/denoiser/diffusion).
+        Other args mirror plot_dummy_debug.
+    """
+    has_obstacle = obstacle_center is not None and obstacle_radius is not None
+    blocked = False
+    if has_obstacle:
+        blocked = _segment_dist_to_point(agent_pos, goal, obstacle_center) < obstacle_radius
+
+    if blocked:
+        to_goal = goal - agent_pos
+        norm = np.linalg.norm(to_goal) + 1e-8
+        perp = np.array([-to_goal[1], to_goal[0]], dtype=np.float32) / norm
+        margin = 0.15
+        aim_points = [obstacle_center + side * perp * (obstacle_radius + margin)
+                      for side in (1.0, -1.0)]
+    else:
+        aim_points = [goal]
+    expert_diffs = [ap - agent_pos for ap in aim_points]
+    expert_angles_rad = np.array([np.arctan2(d[1], d[0]) for d in expert_diffs])
+    n_experts = len(expert_angles_rad)
+
+    samples = sample_fn(n_samples)  # (n_samples,) in [-1, 1]
+    sample_angles_rad = samples * np.pi
+
+    fig = plt.figure(figsize=(12, 6.5))
+    fig.suptitle(f"{title} | Episode {episode_idx}, Step {step_idx}", fontsize=14, y=0.98)
+
+    # ========== Plot 1: Sampled headings (polar) ==========
+    ax1 = fig.add_subplot(1, 2, 1, projection='polar')
+    ax1.set_title(f"1. {n_samples} Independent DP Samples\n(fresh denoising chain each)",
+                   fontsize=10, pad=25)
+    ax1.scatter(sample_angles_rad, np.ones_like(sample_angles_rad), c='steelblue',
+                s=40, alpha=0.5, edgecolors='darkblue', linewidths=0.3, zorder=3,
+                label='Sampled action')
+    expert_labels = (
+        ['Expert ★'] if n_experts == 1
+        else [f'Expert {i+1} (side {"+" if i == 0 else "-"}) ★' for i in range(n_experts)]
+    )
+    for i in range(n_experts):
+        ax1.scatter([expert_angles_rad[i]], [1.0], c='green', marker='*', s=300,
+                    edgecolors='black', linewidths=0.8, zorder=5, label=expert_labels[i])
+    ax1.set_yticks([])
+    ax1.legend(loc='lower center', bbox_to_anchor=(0.5, -0.2), fontsize=7)
+
+    # ========== Plot 2: 2D Navigation Map ==========
+    ax2 = fig.add_subplot(1, 2, 2)
+    ax2.set_title("2. 2D Navigation Map", fontsize=10)
+    ax2.set_xlim(-1.1, 1.1)
+    ax2.set_ylim(-1.1, 1.1)
+    ax2.set_aspect('equal')
+    ax2.grid(True, alpha=0.3)
+
+    rect = plt.Rectangle((-1, -1), 2, 2, linewidth=1, edgecolor='gray',
+                          facecolor='lightyellow', alpha=0.3)
+    ax2.add_patch(rect)
+
+    if has_obstacle:
+        obstacle_patch = plt.Circle(
+            obstacle_center, obstacle_radius,
+            color='red' if blocked else 'gray', alpha=0.35, zorder=2,
+        )
+        ax2.add_patch(obstacle_patch)
+
+    traj_arr = np.array(trajectory)
+    if len(traj_arr) > 1:
+        ax2.plot(traj_arr[:, 0], traj_arr[:, 1], 'b-', alpha=0.5, linewidth=1.5, label='Path')
+        ax2.scatter(traj_arr[:-1, 0], traj_arr[:-1, 1], c='lightblue', s=10,
+                    edgecolors='blue', linewidths=0.3, zorder=3)
+
+    ax2.scatter([agent_pos[0]], [agent_pos[1]], c='blue', s=100, marker='o',
+                zorder=5, label=f'Agent ({agent_pos[0]:.2f}, {agent_pos[1]:.2f})')
+    ax2.scatter([goal[0]], [goal[1]], c='green', s=200, marker='*',
+                zorder=5, label=f'Goal ({goal[0]:.2f}, {goal[1]:.2f})')
+    circle = plt.Circle(goal, 0.05, color='green', alpha=0.15, zorder=2)
+    ax2.add_patch(circle)
+    if len(traj_arr) > 0:
+        ax2.scatter([traj_arr[0, 0]], [traj_arr[0, 1]], c='red', s=60,
+                    marker='s', zorder=4, label='Start')
+
+    ax2.legend(loc='upper left', fontsize=6)
+    ax2.set_xlabel('X')
+    ax2.set_ylabel('Y')
+
+    fig.subplots_adjust(left=0.05, right=0.95, top=0.80, bottom=0.15, wspace=0.35)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=150)
+    plt.close(fig)

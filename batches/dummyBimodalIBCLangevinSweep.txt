@@ -1,0 +1,69 @@
+# Batch dummyBimodalIBCLangevinSweep — IBC noise-scale sweep on dummy_bimodal.
+#
+# Both prior IBC attempts failed badly (dummyBimodalTier1: 5-6% at 50k steps;
+# dummyBimodalIBCRetune: 5-9-12% at 150k steps, 3 seeds) — under-training was
+# ruled out (3x more steps barely moved it). Dug into WHY: ibc_with_cpsv2_
+# training.py's Langevin negative sampler (`langevin_counter_examples`, a
+# hand-rolled implementation SEPARATE from utils.sampling.sample_langevin —
+# Q3C's, which is battle-tested across pen/particle/dummy_bimodal) used
+# HARDCODED constants (LANGEVIN_NOISE_SCALE=1.0, LANGEVIN_DELTA_ACTION_CLIP=
+# 0.1, LANGEVIN_TRAIN_ITERATIONS=100), unreachable via --fixed-params.
+#
+# The noise term there is `noise = randn * LANGEVIN_NOISE_SCALE`, then
+# `delta = stepsize * (0.5*grad + noise)`, clipped to
+# `±LANGEVIN_DELTA_ACTION_CLIP * 0.5 * (act_max-act_min)`. At the chain's
+# start (stepsize=LANGEVIN_STEPSIZE_INIT=0.1), noise contributes std
+# 1.0*0.1=0.1 vs a clip bound of ~0.055 — the noise term SATURATES the clip
+# regardless of gradient direction for a large fraction of the 100
+# iterations, meaning the "hard negatives" plausibly random-walk rather than
+# genuinely climb toward high-Q regions. Made these constants configurable
+# (ibc_with_cpsv2_training.py now reads langevin_noise_scale/langevin_delta_
+# clip/langevin_num_iterations/langevin_lr_init/langevin_lr_final/langevin_
+# decay_power from env_training — the SAME config keys Q3C's own Langevin
+# sampler already uses, already registered in hyperparam_search.SEARCH_SPACE
+# — so this sweep can actually reach them; defaults preserve the exact prior
+# hardcoded behavior for pen/particle, which never touch these).
+#
+# This sweep: fixed at counter_examples=16, langevin_num_iterations=25 (much
+# cheaper than the hardcoded 100 — Q3C works fine at 25, and shorter chains
+# also mean less time for noise-driven negatives to fully randomize even
+# before considering the scale question), training_steps=50000 for fast
+# iteration (not the final answer — if a noise_scale value clearly wins,
+# it's worth a follow-up at 150k). Varies ONLY langevin_noise_scale:
+#   1.0  : current default (noise std 0.1 vs clip ~0.055 at chain start —
+#          saturating, the suspected cause)
+#   0.3  : noise std 0.03 < clip — no longer saturating
+#   0.1  : noise std 0.01 — gentle
+#   0.05 : noise std 0.005 — nearly pure gradient ascent
+#
+# 4 values x 2 seeds = 8 jobs.
+#
+# Prediction: if the saturation hypothesis is right, success rate should
+# climb monotonically (or near-monotonically) as noise_scale drops from 1.0
+# to 0.05. If it stays flat/bad across the whole range, the Langevin negative
+# sampler isn't the (whole) bottleneck and something else in the objective
+# (target-estimator staleness, temperature, gradient penalty) needs a look.
+
+# ── noise_scale=1.0 (baseline/current default) seed 0 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":1.0,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":0}'
+
+# ── noise_scale=1.0 seed 1 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":1.0,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":1}'
+
+# ── noise_scale=0.3 seed 0 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":0.3,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":0}'
+
+# ── noise_scale=0.3 seed 1 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":0.3,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":1}'
+
+# ── noise_scale=0.1 seed 0 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":0.1,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":0}'
+
+# ── noise_scale=0.1 seed 1 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":0.1,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":1}'
+
+# ── noise_scale=0.05 seed 0 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":0.05,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":0}'
+
+# ── noise_scale=0.05 seed 1 ──
+uv run --managed-python python hyperparam_search.py ibc_with_cpsv2_training.py --run --active-env dummy_bimodal --fixed-params '{"training_steps":50000,"batch_size":128,"learning_rate":0.001,"estimator_learning_rate":0.001,"control_points":30,"num_hidden_layers":4,"num_neurons":128,"counter_examples":16,"langevin_num_iterations":25,"langevin_lr_init":0.1,"langevin_lr_final":0.01,"langevin_decay_power":2.0,"langevin_noise_scale":0.05,"scheduler_type":"cosine","cosine_t_max":50000,"trial_seed":1}'

@@ -128,12 +128,18 @@ NOISY_EXPERT_STD = env_training.get(
     "noisy_expert_std",
     training_shared.get("noisy_expert_std", 0.05),
 )
-LANGEVIN_TRAIN_ITERATIONS = 100
-LANGEVIN_STEPSIZE_INIT = 0.1
-LANGEVIN_STEPSIZE_FINAL = 1e-5
-LANGEVIN_STEPSIZE_POWER = 2.0
-LANGEVIN_NOISE_SCALE = 1.0
-LANGEVIN_DELTA_ACTION_CLIP = 0.1
+# Previously hardcoded regardless of active_env; now read from the SAME
+# config keys combinedv2_cpascounter_training.py's own Langevin sampler
+# uses (already registered in hyperparam_search.SEARCH_SPACE, location
+# env_training), so a --fixed-params sweep can actually reach them. Defaults
+# preserve the exact prior behavior for every existing successful run
+# (pen/particle) that never set these explicitly.
+LANGEVIN_TRAIN_ITERATIONS = env_training.get("langevin_num_iterations", 100)
+LANGEVIN_STEPSIZE_INIT = env_training.get("langevin_lr_init", 0.1)
+LANGEVIN_STEPSIZE_FINAL = env_training.get("langevin_lr_final", 1e-5)
+LANGEVIN_STEPSIZE_POWER = env_training.get("langevin_decay_power", 2.0)
+LANGEVIN_NOISE_SCALE = env_training.get("langevin_noise_scale", 1.0)
+LANGEVIN_DELTA_ACTION_CLIP = env_training.get("langevin_delta_clip", 0.1)
 GRADIENT_MARGIN = 1.0
 SOFTMAX_TEMPERATURE = 0.5
 UNIFORM_BOUNDARY_BUFFER = 0.05
