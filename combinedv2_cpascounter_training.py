@@ -392,6 +392,7 @@ def load_dataset(split="train"):
             crop_size=int(env_config.get("training", {}).get("image_crop_size", 0)),
             action_chunk=int(env_config.get("training", {}).get("action_chunk", 1)),
             cameras=str(env_config.get("libero_cameras", "agentview+wrist")),
+            use_proprio=bool(env_config.get("libero_use_proprio", True)),
         )
     elif active_env == "dummy":
         from utils.datasets import DummyDataset

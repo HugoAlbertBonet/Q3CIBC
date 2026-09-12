@@ -117,7 +117,9 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
         """Live obs -> (image (1,C,H,W) uint8 tensor, cond (1,cond_dim) tensor)."""
         frame = np.concatenate([self._get_live_image(live_obs, c) for c in self.cameras],
                                axis=-1)  # (H,W,3*n_cams)
-        proprio = resolve_live_obs(live_obs, self.proprio_keys)
+        # A checkpoint trained without proprio records libero_obs_keys == [].
+        proprio = (resolve_live_obs(live_obs, self.proprio_keys) if self.proprio_keys
+                   else np.zeros(0, dtype=np.float32))
         if self.frame_stack > 1:
             self._img_buf.append(frame)
             self._proprio_buf.append(proprio)

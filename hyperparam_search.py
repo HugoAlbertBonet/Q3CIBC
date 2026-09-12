@@ -725,6 +725,14 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "str",
         "location": "env",
     },
+    # libero_goal_pixels proprioception in the conditioning vector: True
+    # (default, historical: proprio | goal) or False (goal embedding only — the
+    # image + language input set of the OpenVLA LIBERO protocol).
+    "libero_use_proprio": {
+        "values": [True, False],
+        "type": "bool",
+        "location": "env",
+    },
     # Episode step budget. LIBERO's own default is 600
     # (third_party/LIBERO/libero/configs/eval/default.yaml); this repo has
     # always used 300 for libero_goal_pixels. Searchable so the protocol can be

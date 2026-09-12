@@ -2309,6 +2309,7 @@ class LiberoGoalPixelsDataset(Dataset):
         crop_size: int = 0,
         action_chunk: int = 1,
         cameras: str = "agentview+wrist",
+        use_proprio: bool = True,
     ):
         try:
             import h5py  # noqa: F401
@@ -2324,6 +2325,11 @@ class LiberoGoalPixelsDataset(Dataset):
         if not self.cameras or len(self.cameras) != len(requested):
             raise ValueError(f"cameras must be a '+'-joined subset of agentview, wrist; got {cameras!r}")
         self._use_wrist = "wrist" in self.cameras
+        # use_proprio=False: conditioning is the goal embedding ONLY (image +
+        # language, the OpenVLA LIBERO input set). libero_obs_keys becomes [] and
+        # proprio_dim 0, which every norm_stats writer already records, so eval
+        # rebuilds a goal-only cond with no further change.
+        self.use_proprio = bool(use_proprio)
 
         # Random-crop augmentation (train-time only; eval center-crops to the
         # same size — see LiberoGoalPixelsSimulation). 0 = off. Standard pixel-BC
@@ -2360,7 +2366,7 @@ class LiberoGoalPixelsDataset(Dataset):
         acts: list[np.ndarray] = []
         starts: list[bool] = []
         task_ids: list[int] = []
-        self.libero_obs_keys = list(self._PROPRIO_KEYS)
+        self.libero_obs_keys = list(self._PROPRIO_KEYS) if self.use_proprio else []
         total = 0
 
         for t in task_infos:
@@ -2407,6 +2413,8 @@ class LiberoGoalPixelsDataset(Dataset):
             self._episode_starts = self._episode_starts[:max_samples]
             self._task_ids = self._task_ids[:max_samples]
 
+        if not self.use_proprio:
+            self._proprio = self._proprio[:, :0]
         self.proprio_dim = int(self._proprio.shape[1])
 
         if self.action_chunk > 1:
