@@ -1,0 +1,30 @@
+# LIBERO-Goal pixels — IBC at 500 episodes, CORRECTED.
+#
+# Submit with:  bash submit_experiments.sh batches/lgProtocol500IBCfix.txt
+# Prereq:       uv sync --extra libero --extra pushing
+#
+# The IBC lines in batches/lgProtocol500.txt re-evaluated the right three
+# checkpoints over 500 episodes, but with 512 DFO samples instead of the 2048
+# they were trained and first scored with. hyperparam_search_dfo.py
+# --reeval-checkpoint rebuilds its inference settings from BASELINE_HPARAMS plus
+# --params, and those lines passed no --params, so INFERENCE_NUM_SAMPLES fell
+# back to its default of 512. Their records (ibc_dfo trials 17, 18, 19; 39.8 /
+# 41.8 / 41.4) are therefore NOT the published IBC configuration and should not
+# be tabled.
+#
+# These lines pass every INFERENCE_* value explicitly, copied from trial 9's
+# recorded hparams and inference_cfg (trials 10 and 13 are identical), so no
+# default can substitute for any of them. Verified before writing: the
+# inference_cfg this --params produces equals trial 9's, field for field.
+#
+# 3 jobs, one checkpoint each (~2.5-3 h at 512 samples; expect longer at 2048).
+
+
+# ── IBC resnet18 scratch, checkpoint of trial 9 (50-episode score 36%)
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --reeval-checkpoint run_20260828T164604_3cca46a6 --num-eval-seeds 500 --params '{"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.1,"INFERENCE_NOISE_SCALE":0.1,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NOISE_VIA_STEPSIZE":false,"INFERENCE_OPTIMIZE_AGAIN":false,"INFERENCE_AGAIN_STEPSIZE_INIT":1e-05,"INFERENCE_AGAIN_STEPSIZE_FINAL":1e-05,"INFERENCE_AGAIN_NOISE_SCALE":0.5}'
+
+# ── IBC resnet18 scratch, checkpoint of trial 10 (50-episode score 38%)
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --reeval-checkpoint run_20260828T164940_66732524 --num-eval-seeds 500 --params '{"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.1,"INFERENCE_NOISE_SCALE":0.1,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NOISE_VIA_STEPSIZE":false,"INFERENCE_OPTIMIZE_AGAIN":false,"INFERENCE_AGAIN_STEPSIZE_INIT":1e-05,"INFERENCE_AGAIN_STEPSIZE_FINAL":1e-05,"INFERENCE_AGAIN_NOISE_SCALE":0.5}'
+
+# ── IBC resnet18 scratch, checkpoint of trial 13 (50-episode score 42%)
+uv run --managed-python --extra libero python hyperparam_search_dfo.py --run --active-env libero_goal_pixels --reeval-checkpoint run_20260828T170111_470adfd0 --num-eval-seeds 500 --params '{"INFERENCE_DECAY_POWER":2.0,"INFERENCE_DELTA_CLIP":0.1,"INFERENCE_LR_FINAL":1e-05,"INFERENCE_LR_INIT":0.1,"INFERENCE_NOISE_SCALE":0.1,"INFERENCE_NUM_ITERATIONS":100,"INFERENCE_NUM_SAMPLES":2048,"INFERENCE_NOISE_VIA_STEPSIZE":false,"INFERENCE_OPTIMIZE_AGAIN":false,"INFERENCE_AGAIN_STEPSIZE_INIT":1e-05,"INFERENCE_AGAIN_STEPSIZE_FINAL":1e-05,"INFERENCE_AGAIN_NOISE_SCALE":0.5}'
