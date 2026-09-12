@@ -400,6 +400,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             frame_stack=frame_stack,
             max_demos_per_task=env_cfg.get("max_demos_per_task"),
             crop_size=int(hparams.get("IMAGE_CROP", 0)),
+            cameras=str(hparams.get("LIBERO_CAMERAS", env_cfg.get("libero_cameras", "agentview+wrist"))),
         )
         action_in_model_range = (-1.0, 1.0)
         per_batch_action_norm = False
@@ -417,6 +418,7 @@ def train_dfo(hparams: dict, run_id: str, active_env: str = "particle") -> dict:
             "cond_dim": dataset.cond_dim,
             "in_channels": dataset.in_channels,
             "state_shape": list(dataset.state_shape),
+            "libero_cameras": list(dataset.cameras),
             "image_crop_size": int(hparams.get("IMAGE_CROP", 0)),
         }
         # Conv encoder preprocesses images itself; conditioning fed raw.

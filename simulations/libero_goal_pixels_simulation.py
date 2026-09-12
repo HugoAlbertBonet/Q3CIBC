@@ -74,6 +74,9 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
         # Action chunking: the model emits K*7 per CP; we execute the K steps
         # open-loop (re-planning after each chunk), success checked every step.
         self.action_chunk = int(norm_stats.get("action_chunk", 1) or 1)
+        # Cameras the checkpoint was trained with; older checkpoints predate the
+        # key and used both. Eval must stack exactly these, in this order.
+        self.cameras = tuple(norm_stats.get("libero_cameras", ("agentview", "wrist")))
         self.num_eval_seeds = int(num_eval_seeds)
         self._eps_per_task = max(1, (self.num_eval_seeds + self.n_tasks - 1) // self.n_tasks)
         self._img_buf: deque[np.ndarray] = deque(maxlen=frame_stack)
@@ -112,9 +115,8 @@ class LiberoGoalPixelsSimulation(LiberoGoalSimulation):
 
     def _build_inputs(self, live_obs: dict):
         """Live obs -> (image (1,C,H,W) uint8 tensor, cond (1,cond_dim) tensor)."""
-        agv = self._get_live_image(live_obs, "agentview")
-        wrist = self._get_live_image(live_obs, "wrist")
-        frame = np.concatenate([agv, wrist], axis=-1)  # (H,W,6)
+        frame = np.concatenate([self._get_live_image(live_obs, c) for c in self.cameras],
+                               axis=-1)  # (H,W,3*n_cams)
         proprio = resolve_live_obs(live_obs, self.proprio_keys)
         if self.frame_stack > 1:
             self._img_buf.append(frame)

@@ -391,6 +391,7 @@ def load_dataset(split="train"):
             max_demos_per_task=env_config.get("max_demos_per_task"),
             crop_size=int(env_config.get("training", {}).get("image_crop_size", 0)),
             action_chunk=int(env_config.get("training", {}).get("action_chunk", 1)),
+            cameras=str(env_config.get("libero_cameras", "agentview+wrist")),
         )
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
@@ -876,6 +877,7 @@ def main():
             norm_stats["cond_dim"] = dataset.cond_dim
             norm_stats["in_channels"] = dataset.in_channels
             norm_stats["image_hw"] = [dataset._H, dataset._W]
+            norm_stats["libero_cameras"] = list(dataset.cameras)
             norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 128)
             norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 128)
             norm_stats["state_shape"] = list(dataset.state_shape)

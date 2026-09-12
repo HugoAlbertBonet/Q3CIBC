@@ -189,6 +189,7 @@ def main() -> int:
                       cond_fusion=env_model.get("cond_fusion", "concat"))
         if active_env == "libero_goal_pixels":
             ns.update(libero_obs_keys=dataset.libero_obs_keys,
+                      libero_cameras=list(dataset.cameras),
                       goal_embeddings=dataset.goal_embeddings,
                       goal_task_names=dataset.goal_task_names,
                       goal_emb_dim=dataset.goal_emb_dim,

@@ -2308,6 +2308,7 @@ class LiberoGoalPixelsDataset(Dataset):
         action_norm_range: tuple[float, float] = (-1.0, 1.0),
         crop_size: int = 0,
         action_chunk: int = 1,
+        cameras: str = "agentview+wrist",
     ):
         try:
             import h5py  # noqa: F401
@@ -2315,6 +2316,14 @@ class LiberoGoalPixelsDataset(Dataset):
             raise ImportError("h5py required for LIBERO demos (uv sync --extra libero).") from e
         import h5py
         from utils.libero import get_task_infos, load_goal_embeddings
+        # libero_cameras: "agentview+wrist" (default, historical) or "agentview"
+        # (third-person only, the OpenVLA LIBERO protocol used for Octo / Diffusion
+        # Policy / OpenVLA). Order is canonical: agentview first, then wrist.
+        requested = tuple(c.strip() for c in str(cameras).split("+") if c.strip())
+        self.cameras = tuple(c for c in ("agentview", "wrist") if c in requested)
+        if not self.cameras or len(self.cameras) != len(requested):
+            raise ValueError(f"cameras must be a '+'-joined subset of agentview, wrist; got {cameras!r}")
+        self._use_wrist = "wrist" in self.cameras
 
         # Random-crop augmentation (train-time only; eval center-crops to the
         # same size — see LiberoGoalPixelsSimulation). 0 = off. Standard pixel-BC
@@ -2366,14 +2375,17 @@ class LiberoGoalPixelsDataset(Dataset):
                 for dk in demo_keys:
                     obsg = data[dk]["obs"]
                     a = np.asarray(obsg["agentview_rgb"], dtype=np.uint8)        # (T,H,W,3)
-                    w = np.asarray(obsg["eye_in_hand_rgb"], dtype=np.uint8)
+                    # Wrist frames are only loaded when used (third-person-only halves image RAM).
+                    w = np.asarray(obsg["eye_in_hand_rgb"], dtype=np.uint8) if self._use_wrist else None
                     pr = np.concatenate(
                         [np.asarray(obsg[k], dtype=np.float32).reshape(a.shape[0], -1)
                          for k in self._PROPRIO_KEYS], axis=1)               # (T,12)
                     ac = np.asarray(data[dk]["actions"], dtype=np.float32)
-                    n = min(len(a), len(w), len(pr), len(ac))
+                    n = min(len(a), len(pr), len(ac), *( [len(w)] if w is not None else [] ))
                     for i in range(n):
-                        agv.append(a[i]); wrist.append(w[i]); proprio.append(pr[i]); acts.append(ac[i])
+                        agv.append(a[i]); proprio.append(pr[i]); acts.append(ac[i])
+                        if w is not None:
+                            wrist.append(w[i])
                         starts.append(i == 0); task_ids.append(t["index"])
                     total += n
                     if max_samples is not None and total >= max_samples:
@@ -2382,13 +2394,15 @@ class LiberoGoalPixelsDataset(Dataset):
                 break
 
         self._agv = np.stack(agv)        # (N,H,W,3) uint8
-        self._wrist = np.stack(wrist)
+        self._wrist = np.stack(wrist) if wrist else None
         self._proprio = np.stack(proprio).astype(np.float32)   # (N,12)
         raw_actions = np.stack(acts).astype(np.float32)
         self._episode_starts = np.asarray(starts, dtype=bool)
         self._task_ids = np.asarray(task_ids, dtype=np.int64)
         if max_samples is not None:
-            self._agv = self._agv[:max_samples]; self._wrist = self._wrist[:max_samples]
+            self._agv = self._agv[:max_samples]
+            if self._wrist is not None:
+                self._wrist = self._wrist[:max_samples]
             self._proprio = self._proprio[:max_samples]; raw_actions = raw_actions[:max_samples]
             self._episode_starts = self._episode_starts[:max_samples]
             self._task_ids = self._task_ids[:max_samples]
@@ -2429,7 +2443,7 @@ class LiberoGoalPixelsDataset(Dataset):
             self.actions = raw_actions
 
         self._stack_idx = self._build_stack_index_map()
-        self.in_channels = 3 * len(self._IMAGE_KEYS) * frame_stack
+        self.in_channels = 3 * len(self.cameras) * frame_stack
         self.cond_dim = self.proprio_dim * frame_stack + self.goal_emb_dim
         out_hw = self.crop_size if self.crop_size else self._H
         self.state_shape = (self.in_channels, out_hw, out_hw)
@@ -2459,9 +2473,11 @@ class LiberoGoalPixelsDataset(Dataset):
         idxs = self._stack_idx[index]
         frames = []
         for i in idxs:                       # oldest -> newest
-            frames.append(self._agv[int(i)])
-            frames.append(self._wrist[int(i)])
-        stacked = np.concatenate(frames, axis=-1)        # (H,W,3*2*fs)
+            if "agentview" in self.cameras:
+                frames.append(self._agv[int(i)])
+            if self._use_wrist:
+                frames.append(self._wrist[int(i)])
+        stacked = np.concatenate(frames, axis=-1)        # (H,W,3*n_cams*fs)
         if self.crop_size:
             s = self.crop_size
             oy = int(self._rng.integers(0, stacked.shape[0] - s + 1))

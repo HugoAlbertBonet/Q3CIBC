@@ -717,6 +717,14 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env",
     },
+    # libero_goal_pixels camera set: "agentview+wrist" (default, historical) or
+    # "agentview" (third-person only — the OpenVLA LIBERO protocol that the
+    # published Octo / Diffusion Policy / OpenVLA numbers were trained under).
+    "libero_cameras": {
+        "values": ["agentview+wrist", "agentview"],
+        "type": "str",
+        "location": "env",
+    },
     # Episode step budget. LIBERO's own default is 600
     # (third_party/LIBERO/libero/configs/eval/default.yaml); this repo has
     # always used 300 for libero_goal_pixels. Searchable so the protocol can be

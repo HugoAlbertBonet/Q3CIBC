@@ -655,6 +655,7 @@ def main():
             norm_stats["state_shape"] = dataset.state_shape
         if active_env == "libero_goal_pixels":
             norm_stats["libero_obs_keys"] = dataset.libero_obs_keys
+            norm_stats["libero_cameras"] = list(dataset.cameras)
             norm_stats["goal_embeddings"] = dataset.goal_embeddings
             norm_stats["goal_task_names"] = dataset.goal_task_names
             norm_stats["goal_emb_dim"] = dataset.goal_emb_dim
