@@ -1,4 +1,3 @@
 q3cPenBigSweep.txt
 lgThirdPerson.txt
-dummyBimodalIBCLangevinSweep.txt
 dummyBimodalDiagnostics.txt
