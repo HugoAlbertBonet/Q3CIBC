@@ -12,6 +12,16 @@ Run on a GPU compute node (render eval): MUJOCO_GL=egl.
 
     uv run --extra libero python scripts/reeval_trials.py \
         --active-env libero_goal_pixels --trials 6 9 10
+
+--select-params picks the trials instead, so a batch can be written before the
+trial ids exist: every TRAINING record (never a previous re-evaluation) whose
+params contain all the given key/value pairs. A trial that already has a
+re-evaluation with the same overrides and episode count is skipped, so the batch
+can be resubmitted safely.
+
+    uv run python scripts/reeval_trials.py --script consistency_policy_training.py \
+        --active-env pen --select-params '{"cp_run_tag": "cpv1"}' \
+        --param-overrides '{"inference_cp_mode": "teacher"}'
 """
 
 from __future__ import annotations
@@ -32,8 +42,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--active-env", required=True)
     ap.add_argument("--script", default="combinedv2_cpascounter_training.py")
-    ap.add_argument("--trials", type=int, nargs="+", required=True,
-                    help="trial ids (from trials.jsonl) to re-evaluate")
+    pick = ap.add_mutually_exclusive_group(required=True)
+    pick.add_argument("--trials", type=int, nargs="+",
+                      help="trial ids (from trials.jsonl) to re-evaluate")
+    pick.add_argument("--select-params", default=None,
+                      help="JSON; re-evaluate every training record whose params "
+                           "contain these key/value pairs")
     ap.add_argument("--num-eval-seeds", type=int, default=None,
                     help="override eval episode count (e.g. 500 for final paper "
                          "numbers; default = the per-run config's value)")
@@ -57,6 +71,11 @@ def main() -> None:
         )
 
     trials_path = hs._trials_path(args.script, active_env=args.active_env)
+    if args.select_params and not Path(trials_path).exists():
+        # A selection batch can run before (or without) any matching training
+        # record, e.g. when every training job of that env failed.
+        print(f"--select-params: no trials file at {trials_path}; nothing to re-evaluate")
+        return
     records = {}
     for line in open(trials_path):
         line = line.strip()
@@ -65,7 +84,30 @@ def main() -> None:
         r = json.loads(line)
         records[int(r.get("trial_id", -1))] = r
 
-    for tid in args.trials:
+    if args.select_params:
+        want = json.loads(args.select_params)
+        trial_ids = []
+        for tid, r in sorted(records.items()):
+            p = r.get("params") or {}
+            if r.get("reeval_only") or r.get("training_failed") or not r.get("checkpoint_dir"):
+                continue
+            if any(p.get(k) != v for k, v in want.items()):
+                continue
+            done = any(
+                o.get("reeval_of_trial") == tid
+                and all((o.get("params") or {}).get(k) == v for k, v in overrides.items())
+                and (not args.num_eval_seeds or o.get("num_seeds") == args.num_eval_seeds)
+                and not o.get("eval_error")
+                for o in records.values())
+            if done:
+                print(f"trial #{tid}: already re-evaluated with these overrides; skipping")
+                continue
+            trial_ids.append(tid)
+        print(f"--select-params {want}: {len(trial_ids)} trial(s) to re-evaluate: {trial_ids}")
+    else:
+        trial_ids = args.trials
+
+    for tid in trial_ids:
         rec = records.get(tid)
         if rec is None:
             print(f"trial #{tid}: NOT FOUND in {trials_path}")

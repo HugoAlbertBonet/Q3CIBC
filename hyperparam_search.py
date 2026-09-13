@@ -733,6 +733,29 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "bool",
         "location": "env",
     },
+    # Consistency Policy (consistency_policy_training.py). Defaults follow the official
+    # configs; inference_cp_* only change how a saved checkpoint is sampled.
+    "cp_phase": {"values": ["both", "teacher", "student"], "type": "str", "location": "env_training"},
+    "cp_teacher_dir": {"values": ["", "auto"], "type": "str", "location": "env_training"},
+    "cp_run_tag": {"values": [""], "type": "str", "location": "env_training"},
+    "cp_student_feature_cache": {"values": [False, True], "type": "bool", "location": "env_training"},
+    "cp_teacher_steps": {"values": [50000, 100000, 300000], "type": "int", "location": "env_training"},
+    "cp_student_steps": {"values": [50000, 125000, 375000], "type": "int", "location": "env_training"},
+    "cp_sigma_min": {"values": [0.002, 0.02], "type": "float", "location": "env_training"},
+    "cp_sigma_max": {"values": [80.0], "type": "float", "location": "env_training"},
+    "cp_rho": {"values": [7.0], "type": "float", "location": "env_training"},
+    "cp_bins": {"values": [40, 80, 160], "type": "int", "location": "env_training"},
+    "cp_sigma_data": {"values": [0.5], "type": "float", "location": "env_training"},
+    "cp_huber_delta": {"values": [-1.0, 0.0], "type": "float", "location": "env_training"},
+    "cp_dropout": {"values": [0.0, 0.2], "type": "float", "location": "env_training"},
+    "cp_ctm_weight": {"values": [1.0], "type": "float", "location": "env_training"},
+    "cp_dsm_weight": {"values": [0.0, 1.0], "type": "float", "location": "env_training"},
+    "cp_ode_steps_max": {"values": [1, 2], "type": "int", "location": "env_training"},
+    "cp_lr_warmup": {"values": [500], "type": "int", "location": "env_training"},
+    "cp_weight_decay": {"values": [1e-6], "type": "float", "location": "env_training"},
+    "cp_p_fraction": {"values": [0.8, 1.0], "type": "float", "location": "env_training"},
+    "inference_cp_mode": {"values": ["student", "teacher"], "type": "str", "location": "env_training"},
+    "inference_cp_chaining": {"values": ["none", "D:27,54", "C:27,54"], "type": "str", "location": "env_training"},
     # Episode step budget. LIBERO's own default is 600
     # (third_party/LIBERO/libero/configs/eval/default.yaml); this repo has
     # always used 300 for libero_goal_pixels. Searchable so the protocol can be
@@ -983,6 +1006,8 @@ INFERENCE_ONLY_PARAMS: set[str] = {
     "inference_dfo_iteration_std_decay",
     "inference_dfo_num_uniform",
     "inference_dfo_elitist",
+    "inference_cp_mode",
+    "inference_cp_chaining",
     "inference_uniform_proposal",
     # Evaluation-only for BOTH algorithms: these change how a saved checkpoint
     # is queried, never what was trained, so reeval_trials.py may override them.
@@ -1153,6 +1178,50 @@ class _NullCritic(torch.nn.Module):
 
     def forward(self, state, action):
         return self.score(None, action)
+
+
+def _cp_weights_path(checkpoint_dir, env_config):
+    """Which Consistency Policy weights to score: inference_cp_mode 'student' (default when a
+    student exists) or 'teacher' (its EMA weights, as the official teacher is evaluated)."""
+    et = env_config.get("training", {})
+    student = os.path.join(checkpoint_dir, "cp_student.pt")
+    mode = str(et.get("inference_cp_mode", "student" if os.path.exists(student) else "teacher"))
+    if mode == "student":
+        return student
+    ema = os.path.join(checkpoint_dir, "cp_teacher_ema.pt")
+    return ema if os.path.exists(ema) else os.path.join(checkpoint_dir, "cp_teacher.pt")
+
+
+def _build_cp_generator(checkpoint_dir, weights_path, env_config, device, action_dim):
+    """Rebuild a consistency_policy_training.py checkpoint from cp_meta.json and expose its sampler
+    as a `control_point_generator(state) -> (B, 1, A)`: student = one jump T -> 0 (chained when
+    inference_cp_chaining is e.g. 'D:27,54'), teacher = Heun over the full sigma grid."""
+    from utils.consistency import ConsistencyPolicyGenerator, CPModel, KarrasSchedule
+    with open(os.path.join(checkpoint_dir, "cp_meta.json")) as fh:
+        meta = json.load(fh)
+    if int(meta["action_dim"]) != int(action_dim):
+        raise RuntimeError(f"cp_meta action_dim {meta['action_dim']} != evaluation action_dim {action_dim}")
+    is_student = os.path.basename(weights_path).startswith("cp_student")
+    common = dict(cond_dim=int(meta.get("cond_dim", 0)), time_emb_dim=int(meta["time_emb_dim"]),
+                  network_kind=meta["network_kind"], width=int(meta["width"]), depth=int(meta["depth"]),
+                  two_times=is_student, dropout=float(meta.get("dropout", 0.0)) if is_student else 0.0)
+    if meta["pixel"]:
+        ek = dict(meta.get("encoder_kwargs") or {})
+        ek["encoder_pretrained"] = False  # weights come from the state_dict; never download on a compute node
+        model = CPModel(int(action_dim), in_channels=int(meta["in_channels"]), encoder_kwargs=ek, **common)
+    else:
+        model = CPModel(int(action_dim), state_dim=int(meta["state_dim"]), **common)
+    model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=True))
+    model.to(device).eval()
+    sched = KarrasSchedule(sigma_min=meta["sigma_min"], sigma_max=meta["sigma_max"], rho=meta["rho"],
+                           bins=meta["bins"], sigma_data=meta["sigma_data"])
+    chaining = env_config.get("training", {}).get("inference_cp_chaining", "none") if is_student else None
+    gen = ConsistencyPolicyGenerator(model, sched, int(action_dim), tuple(meta.get("action_bounds", [-1.0, 1.0])),
+                                     mode="student" if is_student else "teacher", chaining=chaining)
+    print(f"Consistency Policy: {'student' if is_student else 'teacher (Heun-' + str(meta['bins']) + ')'} "
+          f"from {os.path.basename(weights_path)}"
+          + (f", chaining={chaining}" if is_student else "") + f", action_dim={action_dim}")
+    return gen.to(device)
 
 
 def _build_dpq3c_generator(weights_path, env_config, norm_stats, action_dim,
@@ -1380,8 +1449,16 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     bc_ema_path = os.path.join(checkpoint_dir, "bc_policy_ema.pt")
     is_bc = os.path.exists(bc_raw_path) or os.path.exists(bc_ema_path)
 
+    # consistency_policy_training.py writes an EDM teacher and/or a CTM student plus
+    # cp_meta.json, and no critic: evaluate like a plain diffusion policy (cloud of
+    # one, null critic) with the sampler chosen by inference_cp_mode.
+    is_cp = os.path.exists(os.path.join(checkpoint_dir, "cp_meta.json")) and any(
+        os.path.exists(os.path.join(checkpoint_dir, f)) for f in ("cp_student.pt", "cp_teacher.pt", "cp_teacher_ema.pt"))
+
     if is_bc:
         cp_raw_path, cp_ema_path = bc_raw_path, bc_ema_path
+    elif is_cp:
+        cp_raw_path = cp_ema_path = _cp_weights_path(checkpoint_dir, env_config)
     elif is_dpq3c:
         cp_raw_path, cp_ema_path = dpq3c_raw_path, dpq3c_ema_path
     else:
@@ -1397,10 +1474,10 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     # cloud of ONE (nothing to rank) and a constant-score stub critic, so the
     # simulations' `cp_gen(obs)` then `q.score(...)` call pattern works unchanged
     # and argmax over a single candidate trivially returns it.
-    is_plain_dp = (is_dpq3c or is_bc) and not (
+    is_plain_dp = (is_dpq3c or is_bc or is_cp) and not (
         os.path.exists(q_raw_path) or os.path.exists(q_ema_path))
 
-    if is_bc:
+    if is_bc or is_cp:
         # One candidate, no energy to climb: any refinement loop would be a
         # no-op that still costs a forward pass per iteration, and top-k over a
         # single action is meaningless. Hard-off so a stray config value cannot
@@ -1426,7 +1503,9 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             "avg_reward": 0.0,
             "error": f"Checkpoints not found in {checkpoint_dir}",
         }
-    if is_bc:
+    if is_cp:
+        print(f"Consistency Policy detected (cp_meta.json): scoring {os.path.basename(cp_raw_path)} with a null critic.")
+    elif is_bc:
         print("Explicit BC policy detected (bc_policy, no critic): evaluating "
               "its single regressed action with a null critic.")
     elif is_plain_dp:
@@ -1499,6 +1578,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             )
             cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
             cp_gen.to(device).eval()
+        elif is_cp:
+            cp_gen = _build_cp_generator(checkpoint_dir, cp_path, env_config, device, action_dim_eff)
         elif is_dpq3c:
             cp_gen = _build_dpq3c_generator(
                 cp_path, env_config, norm_stats or {}, action_dim_eff,
@@ -1584,6 +1665,8 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
             )
             cp_gen.load_state_dict(torch.load(cp_path, map_location=device, weights_only=True))
             cp_gen.to(device).eval()
+        elif is_cp:
+            cp_gen = _build_cp_generator(checkpoint_dir, cp_path, env_config, device, flat_action_dim)
         elif is_dpq3c:
             cp_gen = _build_dpq3c_generator(
                 cp_path, env_config, norm_stats or {}, flat_action_dim,

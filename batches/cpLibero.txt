@@ -1,0 +1,40 @@
+# Consistency Policy — LIBERO-Goal (pixels), 500-episode protocol.
+#
+# Submit with:  bash submit_experiments.sh batches/cpLibero.txt
+# Prereq:       uv sync --extra libero --extra pushing
+#
+# ── Algorithm: Consistency Policy (Prasad et al., 2024 — arXiv 2405.07503) ──
+# consistency_policy_training.py + utils/consistency.py, ported from the official
+# repo (configs edm_*/ctmp_*.yaml): EDM teacher (sigma 0.02-80, rho 7, 80 bins,
+# sigma_data 0.5, boundary preconditioning, log-normal sigma, Karras-weighted
+# pseudo-Huber with delta = 0.00054*sqrt(action dims)), then a CTM student
+# warm-started from it (zero-initialised stop-time input, frozen image encoder,
+# dropout 0.2, loss ctm + dsm with weights 1/1, one teacher Heun step u = t+1,
+# target net = student copy every step). AdamW betas (0.95, 0.999) wd 1e-6,
+# cosine LR with 500 warmup steps (student schedule over 80% of its steps),
+# teacher evaluated with its power-schedule EMA, student with raw weights, and
+# the student trains 1.25x the teacher's steps (official 500 vs 400 epochs).
+#
+# Trunk, batch size, learning rate and teacher step count are our best Diffusion
+# Policy recipe for each env, so CP and DP differ only in the algorithm.
+# hyperparam_search detects cp_meta.json and scores the checkpoint like plain DP:
+# null critic, control_points=1, no refinement. The student samples ONE network
+# evaluation per action: z ~ N(0, I) -> G(z, 80, 0.02). All runs carry
+# cp_run_tag=cpv1, which cpReeval.txt uses to find them.
+#
+# Recipe = the LIBERO DP reference (dpq3c trial 78): ImageNet resnet18 + spatial
+# softmax (128 kp, GroupNorm, encoder LR x0.1), both cameras + proprio + goal
+# embedding (concat), random 116 crop, action chunk 16, dense_resnet 1024x1,
+# bs128, lr 2e-4, 200k teacher / 250k student steps. num_eval_seeds=500 = the
+# OpenVLA protocol used for every LIBERO row (10 tasks x init states 0-49), as in
+# rvLibero. The random crop makes features non-deterministic, so no feature cache.
+#
+# Cost: BC on this recipe trains 150k steps in ~1.4 h on the cluster and the CP
+# teacher step costs the same as a DP step (student 0.4x), so ~3-5 h per run
+# including the 500-episode eval.
+#
+# 3 runs -> 1 job.
+
+
+# ── job: 3 seeds (3 runs)
+echo "=== packed run 1/3 (CP libero_goal_pixels seed=0) ==="; uv run --managed-python --extra libero python hyperparam_search.py consistency_policy_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cp_phase":"both","cp_run_tag":"cpv1","cp_student_steps":250000,"cp_teacher_steps":200000,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"max_episode_steps":300,"num_eval_seeds":500,"time_emb_dim":128,"training_steps":200000,"trial_seed":0}' || echo "=== packed run 1/3 FAILED (exit $?) — continuing ==="; echo "=== packed run 2/3 (CP libero_goal_pixels seed=1) ==="; uv run --managed-python --extra libero python hyperparam_search.py consistency_policy_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cp_phase":"both","cp_run_tag":"cpv1","cp_student_steps":250000,"cp_teacher_steps":200000,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"max_episode_steps":300,"num_eval_seeds":500,"time_emb_dim":128,"training_steps":200000,"trial_seed":1}' || echo "=== packed run 2/3 FAILED (exit $?) — continuing ==="; echo "=== packed run 3/3 (CP libero_goal_pixels seed=2) ==="; uv run --managed-python --extra libero python hyperparam_search.py consistency_policy_training.py --run --active-env libero_goal_pixels --fixed-params '{"action_chunk":16,"batch_size":128,"cp_phase":"both","cp_run_tag":"cpv1","cp_student_steps":250000,"cp_teacher_steps":200000,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"encoder_kind":"resnet18","encoder_lr_scale":0.1,"encoder_norm_kind":"gn","encoder_num_kp":128,"encoder_pretrained":"imagenet","frame_stack":1,"image_crop_size":116,"learning_rate":0.0002,"max_episode_steps":300,"num_eval_seeds":500,"time_emb_dim":128,"training_steps":200000,"trial_seed":2}' || echo "=== packed run 3/3 FAILED (exit $?) — continuing ==="

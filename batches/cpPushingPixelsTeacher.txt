@@ -1,0 +1,41 @@
+# Consistency Policy — pushing_pixels, TEACHER jobs. Submit cpPushingPixelsStudent.txt after these finish.
+#
+# Submit with:  bash submit_experiments.sh batches/cpPushingPixelsTeacher.txt
+#
+# ── Algorithm: Consistency Policy (Prasad et al., 2024 — arXiv 2405.07503) ──
+# consistency_policy_training.py + utils/consistency.py, ported from the official
+# repo (configs edm_*/ctmp_*.yaml): EDM teacher (sigma 0.02-80, rho 7, 80 bins,
+# sigma_data 0.5, boundary preconditioning, log-normal sigma, Karras-weighted
+# pseudo-Huber with delta = 0.00054*sqrt(action dims)), then a CTM student
+# warm-started from it (zero-initialised stop-time input, frozen image encoder,
+# dropout 0.2, loss ctm + dsm with weights 1/1, one teacher Heun step u = t+1,
+# target net = student copy every step). AdamW betas (0.95, 0.999) wd 1e-6,
+# cosine LR with 500 warmup steps (student schedule over 80% of its steps),
+# teacher evaluated with its power-schedule EMA, student with raw weights, and
+# the student trains 1.25x the teacher's steps (official 500 vs 400 epochs).
+#
+# Trunk, batch size, learning rate and teacher step count are our best Diffusion
+# Policy recipe for each env, so CP and DP differ only in the algorithm.
+# hyperparam_search detects cp_meta.json and scores the checkpoint like plain DP:
+# null critic, control_points=1, no refinement. The student samples ONE network
+# evaluation per action: z ~ N(0, I) -> G(z, 80, 0.02). All runs carry
+# cp_run_tag=cpv1, which cpReeval.txt uses to find them.
+#
+# Recipe = pushingPixelsDPD/E (94 +- 3 % DP): conv_maxpool encoder 180x240,
+# dense_resnet 1024x1, frame_stack 2, bs128, lr 3e-4, 750k teacher steps.
+# Teacher and student cannot share a 48 h job: DP's 750k steps took 36.2-37.9 h
+# (JPEG decoding dominates; the teacher step costs the same as a DP step), so this
+# batch trains the teacher only and its trial record scores the TEACHER
+# (EMA weights, Heun over the 80-bin grid = 159 network evaluations per action).
+#
+# 3 runs -> 3 jobs (~37 h expected each, as DP).
+
+
+# ── job: seed 0 (1 runs)
+echo "=== packed run 1/1 (CP-teacher pushing_pixels seed=0) ==="; uv run --managed-python python hyperparam_search.py consistency_policy_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"cp_phase":"teacher","cp_run_tag":"cpv1","cp_student_steps":937500,"cp_teacher_steps":750000,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"frame_stack":2,"learning_rate":0.0003,"time_emb_dim":128,"training_steps":750000,"trial_seed":0}' || echo "=== packed run 1/1 FAILED (exit $?) — continuing ==="
+
+# ── job: seed 1 (1 runs)
+echo "=== packed run 1/1 (CP-teacher pushing_pixels seed=1) ==="; uv run --managed-python python hyperparam_search.py consistency_policy_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"cp_phase":"teacher","cp_run_tag":"cpv1","cp_student_steps":937500,"cp_teacher_steps":750000,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"frame_stack":2,"learning_rate":0.0003,"time_emb_dim":128,"training_steps":750000,"trial_seed":1}' || echo "=== packed run 1/1 FAILED (exit $?) — continuing ==="
+
+# ── job: seed 2 (1 runs)
+echo "=== packed run 1/1 (CP-teacher pushing_pixels seed=2) ==="; uv run --managed-python python hyperparam_search.py consistency_policy_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"cp_phase":"teacher","cp_run_tag":"cpv1","cp_student_steps":937500,"cp_teacher_steps":750000,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"frame_stack":2,"learning_rate":0.0003,"time_emb_dim":128,"training_steps":750000,"trial_seed":2}' || echo "=== packed run 1/1 FAILED (exit $?) — continuing ==="
