@@ -1,80 +1,98 @@
-"""Wire-fitting Q3C: the estimator scores ONLY the control points.
+"""Wire-fitting Q3C — combinedv2_cpascounter_training.py with ONE substitution.
 
-Fork of combinedv2_cpascounter_training.py. Everything about the data pipeline,
-the pixel models, EMA, the held-out validation MAE, norm_stats and the negative
-mixture is inherited unchanged; the ONE substitution is how a non-control-point
-action gets a value.
+This file is an exact copy of combinedv2_cpascounter_training.py plus a single
+switch, `wirefit_mode`, that decides which InfoNCE entries the estimator scores
+DIRECTLY and which get a value by wire-fit interpolation from the control
+points (Baird & Klopf 1993, utils.normalizations.wireFittingInterpolation).
+Everything else — data pipeline, pixel models, EMA, val MAE, norm_stats, the
+negative mixture, near-expert positives, the generator branch — is combinedv2.
 
-    combinedv2:  Q(s, a)                      for a in [expert, CPs, negatives]
-    wirefit:     Q(s, a_i) for the CPs only, then wire-fit interpolation to get
-                 a value at the expert and at every negative
+  wirefit_mode = "none"
+      Byte-for-byte combinedv2: expert and every counter-example scored
+      directly. Exists so a batch can carry a same-script, same-seed control.
 
-Wire-fitting (Baird & Klopf 1993, `utils.normalizations.wireFittingInterpolation`)
-builds a continuous Q from N (action, value) "wires" such that
+  wirefit_mode = "interp_expert"
+      Estimator directly scores the control points (the wires) and the
+      counter-examples. The EXPERT's value is interpolated from the wires.
 
-    max_a Q_interp(a) = max_i q_i,   attained AT a control point.
+  wirefit_mode = "interp_negatives"
+      Estimator directly scores the control points and the EXPERT. The
+      COUNTER-EXAMPLES' values are interpolated from the wires.
 
-Three consequences, and they are the whole reason to try this:
+  wirefit_mode = "interp_both"
+      Estimator directly scores ONLY the control points. The expert and every
+      counter-example take their value from the wires, so the InfoNCE is a loss
+      on the wire-fitted Q alone — the raw network enters it only at the wires.
 
-  1. ARGMAX BECOMES EXACT. Selecting the best control point is no longer a
-     discrete approximation to argmax over the action space — it IS the global
-     argmax. CP-DFO exists to patch that approximation error; under wire-fitting
-     it is unnecessary, and refining can only move to a point whose interpolated
-     value is by construction <= max_i q_i. Inference refinement should be OFF
-     for this variant, and that is a testable prediction, not a preference.
+In every interpolating mode the wires are ALL control points, their positions
+detached (this branch trains the estimator, not the generator) and their values
+scored directly with gradient. The InfoNCE column layout is unchanged in every
+mode — 0 = expert, 1..k = top-k control points, then uniform / Langevin /
+noisy-expert — so the near-expert positive mask and every logged metric keep
+their meaning.
 
-  2. NO EXTRAPOLATION. The Q net is only ever queried at control points, in
-     training and at deploy. The train/deploy input mismatch that this project
-     spent months diagnosing cannot occur here by construction.
+── The property both modes lean on, and what it predicts ──────────────────────
+Wire-fitting satisfies  Q_interp(a) <= max_i q_i  for every action a, with
+equality exactly at the best wire (verified numerically over 20k probes).
 
-  3. CHEAPER. Q runs on N control points instead of N + 1 + n_uniform +
-     n_langevin actions, and the Langevin negatives can ascend the interpolant
-     with no network calls in the loop at all.
+  interp_expert     The top-k control-point counter-examples always include the
+                    best wire (top-k is selected BY Q), so the expert's
+                    interpolated value can at best TIE the strongest negative:
+                    the InfoNCE optimum is unreachable. Worse, the same wire
+                    value is pushed UP (as a wire near the expert) and DOWN (as a
+                    counter-example) in one loss. Expected to degrade — this is
+                    the regime the old include_cp_negatives runs lived in
+                    (train accuracy pinned at exactly 0.000).
 
-── Why the control points are NOT used as InfoNCE negatives ───────────────────
+  interp_both       Same bound, same failure: the best-wire negative is
+                    interpolated AT a wire, so its value is exactly max_i q_i.
 
-`wirefit_include_cp_negatives` defaults to False, unlike combinedv2 where the
-top-k CPs are the primary counter-examples. The reason is the bound above,
-verified numerically over 20k random probes: Q_interp(a) <= max_i q_i for EVERY
-action a, with equality exactly at the best wire. So an InfoNCE term asking the
-expert to outscore the best control point has an unreachable optimum — at best
-the expert TIES it, when a wire lands on the expert. The only gradient such a
-term supplies is "drag a wire onto the expert", which the MSE already provides.
+  The fix for both is infonce_positive_cp_radius > 0. Control points within the
+  radius of the expert then count as positives, and the loss is satisfied by
+  making a NEAR-EXPERT control point the best wire — which is what argmax over
+  control points needs at deployment. Optimising free scores against the loss
+  (100 CPs, 5 of them near the expert, top-30 negatives re-picked by value):
+      interp_expert  radius 0: loss 1.81, positive set wins 0.000
+                     radius 0.5: loss 0.0006, wins 1.000
+      interp_both    radius 0: loss 1.86, wins 0.000
+                     radius 0.5: loss 0.0022, wins 1.000
+  The radius only helps if the generator actually puts control points that
+  close to the expert. Its default is 0.
 
-(Note what is NOT true: interpolating at a NON-optimal wire does not return that
-wire's own value. Its denominator carries c * (max_j q_j - q_i) > 0, so the
-result is a blend of neighbours. Only the argmax wire reproduces its own value,
-where that term vanishes.)
+  interp_negatives  Counter-examples are bounded by the best wire; the expert is
+                    scored directly and is not. So the objective is satisfiable,
+                    and it is combinedv2 with the negatives smoothed through the
+                    control-point interpolant. Expected to hold performance.
 
-The meaningful contrast under wire-fitting is therefore the expert against
-OFF-cloud actions (uniform, Langevin, noisy-expert), which sit strictly below
-the best wire. Set the flag True to measure that rather than assume it.
+── wirefit_langevin_on_interpolant (default False, any mode) ──────────────────
+The Langevin-negative chain ascends the wire-fitted Q instead of the raw
+network: energy = -interp(control points, their no-grad scores, a). There is no
+network call inside the loop; the wire scores are the ones already computed to
+pick the top-k counter-examples. Consequences:
+  * The interpolant never exceeds the best wire, so the chain cannot find an
+    off-cloud action the raw network wrongly over-scores. Under interp_negatives
+    and interp_both that is consistent: off-cloud raw scores never enter the
+    loss. Under none and interp_expert it only makes those negatives softer.
+  * pen and kitchen DEPLOY with Langevin refinement on the raw network, whose
+    off-cloud shape is exactly what raw-chain negatives train. Expect the
+    interpolant chain to cost performance there. Argmax deployment
+    (pushing_pixels, libero) never reads off-cloud scores.
+  * Refining on the interpolant at deployment would be pointless: its maximum
+    IS the best control point, so it can only walk back to plain argmax.
+Measured on 200 random wires in a 9-D box (kitchen chain settings): chains end
+about as far from the nearest wire as uniform samples (1.04 vs 1.10), climb
+from 0.10 to 0.22 of the best wire's value, and stay diverse (14 of 16 chains
+end nearest distinct wires). They do not collapse onto the control points.
 
-── The generator's InfoNCE sign ───────────────────────────────────────────────
+── What is deliberately NOT changed ───────────────────────────────────────────
+The generator's sign-swapped InfoNCE stays on DIRECT evaluation. Interpolating
+there would make the energies a function of control-point POSITIONS, and the
+adversarial sign would then drag high-value wires toward random negatives and
+fight the MSE — measured on pushing states as 0.757 for the swapped sign against
+0.967 / 0.983 for cooperative / off.
 
-`generator_infonce_sign` is "swap" | "cooperative" | "off" (default
-"cooperative"). This is a real fork, not a detail:
-
-In combinedv2 the generator CANNOT change the expert's energy — Q(s, a_expert)
-is a direct forward pass that the control points never enter. Its only lever on
-InfoNCE is making its own points score competitively, so the sign-swapped
-(adversarial) term is coherent there.
-
-Under wire-fitting the expert's value is a function of the control-point
-POSITIONS, so dQ_interp(a_expert)/da_i != 0 and the incentive inverts:
-
-  swap        maximizes InfoNCE -> with q_i frozen, the only way to raise a
-              negative's interpolated value is to move high-q wires TOWARD that
-              negative and away from the expert. The negatives include uniform
-              random draws, so this pulls the cloud toward random actions and
-              fights the MSE. Expected to be degenerate; kept so that is
-              measured rather than assumed.
-  cooperative minimizes InfoNCE -> moves high-q wires toward the expert and away
-              from negatives. Aligned with MSE, and adds a coverage pressure MSE
-              alone does not give: MSE pulls the whole cloud, this pulls the
-              high-value wires specifically.
-  off         drops the term. Worth running, because under "cooperative" it may
-              be largely redundant with MSE.
+The gradient penalty also stays on the direct network over the full action set,
+exactly as combinedv2: it shapes the network that defines every wire value.
 
 Uses config.json to determine which environment to train on.
 Set "active_env" in config to switch between environments.
@@ -309,6 +327,14 @@ infonce_logit_clamp = env_training.get(
     "infonce_logit_clamp",
     training_shared.get("infonce_logit_clamp", 50.0),
 )
+# Control points closer than this L2 radius to the expert action are scored as
+# additional InfoNCE POSITIVES rather than negatives. With a precise generator
+# (cp_output_activation="linear") the nearest CP sits ~0.01 from the expert, so
+# plain InfoNCE trains the critic to reject the correct answer. 0 = off: the
+# unmodified lossInfoNCE call runs, bit-identical to before this option existed.
+infonce_positive_cp_radius = float(env_training.get(
+    "infonce_positive_cp_radius", training_shared.get("infonce_positive_cp_radius", 0.0)
+))
 
 # S6: Spectral norm on estimator
 use_spectral_norm = env_model.get(
@@ -323,39 +349,22 @@ cosine_t_max = env_training.get(
 )
 
 # ── Wire-fitting ────────────────────────────────────────────────────────────
-# c: the smoothing constant in the wire-fitting denominator
-#   ||a - a_i||^2 + c * (max_j q_j - q_i) + eps
-# It trades locality against how strongly a low-value wire is suppressed. Small
-# c -> nearly a nearest-wire lookup; large c -> the best wire dominates
-# everywhere and the interpolant flattens.
+wirefit_mode = str(env_training.get("wirefit_mode", training_shared.get("wirefit_mode", "none")))
+if wirefit_mode not in ("none", "interp_expert", "interp_negatives", "interp_both"):
+    raise ValueError("wirefit_mode must be none|interp_expert|interp_negatives|interp_both, "
+                     f"got {wirefit_mode!r}")
+# c in the wire-fitting denominator ||a - a_i||^2 + c * (max_j q_j - q_i) + eps.
+# Small c -> near nearest-wire lookup; large c -> the best wire dominates and the
+# interpolant flattens.
 wirefit_smoothing_param = float(env_training.get(
     "wirefit_smoothing_param", training_shared.get("wirefit_smoothing_param", 0.1)))
-# How many wires each query interpolates from. Clamped to control_points below,
+# Wires each query interpolates from; clamped to the cloud size at call time
 # because torch.topk requires k <= N.
-wirefit_top_k = int(env_training.get(
-    "wirefit_top_k", training_shared.get("wirefit_top_k", 10)))
-# See the module docstring: including the control points as InfoNCE negatives
-# makes the objective unsatisfiable by construction, because wire-fitting bounds
-# the expert's interpolated value by max_i q_i. Off by default; flip it to
-# measure that rather than assume it.
-wirefit_include_cp_negatives = bool(env_training.get(
-    "wirefit_include_cp_negatives",
-    training_shared.get("wirefit_include_cp_negatives", False)))
-# Langevin negatives ascend the INTERPOLANT rather than the raw Q net. That is
-# both more correct (the interpolant is the model's actual value function, and
-# the raw net is only meaningful at control points) and cheaper — the chain
-# needs the cached wire values and pairwise distances, with no network forward
-# per iteration.
+wirefit_top_k = int(env_training.get("wirefit_top_k", training_shared.get("wirefit_top_k", 10)))
+# Langevin negatives ascend the wire-fitted Q instead of the raw network (any mode).
 wirefit_langevin_on_interpolant = bool(env_training.get(
     "wirefit_langevin_on_interpolant",
-    training_shared.get("wirefit_langevin_on_interpolant", True)))
-# "swap" (combinedv2's adversarial sign) | "cooperative" | "off". See docstring.
-generator_infonce_sign = str(env_training.get(
-    "generator_infonce_sign",
-    training_shared.get("generator_infonce_sign", "cooperative")))
-if generator_infonce_sign not in ("swap", "cooperative", "off"):
-    raise ValueError("generator_infonce_sign must be swap|cooperative|off, got "
-                     f"{generator_infonce_sign!r}")
+    training_shared.get("wirefit_langevin_on_interpolant", False)))
 
 # Model parameters
 control_points = env_model.get("control_points", 50)
@@ -494,6 +503,8 @@ def load_dataset(split="train"):
             max_demos_per_task=env_config.get("max_demos_per_task"),
             crop_size=int(env_config.get("training", {}).get("image_crop_size", 0)),
             action_chunk=int(env_config.get("training", {}).get("action_chunk", 1)),
+            cameras=str(env_config.get("libero_cameras", "agentview+wrist")),
+            use_proprio=bool(env_config.get("libero_use_proprio", True)),
         )
     elif active_env == "dummy":
         from utils.datasets import DummyDataset
@@ -503,6 +514,16 @@ def load_dataset(split="train"):
             goal_radius=env_config.get("goal_radius", 0.05),
             n_dim=env_config.get("n_dim", 2),
             frame_stack=frame_stack,
+        )
+    elif active_env == "dummy_bimodal":
+        from utils.datasets import DummyBimodalDataset
+        return DummyBimodalDataset(
+            size=10000,
+            step_size=env_config.get("step_size", 0.1),
+            goal_radius=env_config.get("goal_radius", 0.05),
+            obstacle_radius=env_config.get("obstacle_radius", 0.25),
+            frame_stack=frame_stack,
+            ambiguous_frac=env_config.get("ambiguous_frac"),
         )
     else:
         raise ValueError(f"Unknown environment: {active_env}")
@@ -646,7 +667,6 @@ def main():
             hidden_dims=[cp_width for _ in range(cp_depth)],
             action_bounds=(action_bounds[0], action_bounds[1]),
             network_kind=cp_network_kind,
-            output_activation=cp_output_activation,
             width=cp_width,
             depth=cp_depth,
             use_spectral_norm=cp_use_spectral_norm,
@@ -661,9 +681,11 @@ def main():
             encoder_per_camera=encoder_per_camera,
             cond_fusion=cond_fusion,
             goal_dim=goal_dim,
+            output_activation=cp_output_activation,
         ).to(device)
     else:
-        print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm}")
+        print(f"CP generator: kind={cp_network_kind} width={cp_width} depth={cp_depth} sn={cp_use_spectral_norm} "
+              f"out={cp_output_activation}")
         control_point_generator = ControlPointGenerator(
             input_dim=dataset.state_shape,
             output_dim=dataset.action_shape,
@@ -671,10 +693,10 @@ def main():
             hidden_dims=[cp_width for _ in range(cp_depth)],
             action_bounds=(action_bounds[0], action_bounds[1]),
             network_kind=cp_network_kind,
-            output_activation=cp_output_activation,
             width=cp_width,
             depth=cp_depth,
             use_spectral_norm=cp_use_spectral_norm,
+            output_activation=cp_output_activation,
         ).to(device)
 
         q_resnet_final_act = bool(env_model.get("q_resnet_final_activation", True))
@@ -928,34 +950,21 @@ def main():
     action_max_tensor = torch.full((dataset.action_shape,), action_bounds[1], device=device)
     action_range_tensor = action_max_tensor - action_min_tensor
 
-    # ── Wire-fitting helper ─────────────────────────────────────────────────
-    # torch.topk needs k <= N, so the interpolation width is clamped to the
-    # cloud size. Doing it once here rather than per call keeps the failure a
-    # startup message instead of a shape error 40 minutes in.
-    wf_k = max(1, min(wirefit_top_k, control_points))
-    if wf_k != wirefit_top_k:
-        print(f"wirefit_top_k {wirefit_top_k} > control_points {control_points}; "
-              f"clamped to {wf_k}")
-    print(f"Wire-fitting: c={wirefit_smoothing_param} k={wf_k} "
-          f"cp_negatives={wirefit_include_cp_negatives} "
-          f"langevin_on_interpolant={wirefit_langevin_on_interpolant} "
-          f"generator_infonce_sign={generator_infonce_sign}")
+    print(f"Wire-fitting: mode={wirefit_mode} c={wirefit_smoothing_param} "
+          f"k={wirefit_top_k} (clamped to the cloud size per call) "
+          f"langevin_on_interpolant={wirefit_langevin_on_interpolant}")
 
     def wire_interp(wire_points, wire_values, query_points):
-        """Value at arbitrary actions, interpolated from the (point, value) wires.
+        """Wire-fit value at arbitrary actions from (control point, value) wires.
 
-        wire_points  (B, N, A) — the control points
-        wire_values  (B, N)    — the estimator's score at each control point
-        query_points (B, M, A) — expert and/or negatives
-        returns      (B, M)
-        Gradients flow to BOTH the wire positions and their values, which is what
-        gives the generator a positional gradient it does not have in combinedv2.
+        wire_points (B, N, A), wire_values (B, N), query_points (B, M, A) -> (B, M).
         """
         c = torch.full(wire_values.shape, wirefit_smoothing_param,
                        device=wire_values.device, dtype=wire_points.dtype)
         return wireFittingInterpolation(
             control_points=wire_points, interpolated_points=query_points,
-            control_point_values=wire_values, c=c, k=wf_k)
+            control_point_values=wire_values, c=c,
+            k=max(1, min(wirefit_top_k, wire_points.shape[1])))
 
     def persist_norm_stats() -> None:
         """Save norm_stats.pt for the eval-time simulation.
@@ -997,6 +1006,7 @@ def main():
             norm_stats["cond_dim"] = dataset.cond_dim
             norm_stats["in_channels"] = dataset.in_channels
             norm_stats["image_hw"] = [dataset._H, dataset._W]
+            norm_stats["libero_cameras"] = list(dataset.cameras)
             norm_stats["encoder_target_height"] = env_config.get("encoder_target_height", 128)
             norm_stats["encoder_target_width"] = env_config.get("encoder_target_width", 128)
             norm_stats["state_shape"] = list(dataset.state_shape)
@@ -1209,15 +1219,11 @@ def main():
                     p.requires_grad_(False)
 
                 if wirefit_langevin_on_interpolant:
-                    # Ascend the INTERPOLANT, which is the model's actual value
-                    # function — the raw net is only meaningful at the wires, and
-                    # ascending it off-cloud is exactly the extrapolation this
-                    # variant exists to remove. Also free: the chain needs the
-                    # cached wire values and pairwise distances, so there is no
-                    # network forward inside the loop at all.
+                    # Ascend the wire-fitted Q. No network call inside the loop:
+                    # the wires are the CPs and the no-grad scores that picked
+                    # the top-k counter-examples above.
                     def _neg_energy_fn(obs_expanded_lv, actions_batch):
-                        return -wire_interp(predicted_actions_detached,
-                                            cp_q_values, actions_batch)
+                        return -wire_interp(predicted_actions_detached, cp_q_values, actions_batch)
                 elif states.ndim == 4:
                     # PIXELS — LATE FUSION IS MANDATORY HERE. The chain calls the
                     # energy at every iteration; going through estimator.forward
@@ -1307,31 +1313,57 @@ def main():
             else:
                 counter_samples = cp_counter_samples
 
-            # WIRE-FIT: the control points are the wires, not counter-examples.
-            # Interpolating at a wire returns its own value, and wire-fitting
-            # bounds the expert's interpolated value by max_i q_i — so asking the
-            # expert to outscore the CPs is unsatisfiable by construction. Drop
-            # them unless explicitly asked for. See the module docstring.
-            if not wirefit_include_cp_negatives:
-                wf_neg = extra_neg_chunks + estimator_only_neg_chunks
-                counter_samples = (torch.cat(wf_neg, dim=1) if wf_neg
-                                   else cp_counter_samples[:, :0, :])
-
             total_counter_examples = counter_samples.shape[1]
-
+            
             # Concatenate expert action (index 0) with counter-examples
             all_actions = torch.cat([actions.unsqueeze(1), counter_samples], dim=1)
 
-            # WIRE-FIT: the estimator scores ONLY the control points; every other
-            # action's value is interpolated from those wires. Positions are
-            # detached so this branch trains the estimator, not the generator.
-            wire_values = q_score_candidates(
-                states, predicted_actions_detached).squeeze(-1)          # (B, N)
-            energies = wire_interp(predicted_actions_detached, wire_values,
-                                   all_actions)                          # (B, 1+M)
+            # Energy evaluation for InfoNCE — late-fused for pixels.
+            # wirefit_mode picks which entries are scored DIRECTLY and which are
+            # wire-fit interpolated from the control points. The column layout is
+            # identical in every mode (0 = expert, 1..k = top-k CPs, then the
+            # rest), so the positive-CP mask below keeps its meaning.
+            if wirefit_mode == "none":
+                energies = q_score_candidates(states, all_actions).squeeze(-1)
+            else:
+                # Wires = ALL control points: positions detached (trains the
+                # estimator only), values scored directly WITH gradient.
+                wire_values = q_score_candidates(
+                    states, predicted_actions_detached).squeeze(-1)            # (B, N)
+                if wirefit_mode == "interp_both":
+                    # The raw network enters the InfoNCE only at the wires.
+                    energies = wire_interp(
+                        predicted_actions_detached, wire_values, all_actions)
+                else:
+                    if wirefit_mode == "interp_expert":
+                        expert_energy = wire_interp(
+                            predicted_actions_detached, wire_values, actions.unsqueeze(1))
+                        negative_energy = q_score_candidates(
+                            states, counter_samples).squeeze(-1)
+                    else:  # interp_negatives
+                        expert_energy = q_score_candidates(
+                            states, actions.unsqueeze(1)).squeeze(-1)
+                        negative_energy = wire_interp(
+                            predicted_actions_detached, wire_values, counter_samples)
+                    energies = torch.cat([expert_energy, negative_energy], dim=1)
 
             # InfoNCE loss: expert action should have the highest Q value (lowest energy equivalent)
-            loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
+            if infonce_positive_cp_radius > 0.0:
+                # cp_counter_samples occupy columns 1..k of all_actions (ahead of
+                # uniform / Langevin / noisy-expert negatives). Multi-positive
+                # InfoNCE over the same clamped logits lossInfoNCE uses.
+                k_cp = cp_counter_samples.shape[1]
+                near_expert = (cp_counter_samples - actions.unsqueeze(1)).norm(dim=-1) < infonce_positive_cp_radius
+                pos_mask = torch.zeros_like(energies, dtype=torch.bool)
+                pos_mask[:, 0] = True
+                pos_mask[:, 1:1 + k_cp] = near_expert
+                clamped = energies.clamp(-infonce_logit_clamp, infonce_logit_clamp)
+                loss_estimator = -(
+                    torch.logsumexp(clamped.masked_fill(~pos_mask, float("-inf")), dim=1)
+                    - torch.logsumexp(clamped, dim=1)
+                ).mean()
+            else:
+                loss_estimator = lossInfoNCE(energies, logit_clamp=infonce_logit_clamp)
 
             # ─── Gradient penalty on the estimator (IBC App. B / WGAN-GP style) ─
             # Bounds ||∇_a E(s, a)|| around `gradient_penalty_margin` so the energy
@@ -1340,11 +1372,7 @@ def main():
             # actually evaluated by the InfoNCE loss.
             if gradient_penalty_weight > 0.0:
                 gp_actions = all_actions.detach().clone().requires_grad_(True)
-                # The penalty shapes the function the policy actually uses, which
-                # under wire-fitting is the interpolant — the raw net is only
-                # defined at the wires.
-                gp_energies = wire_interp(predicted_actions_detached,
-                                          wire_values, gp_actions)
+                gp_energies = q_score_candidates(states, gp_actions).squeeze(-1)
                 gp_grad = torch.autograd.grad(
                     outputs=gp_energies.sum(),
                     inputs=gp_actions,
@@ -1366,39 +1394,25 @@ def main():
             else:
                 loss_gradient_penalty = torch.tensor(0.0, device=device)
 
-            # ── Generator's InfoNCE term ────────────────────────────────────
-            # In combinedv2 the generator cannot move the expert's energy at all
-            # (Q(s, a_expert) is a direct forward pass the CPs never enter), so
-            # its only lever is making its own points competitive and the
-            # sign-swapped adversarial term is coherent. Under wire-fitting the
-            # expert's value IS a function of the wire POSITIONS, so this branch
-            # hands the generator a positional gradient and the incentive
-            # inverts — see `generator_infonce_sign` in the module docstring.
-            #
-            # Wires are NOT detached here: that is the entire point.
-            # Noisy-expert stays excluded, as in combinedv2.
+            # Generator receives InfoNCE with opposite sign.
+            # Rebuild counter samples from non-detached control points so gradients reach generator,
+            # while freezing estimator parameters so this branch updates only the generator.
+            # IMPORTANT: noisy-expert (estimator_only_neg_chunks) is intentionally
+            # excluded here — see comment above. We re-expand states to match the
+            # smaller action set since states_expanded was sized for the estimator path.
+            cp_counter_samples_for_generator = torch.gather(predicted_actions, dim=1, index=gather_idx)
             if extra_neg_chunks:
-                counter_samples_for_generator = torch.cat(extra_neg_chunks, dim=1)
-            else:
-                counter_samples_for_generator = predicted_actions[:, :0, :]
-            if wirefit_include_cp_negatives:
                 counter_samples_for_generator = torch.cat(
-                    [torch.gather(predicted_actions, dim=1, index=gather_idx),
-                     counter_samples_for_generator], dim=1)
+                    [cp_counter_samples_for_generator] + extra_neg_chunks, dim=1,
+                )
+            else:
+                counter_samples_for_generator = cp_counter_samples_for_generator
 
-            all_actions_for_generator = torch.cat(
-                [actions.unsqueeze(1), counter_samples_for_generator], dim=1)
+            all_actions_for_generator = torch.cat([actions.unsqueeze(1), counter_samples_for_generator], dim=1)
             for param in estimator.parameters():
                 param.requires_grad_(False)
-            if generator_infonce_sign == "off" or all_actions_for_generator.shape[1] < 2:
-                loss_infonce_generator = torch.tensor(0.0, device=device)
-            else:
-                wire_values_gen = q_score_candidates(
-                    states, predicted_actions).squeeze(-1)
-                energies_for_generator = wire_interp(
-                    predicted_actions, wire_values_gen, all_actions_for_generator)
-                loss_infonce_generator = lossInfoNCE(
-                    energies_for_generator, logit_clamp=infonce_logit_clamp)
+            energies_for_generator = q_score_candidates(states, all_actions_for_generator).squeeze(-1)
+            loss_infonce_generator = lossInfoNCE(energies_for_generator, logit_clamp=infonce_logit_clamp)
             for param in estimator.parameters():
                 param.requires_grad_(True)
 
@@ -1431,15 +1445,7 @@ def main():
             optimizer_generator.zero_grad()
 
             loss_estimator_total = info_nce_weight * loss_estimator + loss_gradient_penalty
-            # swap        = combinedv2's adversarial sign (expert should NOT stand out)
-            # cooperative = help the expert stand out; the wires move toward it
-            # off         = drop the term entirely
-            if generator_infonce_sign == "swap":
-                loss_generator_total = loss_generator - generator_infonce_weight * loss_infonce_generator
-            elif generator_infonce_sign == "cooperative":
-                loss_generator_total = loss_generator + generator_infonce_weight * loss_infonce_generator
-            else:
-                loss_generator_total = loss_generator
+            loss_generator_total = loss_generator - generator_infonce_weight * loss_infonce_generator
             total_loss = loss_generator_total + loss_estimator_total
             total_loss.backward()
 

@@ -746,6 +746,12 @@ SEARCH_SPACE: dict[str, dict] = {
     # The estimator scores only the control points and every other action's
     # value is wire-fit interpolated from them. Without these entries the keys
     # are silently dropped and every trial trains the default recipe.
+    # wirefit_q3c_training.py: which InfoNCE entries the estimator scores
+    # directly vs. interpolates from the control points. "none" = combinedv2.
+    "wirefit_mode": {
+        "values": ["none", "interp_expert", "interp_negatives", "interp_both"], "type": "str",
+        "location": "env_training",
+    },
     "wirefit_smoothing_param": {
         "values": [0.01, 0.1, 1.0], "type": "float", "location": "env_training",
     },
