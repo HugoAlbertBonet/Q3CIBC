@@ -1,0 +1,21 @@
+# LIBERO-Goal — rvLiberoReeval500, packed. Submit THIS instead of rvLiberoReeval500.txt.
+#
+# Submit with:  bash submit_experiments.sh batches/rvPackedLiberoReeval500.txt
+#
+# Several runs share one SLURM job, executed one after another. Each run is a
+# self-contained `hyperparam_search.py --run` (trains, evaluates, appends its own
+# trial record), so packing changes nothing about the results.
+#
+# submit_experiments.sh runs each line under `set -euo pipefail`, so every run is
+# followed by `|| echo ... FAILED` — one failed run does not abort the rest of its
+# job. Each run's config is identical to the unpacked, validated file above.
+#
+# Packing: first-fit decreasing on measured run durations from trials.jsonl.
+# Expected hours per job <= 26 h; worst-case (slowest observed per run
+# type) <= 40 h, keeping >= 8 h margin to the 48 h wall.
+#
+# 6 runs -> 1 jobs.
+
+
+# ── job 1: 6 runs, expected ~6.0 h, worst observed ~12.0 h
+echo "=== packed run 1/6 (reeval trials 117 118 119) ==="; uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 117 118 119 --num-eval-seeds 500 || echo "=== packed run 1/6 FAILED (exit $?) — continuing ==="; echo "=== packed run 2/6 (reeval trials 120 121 122) ==="; uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 120 121 122 --num-eval-seeds 500 || echo "=== packed run 2/6 FAILED (exit $?) — continuing ==="; echo "=== packed run 3/6 (reeval trials 123 124 125) ==="; uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 123 124 125 --num-eval-seeds 500 || echo "=== packed run 3/6 FAILED (exit $?) — continuing ==="; echo "=== packed run 4/6 (reeval trials 126 127 128) ==="; uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 126 127 128 --num-eval-seeds 500 || echo "=== packed run 4/6 FAILED (exit $?) — continuing ==="; echo "=== packed run 5/6 (reeval trials 129 130 131) ==="; uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 129 130 131 --num-eval-seeds 500 || echo "=== packed run 5/6 FAILED (exit $?) — continuing ==="; echo "=== packed run 6/6 (reeval trials 132 133 134) ==="; uv run --managed-python --extra libero python scripts/reeval_trials.py --script combinedv2_cpascounter_training.py --active-env libero_goal_pixels --trials 132 133 134 --num-eval-seeds 500 || echo "=== packed run 6/6 FAILED (exit $?) — continuing ==="
