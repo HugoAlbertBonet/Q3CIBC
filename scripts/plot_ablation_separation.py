@@ -4,8 +4,8 @@
 Rebuilds the data from trials.jsonl (never hand-typed): for each ablation batch it
 matches every command line to its scored training record by exact fixed params,
 takes the reference arm (which trains with separation_loss="entropy") and the
-"separation_loss=separation" arm, 3 seeds each, and plots every seed plus the
-mean +/- std, with the paired separation - entropy difference per environment.
+"separation_loss=separation" arm, and plots mean +/- std per environment in a
+compact, untitled paper figure set in Palatino Linotype (PNG + PDF).
 
 Usage:
     uv run python scripts/plot_ablation_separation.py --out results/ablation/separation_vs_entropy.png
@@ -66,15 +66,16 @@ def load_arm_values(batch: str, env: str) -> tuple[dict, dict, int]:
             {s: r["success_rate"] * 100 for s, r in sep.items()}, eps)
 
 
-def paired_p(d: list[float]) -> float | None:
-    if len(d) < 2 or st.stdev(d) == 0:
-        return None
-    try:
-        from scipy import stats
-    except ImportError:
-        return None
-    t = st.mean(d) / (st.stdev(d) / sqrt(len(d)))
-    return float(2 * (1 - stats.t.cdf(abs(t), len(d) - 1)))
+def use_palatino() -> str:
+    """Register Palatino Linotype and return its family name; raise if unavailable."""
+    from matplotlib import font_manager as fm
+    name = "Palatino Linotype"
+    if not any(f.name == name for f in fm.fontManager.ttflist):
+        for path in sorted(Path("/mnt/c/Windows/Fonts").glob("pala*.ttf")) + sorted(Path.home().glob(".fonts/pala*.ttf")):
+            fm.fontManager.addfont(str(path))
+    if not any(f.name == name for f in fm.fontManager.ttflist):
+        raise SystemExit("Palatino Linotype not found (looked in matplotlib, /mnt/c/Windows/Fonts, ~/.fonts)")
+    return name
 
 
 def main() -> int:
@@ -82,60 +83,46 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=ROOT / "results/ablation/separation_vs_entropy.png")
     args = ap.parse_args()
 
-    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10.5, "axes.edgecolor": GRID,
-                         "axes.labelcolor": TEXT2, "xtick.color": TEXT2, "ytick.color": TEXT2})
-    fig, ax = plt.subplots(figsize=(9.2, 5.4), facecolor=SURFACE)
+    family = use_palatino()
+    plt.rcParams.update({"font.family": family, "font.size": 11, "axes.edgecolor": GRID, "axes.labelcolor": TEXT2,
+                         "xtick.color": TEXT, "ytick.color": TEXT2, "pdf.fonttype": 42, "ps.fonttype": 42})
+    fig, ax = plt.subplots(figsize=(5.6, 3.4), facecolor=SURFACE)
     ax.set_facecolor(SURFACE)
 
-    offset, jitter = 0.17, [-0.035, 0.0, 0.035]
-    ticklabels, ymin = [], 100.0
+    offset, lows = 0.16, []
     for gi, (label, batch, env) in enumerate(ENVS):
-        ent, sep, eps = load_arm_values(batch, env)
-        seeds = sorted(set(ent) & set(sep))
-        diffs = [sep[s] - ent[s] for s in seeds]
+        ent, sep, _ = load_arm_values(batch, env)
         for vals, color, dx in ((ent, C_ENT, -offset), (sep, C_SEP, offset)):
-            v = [vals[s] for s in seeds]
-            ymin = min(ymin, *v)
-            xs = [gi + dx + jitter[i % 3] for i in range(len(v))]
-            ax.scatter(xs, v, s=64, color=color, edgecolor=SURFACE, linewidth=2, zorder=3, alpha=0.9)
+            v = list(vals.values())
             m, sd = st.mean(v), (st.stdev(v) if len(v) > 1 else 0.0)
-            xm = gi + dx + (0.12 if dx > 0 else -0.12)
-            ax.plot([xm, xm], [m - sd, m + sd], color=color, linewidth=2, solid_capstyle="round", zorder=2)
-            ax.plot([xm - 0.035, xm + 0.035], [m, m], color=color, linewidth=2.6, solid_capstyle="round", zorder=2)
-            ax.text(xm + (0.05 if dx > 0 else -0.05), m, f"{m:.1f}", color=TEXT2, fontsize=9,
+            lows.append(m - sd)
+            x = gi + dx
+            ax.plot([x, x], [m - sd, m + sd], color=color, linewidth=2, solid_capstyle="round", zorder=2)
+            ax.scatter([x], [m], s=70, color=color, edgecolor=SURFACE, linewidth=2, zorder=3)
+            ax.text(x + (0.07 if dx > 0 else -0.07), m, f"{m:.1f}", color=TEXT2, fontsize=9.5,
                     ha="left" if dx > 0 else "right", va="center")
-        p = paired_p(diffs)
-        dm = st.mean(diffs)
-        ptxt = f"p = {p:.2f}" if p is not None else "p n/a"
-        # Short enough to fit inside its own group's slot (the long form collided).
-        ax.text(gi, 101.4, f"Δ {dm:+.1f} pts · {ptxt}", ha="center", va="bottom", color=TEXT, fontsize=9.5)
-        ticklabels.append(f"{label}\n{len(seeds)} seeds · {eps} eval episodes")
 
-    lo = max(0, 5 * int((ymin - 6) // 5))
-    ax.set_ylim(lo, 106)
-    ax.set_yticks(range(lo, 101, 5))
-    ax.set_xlim(-0.6, len(ENVS) - 0.4)
+    # Round ticks that always include 100, so points near the ceiling have a gridline to read against.
+    lo = max(0, 10 * int((min(lows) - 1) // 10))
+    ax.set_ylim(lo - 1, 101.5)
+    ax.set_yticks(range(lo, 101, 10))
+    ax.set_xlim(-0.55, len(ENVS) - 0.45)
     ax.set_xticks(range(len(ENVS)))
-    ax.set_xticklabels(ticklabels)
+    ax.set_xticklabels([e[0] for e in ENVS])
     ax.set_ylabel("Success rate (%)")
     ax.grid(axis="y", color=GRID, linewidth=1, linestyle="-")
     ax.set_axisbelow(True)
-    for side in ("top", "right", "left"):
+    for side in ("top", "right", "left", "bottom"):  # the lowest gridline is the baseline
         ax.spines[side].set_visible(False)
     ax.tick_params(axis="both", length=0)
-    fig.suptitle("Separation loss vs entropy loss (q3c ablation)", x=0.06, ha="left", y=0.975,
-                 color=TEXT, fontsize=13, fontweight="semibold")
-    ax.set_title("Dots: individual training seeds. Line: mean ± std. Δ = paired separation − entropy. DFO 0 iterations.",
-                 loc="left", color=TEXT2, fontsize=9.5, pad=18)
-    handles = [Line2D([], [], marker="o", linestyle="", markersize=8, markerfacecolor=C_ENT, markeredgecolor=SURFACE,
-                      markeredgewidth=2, label="Entropy loss (reference)"),
-               Line2D([], [], marker="o", linestyle="", markersize=8, markerfacecolor=C_SEP, markeredgecolor=SURFACE,
-                      markeredgewidth=2, label="Separation loss")]
-    leg = ax.legend(handles=handles, loc="lower left", frameon=False, fontsize=9.5, labelcolor=TEXT)
+    handles = [Line2D([], [], marker="o", linestyle="", markersize=8, markerfacecolor=c, markeredgecolor=SURFACE,
+                      markeredgewidth=2, label=l) for c, l in ((C_ENT, "Entropy loss"), (C_SEP, "Separation loss"))]
+    ax.legend(handles=handles, loc="lower left", frameon=False, fontsize=10, labelcolor=TEXT, handletextpad=0.3)
     fig.tight_layout()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(args.out, dpi=200, facecolor=SURFACE)
-    print(f"-> {args.out}")
+    fig.savefig(args.out, dpi=300, facecolor=SURFACE)
+    fig.savefig(args.out.with_suffix(".pdf"), facecolor=SURFACE)
+    print(f"-> {args.out} (+ .pdf), font: {family}")
     return 0
 
 
