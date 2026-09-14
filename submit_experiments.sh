@@ -89,7 +89,7 @@ case "$cluster" in
 #SBATCH --qos=shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=${CPUS:-4}
 #SBATCH --gres=${snoopy_gres}
 #SBATCH --mem=${MEM:-32G}
 #SBATCH --time=36:00:00"

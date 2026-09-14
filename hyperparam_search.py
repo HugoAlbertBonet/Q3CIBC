@@ -824,6 +824,15 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # DataLoader worker processes. Every trainer reads it from the env block
+    # (env_config["dataloader_num_workers"], default 4 for pixels, 0 otherwise).
+    # Pushing-pixels steps are bounded by per-sample JPEG decoding, so a job that
+    # asks SLURM for more CPUs needs this pinned to actually use them.
+    "dataloader_num_workers": {
+        "values": [0, 4, 8, 12, 16],
+        "type": "int",
+        "location": "env",
+    },
     # Control-point generator output head. "tanh" (default, historical) squashes
     # into the action box; "linear" leaves bounding to the consumer. tanh's
     # vanishing gradient near the bounds capped particle-16D argmax at 0%.

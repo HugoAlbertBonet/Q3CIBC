@@ -1,0 +1,34 @@
+# Consistency Policy — pushing_pixels, teacher AND student in one job (replaces
+# cpPushingPixelsTeacher.txt + cpPushingPixelsStudent.txt).
+#
+# Submit with:  CPUS=12 MEM=48G ./submit_experiments.sh batches/cpPushingPixels.txt
+#
+# Consistency Policy (Prasad et al., 2024, arXiv 2405.07503), run tag cpv2:
+# consistency_policy_training.py + utils/consistency.py (EDM teacher, CTM student
+# warm-started from it; see the cpv1 commit 71e224ce for the full algorithm).
+#
+# cpv2 schedule (snoopy1 deadline): 2 seeds, one config per env.
+#   teacher steps = the env's best Diffusion Policy step count, so teacher and DP
+#                   get the same training budget;
+#   student steps = 0.5 x teacher (cpv1 used the official 1.25x). A student step
+#                   costs ~4.4x a teacher step (five network passes), so at 1.25x
+#                   the distillation was ~85% of each run.
+# The trial record scores the 1-step student; cpReeval re-scores teacher (Heun,
+# 159 NFE) and 3-step chaining.
+#
+# Recipe = pushingPixelsDP (conv_maxpool encoder 180x240, dense_resnet 1024x1,
+# frame_stack 2, bs128, lr 3e-4) at 150k teacher steps: DP with this recipe scored
+# 93% at 150k (7.1-7.8 h) vs 96% at 750k (36-38 h), so 150k keeps the comparison
+# fair at a fifth of the cost. Steps are bounded by per-sample JPEG decoding, so
+# the job asks for 12 CPUs and pins dataloader_num_workers=12. The student's
+# encoder is frozen and this dataset has no augmentation, so the student trains
+# on a one-pass feature cache (checked against a fresh encode) and the teacher
+# and student fit in one job, hence one batch instead of teacher + student.
+#
+# 2 jobs.
+
+# ── CP pushing pixels seed=0  teacher 150000 / cached student 75000, 12 loader workers
+uv run --managed-python python hyperparam_search.py consistency_policy_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"cp_phase":"both","cp_run_tag":"cpv2","cp_student_feature_cache":true,"cp_student_steps":75000,"cp_teacher_steps":150000,"dataloader_num_workers":12,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"frame_stack":2,"learning_rate":0.0003,"time_emb_dim":128,"training_steps":150000,"trial_seed":0}'
+
+# ── CP pushing pixels seed=1  teacher 150000 / cached student 75000, 12 loader workers
+uv run --managed-python python hyperparam_search.py consistency_policy_training.py --run --active-env pushing_pixels --fixed-params '{"batch_size":128,"cp_phase":"both","cp_run_tag":"cpv2","cp_student_feature_cache":true,"cp_student_steps":75000,"cp_teacher_steps":150000,"dataloader_num_workers":12,"denoiser_depth":1,"denoiser_network_kind":"dense_resnet","denoiser_width":1024,"frame_stack":2,"learning_rate":0.0003,"time_emb_dim":128,"training_steps":150000,"trial_seed":1}'
