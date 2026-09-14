@@ -68,24 +68,30 @@ mkdir -p "$out_dir"
 
 # Cluster profile, picked from the submitting host (override with Q3C_CLUSTER).
 #   CARC (default): whole GPU on a100|l40s|a40, 48 h wall.
-#   snoopy1 (USC lab node, 8x RTX A6000, each split into 48 shards): the lab's
-#   `shared` QOS caps the whole `lab` account at 2 GPUs = 96 shards, 32 CPUs,
-#   250G and 36 h per job, so jobs beyond the cap wait in the queue (reason
-#   QOSGrpGRES) and we never hold more than 2 GPUs' worth at once. A shard is a
-#   scheduling unit, not memory isolation: SHARDS (default 12 = 1/4 GPU) sets
-#   how many of our jobs fit under the cap; MEM defaults to 24G so 8 fit in 250G.
+#   snoopy1 (USC lab node, 8x RTX A6000, each also split into 48 shards): the
+#   lab's `shared` QOS caps the whole `lab` account at gres/gpu=2 and, as a
+#   SEPARATE limit, gres/shard=96, plus 32 CPUs, 250G and 36 h per job. Jobs
+#   past the cap wait in the queue (QOSGrpGRES).
+#   Default is one whole GPU per job, so the QOS itself keeps us at <= 2 GPUs.
+#   Measured 2026-09-14: pen q3c on a whole idle A6000 runs 0.38 s/step (82%
+#   util, GPU-bound: ~10.6 h per 100k-step run); shard jobs are placed on GPUs
+#   that already hold shards, and particle-16D on a shard of a GPU another user
+#   saturated ran 2.3x slower than on a whole GPU. SHARDS=N switches to
+#   --gres=shard:N. Do not mix the two in one push: the caps are separate, so
+#   2 GPUs + 96 shards would be 4 GPUs' worth.
 #   uv, its cache and its managed Python live under /scr/$USER (home is small).
 cluster=${Q3C_CLUSTER:-$(hostname -s)}
 case "$cluster" in
   snoopy*)
+    if [[ -n "${SHARDS:-}" ]]; then snoopy_gres="shard:${SHARDS}"; else snoopy_gres="gpu:1"; fi
     sbatch_resources="#SBATCH --account=lab
 #SBATCH --partition=partition-1
 #SBATCH --qos=shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --gres=shard:${SHARDS:-12}
-#SBATCH --mem=${MEM:-24G}
+#SBATCH --gres=${snoopy_gres}
+#SBATCH --mem=${MEM:-32G}
 #SBATCH --time=36:00:00"
     env_setup="export PATH=/scr/\$USER/uv/bin:\$PATH
 export UV_CACHE_DIR=/scr/\$USER/uv/cache
