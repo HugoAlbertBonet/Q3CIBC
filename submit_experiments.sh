@@ -66,7 +66,46 @@ mkdir -p "$out_dir"
 # (No pre-sync is done here on purpose — a bare `uv sync` would prune the extra
 # packages the jobs depend on.)
 
-echo "Batch: ${batch_name}  (${#commands[@]} jobs)"
+# Cluster profile, picked from the submitting host (override with Q3C_CLUSTER).
+#   CARC (default): whole GPU on a100|l40s|a40, 48 h wall.
+#   snoopy1 (USC lab node, 8x RTX A6000, each split into 48 shards): the lab's
+#   `shared` QOS caps the whole `lab` account at 2 GPUs = 96 shards, 32 CPUs,
+#   250G and 36 h per job, so jobs beyond the cap wait in the queue (reason
+#   QOSGrpGRES) and we never hold more than 2 GPUs' worth at once. A shard is a
+#   scheduling unit, not memory isolation: SHARDS (default 12 = 1/4 GPU) sets
+#   how many of our jobs fit under the cap; MEM defaults to 24G so 8 fit in 250G.
+#   uv, its cache and its managed Python live under /scr/$USER (home is small).
+cluster=${Q3C_CLUSTER:-$(hostname -s)}
+case "$cluster" in
+  snoopy*)
+    sbatch_resources="#SBATCH --account=lab
+#SBATCH --partition=partition-1
+#SBATCH --qos=shared
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=shard:${SHARDS:-12}
+#SBATCH --mem=${MEM:-24G}
+#SBATCH --time=36:00:00"
+    env_setup="export PATH=/scr/\$USER/uv/bin:\$PATH
+export UV_CACHE_DIR=/scr/\$USER/uv/cache
+export UV_PYTHON_INSTALL_DIR=/scr/\$USER/uv/python"
+    ;;
+  *)
+    sbatch_resources="#SBATCH --account=biyik_1165
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1
+#SBATCH --constraint=\"a100|l40s|a40\"
+#SBATCH --mem=32G
+#SBATCH --time=48:00:00"
+    env_setup=""
+    ;;
+esac
+
+echo "Batch: ${batch_name}  (${#commands[@]} jobs)  cluster profile: ${cluster}"
 echo "Per-job scripts and logs: ${out_dir}/"
 echo
 
@@ -78,21 +117,14 @@ for cmd in "${commands[@]}"; do
   job_script="${out_dir}/${batch_name}_${tag}.sh"
   cat > "$job_script" <<EOF
 #!/usr/bin/env bash
-#SBATCH --account=biyik_1165
-#SBATCH --partition=gpu
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:1
-#SBATCH --constraint="a100|l40s|a40"
-#SBATCH --mem=32G
-#SBATCH --time=48:00:00
+${sbatch_resources}
 #SBATCH --job-name=${batch_name}_${tag}
 #SBATCH --output=${out_dir}/${batch_name}_${tag}.out
 #SBATCH --error=${out_dir}/${batch_name}_${tag}.err
 
 set -euo pipefail
 cd "${PWD}"
+${env_setup}
 
 # The shared .venv is built ONCE manually before submitting (see the NOTE near
 # the top of this script). Force every uv run in this job to be READ-ONLY
