@@ -3,8 +3,8 @@
 Same convention as the other bench_inference_* scripts: random weights (latency
 depends on shapes and the graph, not weight values), warm-up, CUDA-synchronised
 timing, batch 1 = one env step. Each environment's architecture is read from the
-reference line of its reviewer batch (batches/rv*.txt, or q3cParticle16gpoff.txt
-for particle), so the benchmark times exactly the networks those jobs train.
+reference line of its reviewer batch (batches/rv*.txt; the nsweep* N-sweep batches
+for particle and pen), so the benchmark times exactly the networks those jobs train.
 Only N (and top_k, clamped to N) varies.
 
 Eval mode timed is the one each environment is scored with: argmax everywhere,
@@ -22,15 +22,16 @@ import torch
 
 ROOT = Path(__file__).resolve().parent
 CFG = json.load(open(ROOT / "config_json/config.json"))
-GRIDS = {"particle": [1, 2, 3, 5, 8, 10, 20], "pen": [1, 5, 20, 50, 100, 200], "kitchen": [1, 50, 100, 200],
+GRIDS = {"particle": [1, 2, 5, 10, 20, 50, 100, 200], "pen": [1, 2, 5, 10, 20, 50, 100, 200], "kitchen": [1, 50, 100, 200],
          "pushing_pixels": [1, 2, 5, 8, 10, 20, 50, 100], "libero_goal_pixels": [1, 2, 5, 8, 10, 20, 50, 100]}
-SRC = {"particle": "q3cParticle16gpoff.txt", "pen": "rvPen.txt", "kitchen": "rvKitchen.txt",
+SRC = {"particle": "nsweepParticle16.txt", "pen": "nsweepPen.txt", "kitchen": "rvKitchen.txt",
        "pushing_pixels": "rvPushingPixels.txt", "libero_goal_pixels": "rvLibero.txt"}
 
 
 def ref_params(env):
+    # first --fixed-params in the file; packed job lines start with `echo`, not `uv run`
     for line in open(ROOT / "batches" / SRC[env]):
-        if line.startswith("uv run"):
+        if "--fixed-params" in line and not line.startswith("#"):
             tok = shlex.split(line); return json.loads(tok[tok.index("--fixed-params") + 1])
 
 
