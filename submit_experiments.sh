@@ -170,7 +170,9 @@ EOF
   chmod +x "$job_script"
 
   # Submit and capture the job id ("Submitted batch job 12345")
-  submit_out=$(sbatch "$job_script")
+  # DEPENDENCY=afterany:<id>:<id> makes every job of this batch wait for those
+  # jobs (sbatch has no environment variable for --dependency).
+  submit_out=$(sbatch ${DEPENDENCY:+--dependency="$DEPENDENCY"} "$job_script")
   job_id=$(awk '{print $NF}' <<<"$submit_out")
   submitted_ids+=("$job_id")
   printf '  [%s] %s  →  job %s\n' "$tag" "$(basename "$job_script")" "$job_id"
