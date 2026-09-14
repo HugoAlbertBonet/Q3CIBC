@@ -816,6 +816,14 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "float",
         "location": "env_training",
     },
+    # combinedv2: epsilon added to pairwise distances in the "separation" loss
+    # (trainer default 1.0). Pinnable so a separation run cannot inherit a
+    # different value from the cluster's config.json.
+    "separation_epsilon": {
+        "values": [0.01, 0.05, 0.1, 1.0],
+        "type": "float",
+        "location": "env_training",
+    },
     # Control-point generator output head. "tanh" (default, historical) squashes
     # into the action box; "linear" leaves bounding to the consumer. tanh's
     # vanishing gradient near the bounds capped particle-16D argmax at 0%.
