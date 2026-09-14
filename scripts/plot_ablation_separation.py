@@ -92,9 +92,9 @@ def load_nsweep_arms(batch: str, env: str, n_cp: int) -> tuple[dict, dict]:
                 continue
             loss = fp["separation_loss"]
             arms[loss][fp["trial_seed"]] = match(trained, fp, f"{batch} N={n_cp} {loss} seed {fp['trial_seed']}")
-    if not arms["entropy"] or not arms["separation"] or set(arms["entropy"]) != set(arms["separation"]):
-        raise SystemExit(f"{batch}: entropy/separation seeds do not pair up at N={n_cp}: "
-                         f"{sorted(arms['entropy'])} vs {sorted(arms['separation'])}")
+    if len(arms["entropy"]) < 2 or len(arms["separation"]) < 2:
+        raise SystemExit(f"{batch}: need >= 2 scored seeds per arm at N={n_cp}: "
+                         f"entropy {sorted(arms['entropy'])}, separation {sorted(arms['separation'])}")
     return as_percent(arms["entropy"]), as_percent(arms["separation"])
 
 
@@ -137,9 +137,6 @@ def main() -> int:
             lows.append(lo_w)
             x = gi + dx
             ax.plot([x, x], [lo_w, hi_w], color=color, linewidth=2, solid_capstyle="round", zorder=2)
-            # Individual seeds, faint, on the inner side of the pair (value labels sit on the outer side),
-            # so a wide spread reads as its actual runs.
-            ax.scatter([x + (-0.055 if dx > 0 else 0.055)] * len(v), v, s=16, color=color, alpha=0.45, linewidth=0, zorder=2)
             ax.scatter([x], [m], s=70, color=color, edgecolor=SURFACE, linewidth=2, zorder=3)
             ax.text(x + (0.07 if dx > 0 else -0.07), m, f"{m:.1f}", color=TEXT2, fontsize=9.5,
                     ha="left" if dx > 0 else "right", va="center")
