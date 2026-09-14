@@ -122,6 +122,8 @@ def pixel_builders(env, p, dev):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--envs", nargs="+", default=list(GRIDS))
+    ap.add_argument("--grid", type=int, nargs="+", default=None,
+                    help="N values to time for every env (default: the per-env GRIDS)")
     ap.add_argument("--num-steps", type=int, default=200)
     ap.add_argument("--warmup", type=int, default=20)
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
@@ -135,11 +137,12 @@ def main():
         make = (pixel_builders if env in ("pushing_pixels", "libero_goal_pixels") else flat_builders)(env, p, dev)
         # Untimed pass on the first model: CUDA context / cuBLAS handles / allocator
         # warm-up otherwise lands on the first N timed (N=1 read ~1.7x slower).
-        fns, _ = make(GRIDS[env][0])
+        grid = a.grid or GRIDS[env]
+        fns, _ = make(grid[0])
         for fn in fns.values():
             timeit(fn, dev, 5, max(a.warmup, 50))
         del fns
-        for N in GRIDS[env]:
+        for N in grid:
             fns, params = make(N)
             for mode, fn in fns.items():
                 steps = a.num_steps if mode == "argmax" else max(20, a.num_steps // 10)

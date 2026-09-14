@@ -1,0 +1,9 @@
+env,N,eval,ms_mean,ms_median,ms_std,params_m,device
+pushing_pixels,1,argmax,1.275,1.221,0.212,2.821,cuda
+pushing_pixels,2,argmax,1.259,1.183,0.257,2.822,cuda
+pushing_pixels,5,argmax,1.27,1.209,0.23,2.823,cuda
+pushing_pixels,10,argmax,1.193,1.169,0.086,2.826,cuda
+pushing_pixels,20,argmax,1.34,1.295,0.225,2.831,cuda
+pushing_pixels,50,argmax,1.286,1.239,0.174,2.847,cuda
+pushing_pixels,100,argmax,1.281,1.241,0.166,2.872,cuda
+pushing_pixels,200,argmax,1.291,1.225,0.231,2.924,cuda
