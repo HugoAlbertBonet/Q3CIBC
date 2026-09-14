@@ -9,7 +9,8 @@ compact, untitled paper figure set in Palatino Linotype (PNG + PDF).
   Pushing / LIBERO: one-at-a-time ablation batches; the reference arm trains with
                     separation_loss="entropy", the "separation_loss=separation" arm
                     changes only that key.
-  Particle (16D):   the N=5 runs of the N-sweep batch (argmax recipe), entropy vs
+  Particle (16D):   the N=5 runs of the N-sweep batch plus nsweepParticle16SepSeeds
+                    (argmax recipe), entropy vs
                     separation at identical fixed params, every scored seed of each arm.
 
 Whiskers are clipped to the 0-100 % range success rates can take.
@@ -79,26 +80,27 @@ def load_arm_values(batch: str, env: str) -> tuple[dict, dict]:
     return as_percent(ref), as_percent(sep)
 
 
-def load_nsweep_arms(batch: str, env: str, n_cp: int) -> tuple[dict, dict]:
-    """Entropy vs separation at N=n_cp from an N-sweep batch (packed job lines)."""
+def load_nsweep_arms(batches: tuple[str, ...], env: str, n_cp: int) -> tuple[dict, dict]:
+    """Entropy vs separation at N=n_cp from N-sweep batches (packed job lines)."""
     trained = scored_records(env)
     arms: dict[str, dict[int, dict]] = {"entropy": {}, "separation": {}}
-    for line in open(ROOT / "batches" / batch):
-        if line.startswith("#"):
-            continue
-        for m in FIXED_RE.finditer(line):
-            fp = json.loads(m.group(1))
-            if fp["control_points"] != n_cp:
+    for batch in batches:
+        for line in open(ROOT / "batches" / batch):
+            if line.startswith("#"):
                 continue
-            loss = fp["separation_loss"]
-            arms[loss][fp["trial_seed"]] = match(trained, fp, f"{batch} N={n_cp} {loss} seed {fp['trial_seed']}")
+            for m in FIXED_RE.finditer(line):
+                fp = json.loads(m.group(1))
+                if fp["control_points"] != n_cp:
+                    continue
+                loss = fp["separation_loss"]
+                arms[loss][fp["trial_seed"]] = match(trained, fp, f"{batch} N={n_cp} {loss} seed {fp['trial_seed']}")
     if len(arms["entropy"]) < 2 or len(arms["separation"]) < 2:
-        raise SystemExit(f"{batch}: need >= 2 scored seeds per arm at N={n_cp}: "
+        raise SystemExit(f"{batches}: need >= 2 scored seeds per arm at N={n_cp}: "
                          f"entropy {sorted(arms['entropy'])}, separation {sorted(arms['separation'])}")
     return as_percent(arms["entropy"]), as_percent(arms["separation"])
 
 
-ENVS = [("Particle (16D)", lambda: load_nsweep_arms("nsweepParticle16.txt", "particle/16", n_cp=5)),
+ENVS = [("Particle (16D)", lambda: load_nsweep_arms(("nsweepParticle16.txt", "nsweepParticle16SepSeeds.txt"), "particle/16", n_cp=5)),
         ("Pushing (states)", lambda: load_arm_values("ablPushingStates.txt", "pushing")),
         ("Pushing (pixels)", lambda: load_arm_values("ablPushingPixels.txt", "pushing_pixels")),
         ("LIBERO-Goal (pixels)", lambda: load_arm_values("ablLibero.txt", "libero_goal_pixels"))]
