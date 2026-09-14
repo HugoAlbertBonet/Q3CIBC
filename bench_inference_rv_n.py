@@ -133,6 +133,12 @@ def main():
     for env in a.envs:
         p = ref_params(env)
         make = (pixel_builders if env in ("pushing_pixels", "libero_goal_pixels") else flat_builders)(env, p, dev)
+        # Untimed pass on the first model: CUDA context / cuBLAS handles / allocator
+        # warm-up otherwise lands on the first N timed (N=1 read ~1.7x slower).
+        fns, _ = make(GRIDS[env][0])
+        for fn in fns.values():
+            timeit(fn, dev, 5, max(a.warmup, 50))
+        del fns
         for N in GRIDS[env]:
             fns, params = make(N)
             for mode, fn in fns.items():
