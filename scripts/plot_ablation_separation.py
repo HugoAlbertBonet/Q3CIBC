@@ -10,7 +10,7 @@ compact, untitled paper figure set in Palatino Linotype (PNG + PDF).
                     separation_loss="entropy", the "separation_loss=separation" arm
                     changes only that key.
   Particle (16D):   the N=5 runs of the N-sweep batch (argmax recipe), entropy vs
-                    separation at identical fixed params, seeds 0 and 1.
+                    separation at identical fixed params, every scored seed of each arm.
 
 Whiskers are clipped to the 0-100 % range success rates can take.
 
@@ -98,10 +98,10 @@ def load_nsweep_arms(batch: str, env: str, n_cp: int) -> tuple[dict, dict]:
     return as_percent(arms["entropy"]), as_percent(arms["separation"])
 
 
-ENVS = [("Pushing (states)", lambda: load_arm_values("ablPushingStates.txt", "pushing")),
+ENVS = [("Particle (16D)", lambda: load_nsweep_arms("nsweepParticle16.txt", "particle/16", n_cp=5)),
+        ("Pushing (states)", lambda: load_arm_values("ablPushingStates.txt", "pushing")),
         ("Pushing (pixels)", lambda: load_arm_values("ablPushingPixels.txt", "pushing_pixels")),
-        ("LIBERO-Goal (pixels)", lambda: load_arm_values("ablLibero.txt", "libero_goal_pixels")),
-        ("Particle (16D)", lambda: load_nsweep_arms("nsweepParticle16.txt", "particle/16", n_cp=5))]
+        ("LIBERO-Goal (pixels)", lambda: load_arm_values("ablLibero.txt", "libero_goal_pixels"))]
 
 
 def use_palatino() -> str:
@@ -113,6 +113,12 @@ def use_palatino() -> str:
             fm.fontManager.addfont(str(path))
     if not any(f.name == name for f in fm.fontManager.ttflist):
         raise SystemExit("Palatino Linotype not found (looked in matplotlib, /mnt/c/Windows/Fonts, ~/.fonts)")
+    styles = {f.style for f in fm.fontManager.ttflist if f.name == name}
+    if "italic" not in styles:
+        raise SystemExit(f"Palatino Linotype italic not found (styles registered: {sorted(styles)})")
+    # Math text ($N$) otherwise falls back to DejaVu; typeset it in Palatino too.
+    plt.rcParams.update({"mathtext.fontset": "custom", "mathtext.rm": name, "mathtext.it": f"{name}:italic",
+                         "mathtext.bf": f"{name}:bold", "mathtext.default": "it"})
     return name
 
 
@@ -160,7 +166,7 @@ def main() -> int:
     ax.tick_params(axis="both", length=0)
     handles = [Line2D([], [], marker="o", linestyle="", markersize=8, markerfacecolor=c, markeredgecolor=SURFACE,
                       markeredgewidth=2, label=l) for c, l in ((C_ENT, "Entropy loss"), (C_SEP, "Separation loss"))]
-    ax.legend(handles=handles, loc="lower left", frameon=False, fontsize=10, labelcolor=TEXT, handletextpad=0.3)
+    ax.legend(handles=handles, loc="lower right", frameon=False, fontsize=10, labelcolor=TEXT, handletextpad=0.3)
     fig.tight_layout()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=300, facecolor=SURFACE)
