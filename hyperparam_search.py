@@ -3061,6 +3061,15 @@ def main() -> None:
             user_params = json.loads(args.params)
             params = baseline.copy()
             params.update(user_params)
+        elif fixed_params:
+            # A batch line that pins its recipe must not inherit anything from
+            # the auto-suggester: suggest_next_params copies best-per-param
+            # values from EVERY past trial of this env and randomises one more
+            # key, so any key the line does not pin (max_episode_steps,
+            # best_ckpt, num_eval_seeds, ...) silently took values from other
+            # runs. Unpinned keys now come from config.json, as batches assume.
+            params = baseline.copy()
+            print("Run with --fixed-params: no auto-suggest; unpinned keys come from config.json")
         else:
             trials = load_trials(script_name, active_env=active_env_cli)
             params, reason = suggest_next_params(trials, detected_params, baseline)
