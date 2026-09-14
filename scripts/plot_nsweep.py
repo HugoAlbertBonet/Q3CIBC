@@ -7,10 +7,10 @@ record by exact fixed params; latency per env step comes from the argmax rows of
 results/reviewer/latency_vs_N_nsweep.csv (bench_inference_rv_n.py, batch size 1,
 random weights, same networks as the batch).
 
-Left panel: success rate, mean +/- std over seeds (line and band) with the
-individual seeds as small dots. Right panel: latency per step, mean +/- std over
-timed steps. Both share a log-scaled N axis. Compact, untitled, Palatino Linotype
-(PNG + PDF), same palette as the ablation figure.
+Left panel: success rate, mean +/- std over seeds (line and band). Right panel:
+latency per step, mean +/- std over timed steps. Both share a log-scaled N axis.
+Compact, untitled, Palatino Linotype (PNG + PDF), same palette as the ablation
+figure.
 
 Usage:
     uv run python scripts/plot_nsweep.py --out results/reviewer/nsweep_particle16.png
@@ -95,8 +95,6 @@ def main() -> int:
         ax_s.fill_between(ns, [max(0, m - s) for m, s in zip(means, sds)], [min(100, m + s) for m, s in zip(means, sds)],
                           color=C_ENT, alpha=0.15, linewidth=0, zorder=1)
         ax_s.plot(ns, means, color=C_ENT, linewidth=2, zorder=2)
-        for n in ns:
-            ax_s.scatter([n] * len(succ[n]), list(succ[n].values()), s=14, color=C_ENT, alpha=0.45, linewidth=0, zorder=3)
         ax_s.scatter(ns, means, s=46, color=C_ENT, edgecolor=SURFACE, linewidth=1.5, zorder=4)
 
         lm = [lat[n][0] for n in ns]
