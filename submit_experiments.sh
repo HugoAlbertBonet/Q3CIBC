@@ -86,7 +86,7 @@ case "$cluster" in
     if [[ -n "${SHARDS:-}" ]]; then snoopy_gres="shard:${SHARDS}"; else snoopy_gres="gpu:1"; fi
     sbatch_resources="#SBATCH --account=lab
 #SBATCH --partition=partition-1
-#SBATCH --qos=shared
+#SBATCH --qos=${QOS:-shared}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=${CPUS:-4}
