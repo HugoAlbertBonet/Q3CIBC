@@ -89,6 +89,10 @@ run_tag = str(g("cp_run_tag", ""))
 student_feature_cache = bool(g("cp_student_feature_cache", False))
 batch_size = int(g("batch_size", 64))
 learning_rate = float(g("learning_rate", 1e-4))
+# Student (CTM distillation) learning rate. Defaults to the shared learning_rate, but the
+# official CP config trains the student at 1e-4 (configs/ctmp_*.yaml): with our Diffusion
+# Policy recipe rates (3e-4 .. 1e-3) the flat-state students collapse to an input-ignoring map.
+student_learning_rate = float(g("cp_student_learning_rate", learning_rate))
 encoder_lr_scale = float(g("encoder_lr_scale", 1.0))
 weight_decay = float(g("cp_weight_decay", 1e-6))
 lr_warmup = int(g("cp_lr_warmup", 500))
@@ -149,6 +153,7 @@ def main() -> int:
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     print(f"Consistency Policy | env={active_env} seed={trial_seed} device={device} phase={phase}")
     print(f"teacher_steps={teacher_steps} student_steps={student_steps} batch={batch_size} lr={learning_rate} "
+          f"student_lr={student_learning_rate} "
           f"head={dp['denoiser_network_kind']}({dp['denoiser_width']}x{dp['denoiser_depth']}) t_emb={dp['time_emb_dim']}")
     print(f"sigma [{sched.sigma_min}, {sched.sigma_max}] rho={sched.rho} bins={sched.bins} sigma_data={sched.sigma_data} "
           f"huber_delta={huber_delta} dropout={dropout} ctm/dsm={w_ctm}/{w_dsm} ode_steps_max={ode_steps_max} "
@@ -200,7 +205,7 @@ def main() -> int:
                 sigma_min=sched.sigma_min, sigma_max=sched.sigma_max, rho=sched.rho, bins=sched.bins,
                 sigma_data=sched.sigma_data, huber_delta=huber_delta, ode_steps_max=ode_steps_max,
                 ctm_weight=w_ctm, dsm_weight=w_dsm, chaining_default="D:27,54", teacher_steps=teacher_steps,
-                student_steps=student_steps, frame_stack=frame_stack, student_feature_cache=student_feature_cache,
+                student_steps=student_steps, student_learning_rate=student_learning_rate, frame_stack=frame_stack, student_feature_cache=student_feature_cache,
                 action_chunk=int(getattr(dataset, "action_chunk", 1) or 1), teacher_dir=teacher_dir or None)
     def write_meta() -> None:
         with open(os.path.join(MODEL_SAVE_DIR, "cp_meta.json"), "w") as fh:
@@ -271,7 +276,7 @@ def main() -> int:
     target = copy.deepcopy(student)
     target.requires_grad_(False)
     trainable = [p for p in student.parameters() if p.requires_grad]
-    opt = torch.optim.AdamW(trainable, lr=learning_rate, betas=(0.95, 0.999), eps=1e-8, weight_decay=weight_decay)
+    opt = torch.optim.AdamW(trainable, lr=student_learning_rate, betas=(0.95, 0.999), eps=1e-8, weight_decay=weight_decay)
     lrs = torch.optim.lr_scheduler.LambdaLR(opt, cosine_with_warmup(lr_warmup, max(1, int(p_fraction * student_steps))))
     print(f"Student trainable params: {sum(p.numel() for p in trainable)} (encoder frozen: {student.encoder is not None})")
     cache = build_feature_cache(student, dataset, device, cond_dim) if student_feature_cache else None

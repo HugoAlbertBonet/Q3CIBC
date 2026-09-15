@@ -833,6 +833,13 @@ SEARCH_SPACE: dict[str, dict] = {
         "type": "int",
         "location": "env",
     },
+    # consistency_policy_training: CTM student learning rate (defaults to learning_rate).
+    # Official CP trains the student at 1e-4; higher rates collapse flat-state students.
+    "cp_student_learning_rate": {
+        "values": [3e-5, 1e-4, 3e-4],
+        "type": "float",
+        "location": "env_training",
+    },
     # Control-point generator output head. "tanh" (default, historical) squashes
     # into the action box; "linear" leaves bounding to the consumer. tanh's
     # vanishing gradient near the bounds capped particle-16D argmax at 0%.
@@ -1352,6 +1359,12 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
     elif active_env == "libero_goal_pixels":
         from simulations.libero_goal_pixels_simulation import LiberoGoalPixelsSimulation
         SimulationCls = LiberoGoalPixelsSimulation
+    elif active_env == "two_choice":
+        from simulations.two_choice_simulation import TwoChoiceSimulation
+        SimulationCls = TwoChoiceSimulation
+    elif active_env == "point_maze_pillar":
+        from simulations.point_maze_pillar_simulation import PointMazePillarSimulation
+        SimulationCls = PointMazePillarSimulation
     elif active_env == "dummy_bimodal":
         from simulations.dummy_bimodal_simulation import DummyBimodalSimulation
         SimulationCls = DummyBimodalSimulation
@@ -2249,6 +2262,14 @@ def evaluate_q3c(checkpoint_dir: str, config: dict) -> dict:
         sim_kwargs["num_eval_seeds"] = int(
             env_config.get("num_eval_seeds", len(seeds))
         )
+    elif active_env == "two_choice":
+        sim_kwargs["min_separation"] = float(env_config.get("min_separation", 0.3))
+        sim_kwargs["success_tolerance"] = float(env_config.get("success_tolerance", 0.05))
+    elif active_env == "point_maze_pillar":
+        # No extra knobs — PointMazePillarSimulation only takes the base
+        # kwargs already in sim_kwargs (start/goal/pillar are fixed
+        # constants in the env itself, not config-driven).
+        pass
     elif active_env == "dummy_bimodal":
         sim_kwargs["step_size"] = float(env_config.get("step_size", 0.1))
         sim_kwargs["goal_radius"] = float(env_config.get("goal_radius", 0.1))
