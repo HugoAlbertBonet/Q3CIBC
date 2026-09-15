@@ -68,8 +68,12 @@ def style(ax, ns: list[int]) -> None:
     ax.set_xlabel("Control points $N$")
     ax.grid(axis="y", color=GRID, linewidth=1)
     ax.set_axisbelow(True)
-    for side in ("top", "right", "left", "bottom"):
+    for side in ("top", "right"):
         ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):  # axis lines
+        ax.spines[side].set_visible(True)
+        ax.spines[side].set_color(TEXT2)
+        ax.spines[side].set_linewidth(0.8)
     ax.tick_params(axis="both", length=0)
 
 
@@ -95,14 +99,14 @@ def main() -> int:
         ax_s.fill_between(ns, [max(0, m - s) for m, s in zip(means, sds)], [min(100, m + s) for m, s in zip(means, sds)],
                           color=C_ENT, alpha=0.15, linewidth=0, zorder=1)
         ax_s.plot(ns, means, color=C_ENT, linewidth=2, zorder=2)
-        ax_s.scatter(ns, means, s=46, color=C_ENT, edgecolor=SURFACE, linewidth=1.5, zorder=4)
+        ax_s.scatter(ns, means, s=46, color=C_ENT, edgecolor=SURFACE, linewidth=1.5, zorder=4, clip_on=False)
 
         lm = [lat[n][0] for n in ns]
         ls = [lat[n][1] for n in ns]
         ax_l.fill_between(ns, [max(0, m - s) for m, s in zip(lm, ls)], [m + s for m, s in zip(lm, ls)],
                           color=C_ENT, alpha=0.15, linewidth=0, zorder=1)
         ax_l.plot(ns, lm, color=C_ENT, linewidth=2, zorder=2)
-        ax_l.scatter(ns, lm, s=46, color=C_ENT, edgecolor=SURFACE, linewidth=1.5, zorder=4)
+        ax_l.scatter(ns, lm, s=46, color=C_ENT, edgecolor=SURFACE, linewidth=1.5, zorder=4, clip_on=False)
 
         for n, m, s, l_m in zip(ns, means, sds, lm):
             print(f"{label} N={n:<4} seeds={sorted(succ[n])} success={[round(succ[n][k], 1) for k in sorted(succ[n])]} "
@@ -111,7 +115,7 @@ def main() -> int:
         style(ax_l, ns)
         top_ms = max(m + s for m, s in zip(lm, ls))
 
-    ax_s.set_ylim(-3, 103)
+    ax_s.set_ylim(0, 103)  # axis starts on the 0 gridline so the x-axis line does not double it
     ax_s.set_yticks(range(0, 101, 20))
     ax_s.set_ylabel("Success rate (%)")
     ax_l.set_ylim(0, max(1.0, round(top_ms * 1.25, 1)))
