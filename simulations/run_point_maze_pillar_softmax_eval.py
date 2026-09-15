@@ -186,7 +186,7 @@ def _plot(trajectories, successes, corridors, output_dir, temperature, goal_regi
     import matplotlib.pyplot as plt
 
     from utils.plot_style import apply_house_style, style_axes, SURFACE, TEXT, TEXT2, GRID, C1, C2
-    from simulations.point_maze_pillar_env import draw_maze_walls
+    from simulations.point_maze_pillar_env import draw_maze_walls, WALL_INNER_HALF_EXTENT
 
     apply_house_style()
     os.makedirs(output_dir, exist_ok=True)
@@ -197,12 +197,14 @@ def _plot(trajectories, successes, corridors, output_dir, temperature, goal_regi
     fig, ax = plt.subplots(figsize=(3.5, 3.5), facecolor="none")
     style_axes(ax, hide_spines=("top", "right", "left", "bottom"))
     ax.set_facecolor("none")
-    ax.set_xlim(-3.2, 3.2)
-    ax.set_ylim(-3.2, 3.2)
+    WALL = 0.1  # thin outer wall; axes stop at its outer edge
+    lim = WALL_INNER_HALF_EXTENT + WALL
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
     ax.set_aspect("equal")
     ax.grid(False)
 
-    draw_maze_walls(ax, color=TEXT2, alpha=0.35)
+    draw_maze_walls(ax, color=TEXT2, alpha=0.35, thickness=WALL)
     pillar = plt.Rectangle(
         (-PILLAR_HALF_EXTENT, -PILLAR_HALF_EXTENT), 2 * PILLAR_HALF_EXTENT, 2 * PILLAR_HALF_EXTENT,
         color=TEXT2, alpha=0.35, zorder=2,
