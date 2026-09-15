@@ -193,7 +193,8 @@ def _plot(trajectories, successes, corridors, output_dir, temperature, goal_regi
     PILLAR_HALF_EXTENT = 1.5
 
     # Transparent canvas, no grid or spines: the maze walls frame the figure.
-    fig, ax = plt.subplots(figsize=(10.5, 9), facecolor="none")
+    # Drawn at 3.5 in for a half-column (~1.75 in) placement: everything prints at half size.
+    fig, ax = plt.subplots(figsize=(3.5, 3.5), facecolor="none")
     style_axes(ax, hide_spines=("top", "right", "left", "bottom"))
     ax.set_facecolor("none")
     ax.set_xlim(-3.2, 3.2)
@@ -216,33 +217,36 @@ def _plot(trajectories, successes, corridors, output_dir, temperature, goal_regi
         style = "-" if success else "--"
         label = None
         if not counted[corridor]:
-            label = f"{corridor} corridor"
+            label = corridor.capitalize()
             counted[corridor] = True
-        ax.plot(traj[:, 0], traj[:, 1], style, color=color, alpha=alpha, linewidth=1.2, label=label, zorder=3)
+        ax.plot(traj[:, 0], traj[:, 1], style, color=color, alpha=alpha, linewidth=0.6, label=label, zorder=3)
 
     if goal_region:
         # Episodes end on entering this radius, so every successful trajectory stops on its edge.
         from simulations.point_maze_pillar_env import SUCCESS_DISTANCE
         ax.add_patch(plt.Circle((2.0, 0.0), SUCCESS_DISTANCE, facecolor=TEXT2, alpha=0.18, edgecolor="none", zorder=2.5))
-        ax.add_patch(plt.Circle((2.0, 0.0), SUCCESS_DISTANCE, fill=False, edgecolor=TEXT2, linewidth=1.2,
+        ax.add_patch(plt.Circle((2.0, 0.0), SUCCESS_DISTANCE, fill=False, edgecolor=TEXT2, linewidth=0.6,
                                 linestyle="--", zorder=4))
-    ax.scatter([-2.0], [0.0], color=TEXT, s=100, marker="s", zorder=5, label="Start")
-    ax.scatter([2.0], [0.0], color=TEXT, s=900, marker="*", edgecolors=SURFACE,
-               linewidths=1.5, zorder=5, label="Goal")
-    # The trajectory bundle fills the entire frame (all 4 edges + center
-    # pillar), so there's no empty spot inside the axes for a legend —
-    # place it outside, to the right.
-    legend = ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False,
-                       fontsize=26, labelcolor=TEXT, handlelength=1.6)
-    # Size legend handles for the large font: thick opaque corridor lines, and
-    # Start/Goal markers set explicitly (markerscale would shrink the square).
-    marker_sizes = {"Start": 260, "Goal": 700}
+    ax.scatter([-2.0], [0.0], color=TEXT, s=30, marker="s", zorder=5, label="Start")
+    ax.scatter([2.0], [0.0], color=TEXT, s=240, marker="*", edgecolors=SURFACE,
+               linewidths=0.6, zorder=5, label="Goal")
+    # The trajectory bundle fills the entire frame, so the legend goes below the
+    # maze as a single row: Top, Bottom, Start, Goal.
+    handles, labels = ax.get_legend_handles_labels()
+    order = [labels.index(k) for k in ("Top", "Bottom", "Start", "Goal") if k in labels]
+    legend = ax.legend([handles[i] for i in order], [labels[i] for i in order],
+                       loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=len(order), frameon=False,
+                       fontsize=13, labelcolor=TEXT, handlelength=1.1, handletextpad=0.4,
+                       columnspacing=1.0, borderaxespad=0.2)
+    # Legend handles: thick opaque corridor lines, and Start/Goal markers set
+    # explicitly (markerscale would shrink the square).
+    marker_sizes = {"Start": 45, "Goal": 150}
     handles = getattr(legend, "legend_handles", getattr(legend, "legendHandles", []))
     for handle, text in zip(handles, legend.get_texts()):
         if hasattr(handle, "set_sizes"):
             handle.set_sizes([marker_sizes.get(text.get_text(), 260)])
         else:
-            handle.set_linewidth(4)
+            handle.set_linewidth(2.2)
             handle.set_alpha(1.0)
     ax.tick_params(axis="both", which="both", length=0, labelbottom=False, labelleft=False)
 
