@@ -27,6 +27,7 @@ import json
 import re
 import shlex
 import statistics as st
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -38,9 +39,18 @@ ROOT = Path(__file__).resolve().parents[1]
 RES = ROOT / "results/hyperparam_search/combinedv2_cpascounter_training"
 FIXED_RE = re.compile(r"--fixed-params '(\{.*?\})'")
 
-# Reference palette (dataviz skill, light mode): categorical slots 1-2, text & surface tokens.
+# Text & surface tokens (dataviz reference palette, light mode).
 SURFACE, TEXT, TEXT2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e6e5e1"
-C_ENT, C_SEP = "#2a78d6", "#eb6834"
+# Both arms are WiFI-BC, so both take the paper's WiFI-BC colour; marker, fill and whisker
+# dash tell the entropy and separation variants apart. C_ENT stays exported for plot_nsweep.
+sys.path.insert(0, str(ROOT))
+from utils.plot_style import C_WIFI  # noqa: E402
+
+C_ENT = C_WIFI
+ARM_STYLE = {  # arm -> (marker, filled, whisker linestyle, legend label)
+    "entropy": ("o", True, "-", "Entropy loss"),
+    "separation": ("s", False, (0, (2, 1.6)), "Separation loss"),
+}
 
 
 def scored_records(env: str) -> list[dict]:
@@ -163,17 +173,20 @@ def main() -> int:
     offset, lows = 0.16, []
     for gi, (label, load) in enumerate(ENVS):
         ent, sep = load()
-        for vals, color, dx in ((ent, C_ENT, -offset), (sep, C_SEP, offset)):
+        for vals, arm, dx in ((ent, "entropy", -offset), (sep, "separation", offset)):
+            marker, filled, whisker, _ = ARM_STYLE[arm]
             v = list(vals.values())
             m, sd = st.mean(v), (st.stdev(v) if len(v) > 1 else 0.0)
             lo_w, hi_w = max(0.0, m - sd), min(100.0, m + sd)
             lows.append(lo_w)
             x = gi + dx
-            ax.plot([x, x], [lo_w, hi_w], color=color, linewidth=2, solid_capstyle="round", zorder=2)
-            ax.scatter([x], [m], s=70, color=color, edgecolor=SURFACE, linewidth=2, zorder=3)
-            ax.text(x + (0.07 if dx > 0 else -0.07), m, f"{m:.1f}", color=TEXT2, fontsize=9.5,
+            ax.plot([x, x], [lo_w, hi_w], color=C_WIFI, linewidth=2, linestyle=whisker,
+                    solid_capstyle="round", dash_capstyle="round", zorder=2)
+            ax.scatter([x], [m], s=70 if filled else 52, marker=marker, facecolor=C_WIFI if filled else SURFACE,
+                       edgecolor=SURFACE if filled else C_WIFI, linewidth=2, zorder=3)
+            ax.text(x + (0.10 if dx > 0 else -0.07), m, f"{m:.1f}", color=TEXT2, fontsize=9.5,
                     ha="left" if dx > 0 else "right", va="center")
-            print(f"{label:22} {'entropy' if color == C_ENT else 'separation':10} seeds={sorted(vals)} "
+            print(f"{label:22} {arm:10} seeds={sorted(vals)} "
                   f"values={[round(vals[s], 1) for s in sorted(vals)]} mean={m:.1f} std={sd:.1f}")
 
     # Round ticks that always include 100, so points near the ceiling have a gridline to read against.
@@ -196,8 +209,9 @@ def main() -> int:
         ax.spines[side].set_color(TEXT2)
         ax.spines[side].set_linewidth(0.8)
     ax.tick_params(axis="both", length=0)
-    handles = [Line2D([], [], marker="o", linestyle="", markersize=8, markerfacecolor=c, markeredgecolor=SURFACE,
-                      markeredgewidth=2, label=l) for c, l in ((C_ENT, "Entropy loss"), (C_SEP, "Separation loss"))]
+    handles = [Line2D([], [], marker=mk, linestyle=ls, linewidth=2, markersize=8, color=C_WIFI,
+                      markerfacecolor=C_WIFI if filled else SURFACE, markeredgecolor=SURFACE if filled else C_WIFI,
+                      markeredgewidth=2, label=lab) for mk, filled, ls, lab in ARM_STYLE.values()]
     ax.legend(handles=handles, loc="lower right", frameon=False, fontsize=10, labelcolor=TEXT, handletextpad=0.3)
     fig.tight_layout()
     args.out.parent.mkdir(parents=True, exist_ok=True)

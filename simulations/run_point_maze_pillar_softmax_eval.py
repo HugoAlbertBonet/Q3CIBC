@@ -185,7 +185,7 @@ def _plot(trajectories, successes, corridors, output_dir, temperature, goal_regi
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    from utils.plot_style import apply_house_style, style_axes, SURFACE, TEXT, TEXT2, GRID, C1, C2
+    from utils.plot_style import apply_house_style, style_axes, SURFACE, TEXT, TEXT2, C_WIFI
     from simulations.point_maze_pillar_env import draw_maze_walls, WALL_INNER_HALF_EXTENT
 
     apply_house_style()
@@ -211,17 +211,18 @@ def _plot(trajectories, successes, corridors, output_dir, temperature, goal_regi
     )
     ax.add_patch(pillar)
 
-    color_map = {"top": C1, "bottom": C2, "none": TEXT2}
+    # Every rollout is WiFI-BC, so all take its paper colour; the corridor (mode) is the variant,
+    # shown by line style. Failed rollouts are drawn fainter.
+    corridor_style = {"top": "-", "bottom": (0, (2.5, 1.2)), "none": ":"}
     counted = {"top": False, "bottom": False, "none": False}
     for traj, success, corridor in zip(trajectories, successes, corridors):
-        color = color_map[corridor]
-        alpha = 0.6 if success else 0.25
-        style = "-" if success else "--"
+        corridor = str(corridor)
         label = None
         if not counted[corridor]:
             label = corridor.capitalize()
             counted[corridor] = True
-        ax.plot(traj[:, 0], traj[:, 1], style, color=color, alpha=alpha, linewidth=0.6, label=label, zorder=3)
+        ax.plot(traj[:, 0], traj[:, 1], linestyle=corridor_style[corridor], color=C_WIFI,
+                alpha=0.6 if success else 0.25, linewidth=0.6, label=label, zorder=3)
 
     if goal_region:
         # Episodes end on entering this radius, so every successful trajectory stops on its edge.

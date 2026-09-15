@@ -2,8 +2,8 @@
 
 Recovered from the session that first drew figures/pusht_horizon_sweep (paper repo
 commits f2f2a3f, 35b5514) and kept here so the figure can be regenerated. Colour
-encodes the method family, lightness and dash pattern the variant within it, so a
-family reads as one group while variants stay separable. Set in TeX Gyre Pagella
+is the method (the paper palette in utils/plot_style.py, identical in every figure);
+dash pattern and marker separate the variants of a method. Set in TeX Gyre Pagella
 (assets/fonts), as the published figure. No background grid; the legend sits to the
 right of the axes in a single column, sized for a full column width (\linewidth).
 
@@ -12,6 +12,7 @@ right of the axes in a single column, sized for a full column width (\linewidth)
 import argparse
 import collections
 import csv
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -21,6 +22,9 @@ from matplotlib import font_manager
 from matplotlib.ticker import NullFormatter, ScalarFormatter
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from utils.plot_style import C_BC, C_DP, C_IBC, C_WIFI  # noqa: E402
+
 FONTS = ROOT / "assets/fonts"
 SWEEP = ROOT / "results/pusht/plots_normalized/coverage_avg_vs_inference_time_horizon.csv"
 BEST = ROOT / "results/pusht/plots_normalized/coverage_avg_best_iters_position_balanced.csv"
@@ -31,15 +35,15 @@ BEST = ROOT / "results/pusht/plots_normalized/coverage_avg_best_iters_position_b
 IBC10_MS = {1: 11.15, 2: 5.60, 4: 2.81, 8: 1.41}
 
 STYLE = {  # key -> label, colour, linestyle, marker, linewidth, z
-    ("bc",  "deterministic",   "0"):   ("BC",             "#737373", "-",                        "o", 1.1, 2),
-    ("dp",  "ddim",            "5"):   ("DP DDIM-5",      "#74C476", ":",                        "s", 1.1, 2),
-    ("dp",  "ddim",            "10"):  ("DP DDIM-10",     "#41AB5D", "--",                       "D", 1.1, 2),
-    ("dp",  "ddim",            "25"):  ("DP DDIM-25",     "#238B45", "-.",                       "p", 1.1, 2),
-    ("dp",  "ddpm",            "100"): ("DP DDPM-100",    "#00441B", (0, (3, 1, 1, 1, 1, 1)),    "h", 1.1, 2),
-    ("ibc", "dfo",             "5"):   ("IBC DFO-5",      "#FD8D3C", "--",                       "v", 1.3, 3),
-    ("ibc", "dfo",             "10"):  ("IBC DFO-10",     "#A63603", "-",                        "^", 1.3, 3),
-    ("q3c", "argmax_fallback", "5"):   ("WiFI-BC argmax", "#6BAED6", "--",                       "P", 1.7, 4),
-    ("q3c", "dfo",             "5"):   ("WiFI-BC DFO-5",  "#08519C", "-",                        "*", 1.8, 5),
+    ("bc",  "deterministic",   "0"):   ("BC",             C_BC,   "-",                        "o", 1.1, 2),
+    ("dp",  "ddim",            "5"):   ("DP DDIM-5",      C_DP,   ":",                        "s", 1.1, 2),
+    ("dp",  "ddim",            "10"):  ("DP DDIM-10",     C_DP,   "--",                       "D", 1.1, 2),
+    ("dp",  "ddim",            "25"):  ("DP DDIM-25",     C_DP,   "-.",                       "p", 1.1, 2),
+    ("dp",  "ddpm",            "100"): ("DP DDPM-100",    C_DP,   (0, (3, 1, 1, 1, 1, 1)),    "h", 1.1, 2),
+    ("ibc", "dfo",             "5"):   ("IBC DFO-5",      C_IBC,  "--",                       "v", 1.3, 3),
+    ("ibc", "dfo",             "10"):  ("IBC DFO-10",     C_IBC,  "-",                        "^", 1.3, 3),
+    ("q3c", "argmax_fallback", "5"):   ("WiFI-BC argmax", C_WIFI, "--",                       "P", 1.7, 4),
+    ("q3c", "dfo",             "5"):   ("WiFI-BC DFO-5",  C_WIFI, "-",                        "*", 1.8, 5),
 }
 ORDER = [("bc", "deterministic", "0"),
          ("dp", "ddim", "5"), ("dp", "ddim", "10"), ("dp", "ddim", "25"), ("dp", "ddpm", "100"),
