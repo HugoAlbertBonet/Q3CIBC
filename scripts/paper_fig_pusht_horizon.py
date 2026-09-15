@@ -96,7 +96,7 @@ def main() -> int:
                     label=lab, zorder=z, alpha=0.97)
 
     ax.set_xscale("log")
-    ax.set_xlabel("Inference time per step (ms)")
+    ax.set_xlabel("Inference Time Per Step (ms)")
     ax.set_ylabel("IoU")
     ax.set_xticks([1, 2, 5, 10, 20])
     ax.xaxis.set_major_formatter(ScalarFormatter())
