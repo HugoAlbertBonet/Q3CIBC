@@ -4,7 +4,8 @@ Recovered from the session that first drew figures/pusht_horizon_sweep (paper re
 commits f2f2a3f, 35b5514) and kept here so the figure can be regenerated. Colour
 encodes the method family, lightness and dash pattern the variant within it, so a
 family reads as one group while variants stay separable. Set in TeX Gyre Pagella
-(assets/fonts), as the published figure. No background grid.
+(assets/fonts), as the published figure. No background grid; the legend sits to the
+right of the axes in a single column, sized for a full column width (\linewidth).
 
     uv run python scripts/paper_fig_pusht_horizon.py --out results/paper_figures/pusht_horizon_sweep
 """
@@ -77,7 +78,8 @@ def main() -> int:
         "axes.labelcolor": "#000000", "pdf.fonttype": 42,
     })
 
-    fig, ax = plt.subplots(figsize=(3.45, 3.35))
+    # Column-wide (3.5 in) with the legend to the right of the axes, one entry per row.
+    fig, ax = plt.subplots(figsize=(3.5, 2.5))
     for k in ORDER:
         lab, col, ls, mk, lw, z = STYLE[k]
         pts = sorted(data[k])
@@ -100,9 +102,9 @@ def main() -> int:
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
     ax.tick_params(labelsize=7.5)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.19), ncol=3,
-              fontsize=6.3, frameon=False, handlelength=2.2, columnspacing=0.9,
-              handletextpad=0.45, borderaxespad=0.0)
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), ncol=1,
+              fontsize=6.3, frameon=False, handlelength=2.2,
+              handletextpad=0.45, borderaxespad=0.0, labelspacing=0.55)
 
     fig.tight_layout(pad=0.3)
     args.out.parent.mkdir(parents=True, exist_ok=True)
