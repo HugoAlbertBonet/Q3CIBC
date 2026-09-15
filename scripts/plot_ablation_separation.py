@@ -180,7 +180,7 @@ def main() -> int:
     lo = max(0, 10 * int((min(lows) - 1) // 10))
     step = 20 if 100 - lo > 60 else 10
     lo = step * (lo // step)
-    ax.set_ylim(lo - 1.5, 101.5)
+    ax.set_ylim(lo, 101.5)  # axis starts on the lowest gridline, so the x-axis line and that gridline coincide
     ax.set_yticks(range(lo, 101, step))
     ax.set_xlim(-0.55, len(ENVS) - 0.45)
     ax.set_xticks(range(len(ENVS)))
@@ -189,8 +189,12 @@ def main() -> int:
     ax.set_ylabel("Success rate (%)")
     ax.grid(axis="y", color=GRID, linewidth=1, linestyle="-")
     ax.set_axisbelow(True)
-    for side in ("top", "right", "left", "bottom"):  # the lowest gridline is the baseline
+    for side in ("top", "right"):
         ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):  # axis lines
+        ax.spines[side].set_visible(True)
+        ax.spines[side].set_color(TEXT2)
+        ax.spines[side].set_linewidth(0.8)
     ax.tick_params(axis="both", length=0)
     handles = [Line2D([], [], marker="o", linestyle="", markersize=8, markerfacecolor=c, markeredgecolor=SURFACE,
                       markeredgewidth=2, label=l) for c, l in ((C_ENT, "Entropy loss"), (C_SEP, "Separation loss"))]
