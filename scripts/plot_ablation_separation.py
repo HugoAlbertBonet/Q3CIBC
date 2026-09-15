@@ -9,6 +9,8 @@ compact, untitled paper figure set in Palatino Linotype (PNG + PDF).
   Pushing / LIBERO: one-at-a-time ablation batches; the reference arm trains with
                     separation_loss="entropy", the "separation_loss=separation" arm
                     changes only that key.
+  Pen:              trial 122's recipe (N=20, critic spectral norm off); entropy = the
+                    runs sharing its params (seeds 0-2), separation = penSeparation.
   Particle (16D):   the N=5 runs of the N-sweep batch plus nsweepParticle16SepSeeds
                     (argmax recipe), entropy vs
                     separation at identical fixed params, every scored seed of each arm.
@@ -100,7 +102,30 @@ def load_nsweep_arms(batches: tuple[str, ...], env: str, n_cp: int) -> tuple[dic
     return as_percent(arms["entropy"]), as_percent(arms["separation"])
 
 
+def load_pen_arms(sep_batch: str, env: str, ref_trial: int) -> tuple[dict, dict]:
+    """Pen: separation seeds from their batch lines; entropy = every scored run sharing the
+    reference trial's exact params except the seed (trial 122's recipe, seeds 0-2)."""
+    trained = scored_records(env)
+    ref = next(r for r in trained if r["trial_id"] == ref_trial)["params"]
+    same = lambda p: {k: str(v) for k, v in p.items() if k != "trial_seed"} == {k: str(v) for k, v in ref.items() if k != "trial_seed"}
+    ent = {r["params"]["trial_seed"]: r for r in sorted(trained, key=lambda r: r["run_id"]) if same(r["params"])}
+    sep = {}
+    for line in open(ROOT / "batches" / sep_batch):
+        if line.startswith("uv run") and "--fixed-params" in line:
+            tok = shlex.split(line)
+            fp = json.loads(tok[tok.index("--fixed-params") + 1])
+            sep[fp["trial_seed"]] = match(trained, fp, f"{sep_batch} seed {fp['trial_seed']}")
+    for r in ent.values():
+        assert r["params"].get("separation_loss") == "entropy", f"{env}: entropy arm mislabeled"
+    for r in sep.values():
+        assert r["params"].get("separation_loss") == "separation", f"{env}: separation arm mislabeled"
+    if len(ent) < 2 or len(sep) < 2:
+        raise SystemExit(f"{env}: need >= 2 scored seeds per arm (entropy {sorted(ent)}, separation {sorted(sep)})")
+    return as_percent(ent), as_percent(sep)
+
+
 ENVS = [("Particle (16D)", lambda: load_nsweep_arms(("nsweepParticle16.txt", "nsweepParticle16SepSeeds.txt"), "particle/16", n_cp=5)),
+        ("Pen", lambda: load_pen_arms("penSeparation.txt", "d4rl/pen", ref_trial=122)),
         ("Pushing (states)", lambda: load_arm_values("ablPushingStates.txt", "pushing")),
         ("Pushing (pixels)", lambda: load_arm_values("ablPushingPixels.txt", "pushing_pixels")),
         ("LIBERO-Goal (pixels)", lambda: load_arm_values("ablLibero.txt", "libero_goal_pixels"))]
@@ -159,7 +184,8 @@ def main() -> int:
     ax.set_yticks(range(lo, 101, step))
     ax.set_xlim(-0.55, len(ENVS) - 0.45)
     ax.set_xticks(range(len(ENVS)))
-    ax.set_xticklabels([e[0] for e in ENVS])
+    # Two-line labels ("Pushing\n(pixels)") keep five groups legible at the paper's column width.
+    ax.set_xticklabels([e[0].replace(" (", "\n(") for e in ENVS])
     ax.set_ylabel("Success rate (%)")
     ax.grid(axis="y", color=GRID, linewidth=1, linestyle="-")
     ax.set_axisbelow(True)
