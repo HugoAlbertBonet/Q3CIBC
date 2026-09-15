@@ -21,7 +21,7 @@ from matplotlib import font_manager
 ROOT = Path(__file__).resolve().parents[1]
 FONTS = ROOT / "assets/fonts"
 PANELS_DIR = ROOT / "results/paper_figures/environments_panels"
-LABELS = ["Particle ($n$-D)", "Simulated Pushing", "Adroit Pen", "Franka kitchen", "LIBERO-Goal", "Push-T (real)"]
+LABELS = ["Particle ($n$-D)", "Simulated Pushing", "Adroit Pen", "Franka Kitchen", "LIBERO-Goal", "Push-T (real)"]
 
 
 def main() -> int:
