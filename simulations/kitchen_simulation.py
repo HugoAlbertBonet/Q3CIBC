@@ -174,8 +174,12 @@ class KitchenSimulation(BaseSimulation):
                 if done:
                     break
 
-        # success = ALL target subtasks solved (remaining == 0).
-        n_targets = tasks_completed + len(info.get("tasks_to_complete", []))
+        # success = ALL target subtasks solved. Count the targets from the env's goal
+        # set: the D4RL kitchen datasets recover FrankaKitchen-v1 with
+        # remove_task_when_completed=False, so info["tasks_to_complete"] never
+        # shrinks and "completed + remaining" would demand twice the targets.
+        goal = getattr(getattr(self.env, "unwrapped", self.env), "goal", None)
+        n_targets = len(goal) if goal else tasks_completed + len(info.get("tasks_to_complete", []))
         success = n_targets > 0 and tasks_completed >= n_targets
 
         return {
