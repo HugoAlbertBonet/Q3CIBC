@@ -98,7 +98,7 @@ def main() -> int:
         sds = [st.stdev(succ[n].values()) if len(succ[n]) > 1 else 0.0 for n in ns]
         ax_s.fill_between(ns, [max(0, m - s) for m, s in zip(means, sds)], [min(100, m + s) for m, s in zip(means, sds)],
                           color=C_ENT, alpha=0.15, linewidth=0, zorder=1)
-        ax_s.plot(ns, means, color=C_ENT, linewidth=2, zorder=2)
+        ax_s.plot(ns, means, color=C_ENT, linewidth=2, zorder=2, label="WiFI-BC-argmax")
         ax_s.scatter(ns, means, s=46, color=C_ENT, edgecolor=SURFACE, linewidth=1.5, zorder=4, clip_on=False)
 
         lm = [lat[n][0] for n in ns]
@@ -118,6 +118,7 @@ def main() -> int:
     ax_s.set_ylim(0, 103)  # axis starts on the 0 gridline so the x-axis line does not double it
     ax_s.set_yticks(range(0, 101, 20))
     ax_s.set_ylabel("Success rate (%)")
+    ax_s.legend(loc="lower right", frameon=False, fontsize=10, labelcolor=TEXT, handlelength=1.8)
     ax_l.set_ylim(0, max(1.0, round(top_ms * 1.25, 1)))
     ax_l.set_ylabel("Latency per step (ms)")
     fig.tight_layout(w_pad=2.0)
