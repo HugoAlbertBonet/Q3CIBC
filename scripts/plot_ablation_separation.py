@@ -125,7 +125,7 @@ def load_pen_arms(sep_batch: str, env: str, ref_trial: int) -> tuple[dict, dict]
 
 
 ENVS = [("Particle (16D)", lambda: load_nsweep_arms(("nsweepParticle16.txt", "nsweepParticle16SepSeeds.txt"), "particle/16", n_cp=5)),
-        ("Pen", lambda: load_pen_arms("penSeparation.txt", "d4rl/pen", ref_trial=122)),
+        ("Adroit Pen", lambda: load_pen_arms("penSeparation.txt", "d4rl/pen", ref_trial=122)),
         ("Pushing (states)", lambda: load_arm_values("ablPushingStates.txt", "pushing")),
         ("Pushing (pixels)", lambda: load_arm_values("ablPushingPixels.txt", "pushing_pixels")),
         ("LIBERO-Goal (pixels)", lambda: load_arm_values("ablLibero.txt", "libero_goal_pixels"))]
