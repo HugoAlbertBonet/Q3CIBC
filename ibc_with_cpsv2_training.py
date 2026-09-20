@@ -115,6 +115,23 @@ NUM_COUNTER_EXAMPLES = env_training.get(
     "counter_examples",
     training_shared.get("counter_examples", 16),
 )
+# EVERY counter-example this script generates used to be Langevin-REFINED
+# (langevin_counter_examples always runs the full ascent chain, never keeps
+# raw uniform draws) — no negatives ever cover the far reaches of action
+# space the chain doesn't wander into. That leaves the estimator free to
+# assign an arbitrarily high Q to any region it never saw a negative in,
+# with nothing in the loss to push it back down — a spurious peak, not
+# necessarily anywhere near the two true expert headings. Diagnostic plots
+# on a real dummy_bimodal checkpoint showed exactly this: the argmax action
+# sat at a heading between the two expert stars with Q HIGHER than either
+# expert. Mixing in raw (unrefined) uniform negatives gives the estimator
+# contrastive pressure across the whole action box, same role
+# combinedv2_cpascounter_training.py's num_uniform_negatives already plays
+# there. Default 0 preserves prior behavior for every existing run.
+NUM_UNIFORM_NEGATIVES = env_training.get(
+    "num_uniform_negatives",
+    training_shared.get("num_uniform_negatives", 0),
+)
 # Near-expert counter-examples: actions sampled by adding small Gaussian noise
 # to the dataset expert action (in the estimator's normalised [0,1] space).
 # Used as additional negatives in BOTH the estimator's and the generator's
@@ -177,6 +194,20 @@ def load_dataset():
             step_size=env_config.get("step_size", 0.1),
             goal_radius=env_config.get("goal_radius", 0.05),
             n_dim=env_config.get("n_dim", 2),
+            frame_stack=frame_stack,
+        )
+    elif active_env == "two_choice":
+        from utils.datasets import TwoChoiceDataset
+        return TwoChoiceDataset(
+            size=10000,
+            min_separation=env_config.get("min_separation", 0.3),
+            frame_stack=frame_stack,
+        )
+    elif active_env == "point_maze_pillar":
+        from utils.datasets import PointMazePillarDataset
+        return PointMazePillarDataset(
+            size=20000,
+            max_steps_per_episode=env_config.get("max_episode_steps", 400),
             frame_stack=frame_stack,
         )
     elif active_env == "dummy_bimodal":
@@ -286,7 +317,9 @@ def main():
     print(f"Generator LR: {generator_learning_rate} (scheduler: {scheduler_type})")
     print(f"Estimator LR: {ESTIMATOR_LEARNING_RATE} (exponential decay: rate={LR_DECAY_RATE}, every {LR_DECAY_STEPS} steps)")
     print(f"Estimator architecture: MLP {ESTIMATOR_HIDDEN_DIMS}")
-    print(f"Langevin counter-examples: {NUM_COUNTER_EXAMPLES} ({LANGEVIN_TRAIN_ITERATIONS} iters)")
+    print(f"Langevin counter-examples: {NUM_COUNTER_EXAMPLES} ({LANGEVIN_TRAIN_ITERATIONS} iters, "
+          f"noise_scale={LANGEVIN_NOISE_SCALE}, delta_clip={LANGEVIN_DELTA_ACTION_CLIP})")
+    print(f"Uniform (unrefined) counter-examples: {NUM_UNIFORM_NEGATIVES}")
     print(f"Noisy-expert counter-examples: {NOISY_EXPERT_COUNT} (std={NOISY_EXPERT_STD})")
     print(f"Gradient penalty margin: {GRADIENT_MARGIN}")
     print(f"Target estimator sync: every {TARGET_UPDATE_INTERVAL} steps")
@@ -467,6 +500,19 @@ def main():
                 )
             else:
                 combined_negs = langevin_counter
+
+            # Raw (unrefined) uniform negatives — see NUM_UNIFORM_NEGATIVES
+            # above for why: without these, nothing in the loss ever pushes
+            # DOWN a spuriously high Q value in a region the Langevin chains
+            # never wander into.
+            if NUM_UNIFORM_NEGATIVES > 0:
+                act_min_u = 0.0 - UNIFORM_BOUNDARY_BUFFER
+                act_max_u = 1.0 + UNIFORM_BOUNDARY_BUFFER
+                uniform_negs = (
+                    torch.rand(B, NUM_UNIFORM_NEGATIVES, action_dim, device=device)
+                    * (act_max_u - act_min_u) + act_min_u
+                )
+                combined_negs = torch.cat([combined_negs, uniform_negs], dim=1)
 
             n_counter = combined_negs.shape[1]
 

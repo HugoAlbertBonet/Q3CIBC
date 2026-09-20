@@ -648,6 +648,44 @@
             ]
         }
     },
+    "PointMazePillar-v0": {
+        "description": "Observation bounds for PointMazePillar-v0 (real MuJoCo point-mass, fixed start/goal around a central pillar). State = [x, y, vx, vy, goal_x, goal_y].",
+        "source": "Empirical (maze extent ~[-3, 3], velocity generously bounded)",
+        "observation_dim": 6,
+        "flat_bounds": {
+            "min": [
+                -3.0,
+                -3.0,
+                -10.0,
+                -10.0,
+                -3.0,
+                -3.0
+            ],
+            "max": [
+                3.0,
+                3.0,
+                10.0,
+                10.0,
+                3.0,
+                3.0
+            ]
+        }
+    },
+    "TwoChoice-v0": {
+        "description": "Observation bounds for TwoChoice-v0 (single-step bimodal target-selection toy). State = [mode_a, mode_b], both angle/pi in [-1, 1].",
+        "source": "Synthetic",
+        "observation_dim": 2,
+        "flat_bounds": {
+            "min": [
+                -1.0,
+                -1.0
+            ],
+            "max": [
+                1.0,
+                1.0
+            ]
+        }
+    },
     "DummyBimodal-v0": {
         "description": "Observation bounds for DummyBimodal-v0 (2D Grid Navigation with a fixed circular obstacle). Same state layout as Dummy-v0 — the obstacle is a constant world feature, not part of the observation.",
         "source": "Synthetic",

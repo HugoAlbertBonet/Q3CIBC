@@ -90,7 +90,13 @@ def create_simulation(
     render_mode: str | None = None,
 ):
     """Create the appropriate simulation based on active_env."""
-    max_steps = config["simulation"].get("max_episode_steps", 200)
+    # env_config's own max_episode_steps (when set) takes priority over the
+    # generic top-level simulation block's default — several envs
+    # (dummy_bimodal, point_maze_pillar) need a value that default doesn't
+    # match, and previously silently got the wrong one here.
+    max_steps = env_config.get(
+        "max_episode_steps", config["simulation"].get("max_episode_steps", 200)
+    )
     
     if active_env == "pen":
         return PenHumanV2Simulation(
@@ -145,6 +151,29 @@ def create_simulation(
             frame_stack=FRAME_STACK,
             snapshot_steps=dummy_sim_config.get("snapshot_steps", [1, 5, 10, 20, 50, 100]),
             langevin_config=langevin_config,
+        )
+    elif active_env == "two_choice":
+        from simulations.two_choice_simulation import TwoChoiceDiagnosticSimulation
+        langevin_config = env_config.get("model", {}).get("langevin_config", {})
+        return TwoChoiceDiagnosticSimulation(
+            control_point_generator=model,
+            q_estimator=q_estimator,
+            device=device,
+            min_separation=env_config.get("min_separation", 0.3),
+            success_tolerance=env_config.get("success_tolerance", 0.05),
+            frame_stack=FRAME_STACK,
+            langevin_config=langevin_config,
+        )
+    elif active_env == "point_maze_pillar":
+        from simulations.point_maze_pillar_simulation import PointMazePillarDiagnosticSimulation
+        sim_cfg = env_config.get("simulation", {})
+        return PointMazePillarDiagnosticSimulation(
+            control_point_generator=model,
+            q_estimator=q_estimator,
+            device=device,
+            max_episode_steps=max_steps,
+            frame_stack=FRAME_STACK,
+            snapshot_steps=sim_cfg.get("snapshot_steps", [1, 5, 20, 50, 100, 200]),
         )
     else:
         raise ValueError(f"Unknown environment: {active_env}")

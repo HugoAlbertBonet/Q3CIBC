@@ -1,0 +1,53 @@
+# Square (1:1) example videos of each environment, rolled out by the BEST Q3C
+# checkpoint in that env's hyperparameter search. One job per environment.
+#
+# Submit with:  bash submit_experiments.sh batches/q3cEnvVideos.txt
+#
+# 5 jobs, minutes each (evaluation only — nothing trains here). Writes
+# results/env_videos_q3c/<env>.{mp4,gif} at 512x512, plus a 320px gif.
+#
+# MUST run on the cluster: the trials' checkpoint_dir entries point at
+# /home1/halbertb/Q3CIBC/checkpoints/hpsearch/..., which does not exist on a
+# laptop. scripts/record_env_videos.py fails with a clear message if the
+# checkpoint is unreadable, so a misplaced submit does not silently record a
+# different policy.
+#
+# --q3c makes the recorder read results/hyperparam_search/<script>/<env>/trials.jsonl,
+# take the record with the best metric, and rebuild that trial's config the same
+# way scripts/reeval_trials.py does (per-run config.json beside the checkpoint,
+# else base config + the record's params). That last part is the reason not to
+# hand-roll this: the inference-side settings (DFO iterations, sample counts,
+# Langevin) live in the config, so scoring with the defaults would film a
+# different policy than the trial reported.
+#
+# Best trial per env as of 2026-09-20 (what --trial best resolves to; it is
+# re-resolved at run time, so a newer trial wins automatically):
+#   particle (16-D)      trial 231  success 0.94   run_20260518T034547_ad20b199
+#   pushing_pixels       trial  95  success 0.99   run_20260607T102803_5bd22651
+#   pen                  trial  86  success 0.76   run_20260607T102603_17774e19
+#   kitchen              trial  83  tasks   3.60   run_20260710T110613_2289cfc9
+#   libero_goal_pixels   trial 163  success 1.00   run_20260906T063603_ed00bcdd
+# Pin one instead with --trial <id>, or bypass the search with --checkpoint <dir>.
+#
+# Episode counts are picked so a SUCCESSFUL episode is very likely to be in the
+# batch — the recorder films every episode and keeps the first successful one
+# (kitchen keeps the episode with the most subtasks, since its success flag
+# means "all four" and no trial ever cleared it).
+#
+# Note on particle: the search never trained a 2-D particle policy, so the Q3C
+# clip is the paper's 16-D task. ParticleEnv draws n>2 as a stack of 16
+# per-dimension traces, so that clip is a plot, not a camera view, and is
+# letterboxed rather than cropped. The 2-D particle clip has no Q3C checkpoint
+# behind it and stays on the scripted oracle (drop --q3c, use --envs particle2d).
+#
+# Extras: pushing_pixels needs the `pushing` extra (pybullet), libero_goal needs
+# `libero`. pen/kitchen/particle need neither — the recorder falls back to
+# Pillow for resizing when cv2 (libero extra) is absent. Sync the venv with the
+# union BEFORE submitting, as submit_experiments.sh does not sync:
+#   uv sync --extra libero --extra pushing
+
+uv run --managed-python python scripts/record_env_videos.py --envs particle16 --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 5 --out results/env_videos_q3c
+uv run --managed-python --extra pushing python scripts/record_env_videos.py --envs pushing_pixels --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 5 --out results/env_videos_q3c
+uv run --managed-python python scripts/record_env_videos.py --envs pen --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 12 --out results/env_videos_q3c
+uv run --managed-python python scripts/record_env_videos.py --envs kitchen --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 5 --out results/env_videos_q3c
+uv run --managed-python --extra libero python scripts/record_env_videos.py --envs libero_goal --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 5 --out results/env_videos_q3c

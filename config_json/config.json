@@ -654,6 +654,103 @@
                 "num_episodes": 3
             }
         },
+        "point_maze_pillar": {
+            "env_id": "PointMazePillar-v0",
+            "state_dim": 6,
+            "action_dim": 2,
+            "frame_stack": 1,
+            "action_bounds": [
+                -1,
+                1
+            ],
+            "max_episode_steps": 500,
+            "num_eval_seeds": 50,
+            "training": {
+                "training_steps": 30000,
+                "learning_rate": 0.001,
+                "batch_size": 128,
+                "sampling_method": "uniform",
+                "counter_examples": 32,
+                "top_k_control_points": 15,
+                "num_langevin_negatives": 8,
+                "langevin_init_kind": "uniform",
+                "langevin_num_iterations": 25,
+                "langevin_lr_init": 0.1,
+                "langevin_lr_final": 0.01,
+                "langevin_noise_scale": 0.2,
+                "langevin_delta_clip": 0.2
+            },
+            "model": {
+                "control_points": 30,
+                "num_hidden_layers": 3,
+                "num_neurons": 128,
+                "langevin_config": {
+                    "num_iterations": 20,
+                    "lr_init": 0.1,
+                    "lr_final": 0.01,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.2,
+                    "noise_scale": 0.2
+                }
+            },
+            "simulation": {
+                "snapshot_steps": [
+                    1,
+                    5,
+                    20,
+                    50,
+                    100,
+                    200,
+                    300
+                ],
+                "num_episodes": 3
+            }
+        },
+        "two_choice": {
+            "env_id": "TwoChoice-v0",
+            "state_dim": 2,
+            "action_dim": 1,
+            "frame_stack": 1,
+            "min_separation": 0.3,
+            "success_tolerance": 0.05,
+            "action_bounds": [
+                -1,
+                1
+            ],
+            "max_episode_steps": 1,
+            "num_eval_seeds": 200,
+            "training": {
+                "training_steps": 10000,
+                "learning_rate": 0.001,
+                "batch_size": 128,
+                "sampling_method": "uniform",
+                "counter_examples": 32,
+                "top_k_control_points": 5,
+                "num_langevin_negatives": 8,
+                "langevin_init_kind": "uniform",
+                "langevin_num_iterations": 25,
+                "langevin_lr_init": 0.1,
+                "langevin_lr_final": 0.01,
+                "langevin_noise_scale": 0.2,
+                "langevin_delta_clip": 0.2
+            },
+            "model": {
+                "control_points": 10,
+                "num_hidden_layers": 2,
+                "num_neurons": 64,
+                "langevin_config": {
+                    "num_iterations": 20,
+                    "lr_init": 0.1,
+                    "lr_final": 0.01,
+                    "polynomial_decay_power": 2.0,
+                    "delta_action_clip": 0.2,
+                    "noise_scale": 0.2
+                }
+            },
+            "simulation": {
+                "num_episodes": 12
+            }
+        },
         "dummy_bimodal": {
             "env_id": "DummyBimodal-v0",
             "state_dim": 4,

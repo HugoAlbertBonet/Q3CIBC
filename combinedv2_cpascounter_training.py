@@ -403,6 +403,20 @@ def load_dataset(split="train"):
             n_dim=env_config.get("n_dim", 2),
             frame_stack=frame_stack,
         )
+    elif active_env == "two_choice":
+        from utils.datasets import TwoChoiceDataset
+        return TwoChoiceDataset(
+            size=10000,
+            min_separation=env_config.get("min_separation", 0.3),
+            frame_stack=frame_stack,
+        )
+    elif active_env == "point_maze_pillar":
+        from utils.datasets import PointMazePillarDataset
+        return PointMazePillarDataset(
+            size=20000,
+            max_steps_per_episode=env_config.get("max_episode_steps", 400),
+            frame_stack=frame_stack,
+        )
     elif active_env == "dummy_bimodal":
         from utils.datasets import DummyBimodalDataset
         return DummyBimodalDataset(
