@@ -397,13 +397,21 @@ def _q3c_records(hs, active_env: str, script: str) -> list[dict]:
     return [json.loads(line) for line in open(path) if line.strip()]
 
 
-def _q3c_pick_record(records: list[dict], metric: str, trial: str | None) -> dict:
-    """The record to film: an explicit trial id, or the best one by *metric*."""
+def _q3c_pick_record(records: list[dict], metric: str,
+                     trial: str | None) -> tuple[dict, list[dict]]:
+    """The record to film: an explicit trial id, or the best one by *metric*.
+
+    "Best" means best whose weights are still ON DISK. The search ran for
+    months and old run directories get pruned, so the top-scoring record
+    routinely points at a checkpoint that no longer exists — walking down the
+    ranking beats failing the job. Returns (record, skipped) so the caller can
+    say what it passed over.
+    """
     if trial not in (None, "best"):
         wanted = int(trial)
         for rec in records:
             if int(rec.get("trial_id", -1)) == wanted:
-                return rec
+                return rec, []
         raise KeyError(f"trial {wanted} not in trials.jsonl")
 
     usable = [
@@ -417,7 +425,17 @@ def _q3c_pick_record(records: list[dict], metric: str, trial: str | None) -> dic
         raise RuntimeError(f"no usable record carrying {metric!r}")
     # Re-evaluations are eligible: they are corrected scores for the same
     # weights, and they carry the eval-side params that produced them.
-    return max(usable, key=lambda r: r[metric])
+    usable.sort(key=lambda r: r[metric], reverse=True)
+
+    skipped: list[dict] = []
+    for rec in usable:
+        if Path(rec["checkpoint_dir"]).is_dir():
+            return rec, skipped
+        skipped.append(rec)
+    raise FileNotFoundError(
+        f"none of the {len(usable)} scored checkpoints still exist on disk; "
+        f"best was trial {usable[0].get('trial_id')} at {usable[0]['checkpoint_dir']}"
+    )
 
 
 def _q3c_config(hs, ckpt_dir: str, rec: dict | None, active_env: str, args) -> dict:
@@ -475,14 +493,18 @@ def record_q3c_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], st
         source = f"--checkpoint {ckpt_dir}"
     else:
         records = _q3c_records(hs, active_env, args.script)
-        rec = _q3c_pick_record(records, metric, args.trial)
+        rec, skipped = _q3c_pick_record(records, metric, args.trial)
         ckpt_dir = rec["checkpoint_dir"]
         source = (f"trial {rec.get('trial_id')} ({metric}={rec[metric]}, "
                   f"run {rec.get('run_id')})")
+        if skipped:
+            print(f"  skipped {len(skipped)} higher-scoring trial(s) whose "
+                  f"checkpoints are gone, best being trial "
+                  f"{skipped[0].get('trial_id')} ({metric}={skipped[0][metric]})")
     if not Path(ckpt_dir).is_dir():
         raise FileNotFoundError(
-            f"checkpoint dir {ckpt_dir} not readable from here — the hpsearch "
-            f"checkpoints live on the cluster; run this batch there"
+            f"checkpoint dir {ckpt_dir} not readable — hpsearch checkpoints "
+            f"live on the cluster, so run this batch there"
         )
     print(f"  {source}")
 
@@ -831,18 +853,25 @@ def record_particle(args) -> tuple[list[np.ndarray], str]:
 # ── video writing ───────────────────────────────────────────────────────────
 
 def _resize(img: np.ndarray, size: int) -> np.ndarray:
-    """Resize to size x size. cv2 when present, Pillow otherwise.
+    """Resize to size x size. Pillow first, cv2 only as a fallback.
 
-    cv2 only ships in the `libero` extra (pyproject overrides robosuite's
-    opencv-python with the headless build), so a SLURM job that synced without
-    that extra must still be able to write a video. Pillow comes in with
-    imageio, which is a core dependency.
+    Pillow is the dependable one here: it arrives with imageio, which is a core
+    dependency. cv2 is not — it ships only in the `libero` extra (pyproject
+    overrides robosuite's opencv-python with the headless build), and on the
+    cluster that install resolves to a `cv2` that imports but is missing its
+    constants (`AttributeError: module 'cv2' has no attribute 'INTER_AREA'`).
+    Importing it successfully therefore proves nothing, so it is not trusted
+    with the job.
     """
     try:
-        import cv2
-    except ImportError:
         from PIL import Image
-        return np.asarray(Image.fromarray(img).resize((size, size), Image.LANCZOS))
+    except ImportError:
+        pass
+    else:
+        resample = Image.LANCZOS if img.shape[0] >= size else Image.BICUBIC
+        return np.asarray(Image.fromarray(img).resize((size, size), resample))
+
+    import cv2
     interp = cv2.INTER_AREA if img.shape[0] >= size else cv2.INTER_CUBIC
     return cv2.resize(img, (size, size), interpolation=interp)
 
