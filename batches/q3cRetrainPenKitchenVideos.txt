@@ -1,0 +1,45 @@
+# Retrain pen and kitchen with their best-recorded configs, then film each.
+#
+# Submit with:  bash submit_experiments.sh batches/q3cRetrainPenKitchenVideos.txt
+#
+# 2 jobs. Each line TRAINS and then RECORDS in the same job, chained with &&,
+# because submit_experiments.sh gives every line its own job with no ordering
+# between them — chaining is what guarantees the video step sees the weights.
+#
+#   pen      100k steps, ~15.5 h recorded for trial 86   (+ minutes to film)
+#   kitchen  150k steps, ~40.4 h recorded for trial 83   (+ minutes to film)
+#
+# WALL CLOCK: the CARC profile requests 48 h. Pen is comfortable. Kitchen at
+# ~40.4 h leaves about 7 h of headroom, so a slower node or a busier filesystem
+# can time out before the video step runs. The weights are checkpointed either
+# way, so recovering from that costs one --checkpoint run, not a retrain:
+#   uv run --managed-python python scripts/record_env_videos.py --envs kitchen \
+#     --q3c --checkpoint checkpoints/hpsearch/<the new run> --episodes 8 --clips 4 \
+#     --out results/env_videos_q3c_retrained
+#
+# WHY THE PARAMS ARE PINNED IN FULL: these JSON blobs are the `params` field of
+# the winning RECORD, not the arguments of the batch line that produced it.
+# Runs submitted before d78fd4a7 inherited unpinned keys from the auto-suggester,
+# so the old batch lines do not describe what those trials actually ran. All 46
+# (pen) / 52 (kitchen) keys are pinned so nothing can be re-suggested.
+#
+#   pen      trial  86, success_rate 0.76
+#   kitchen  trial  83, avg_tasks_completed 3.60
+#
+# Retraining reproduces the CONFIG, not the weights: expect a result near the
+# recorded score, not identical to it (GPU nondeterminism, and only trial_seed
+# is pinned). If the new run lands far below, compare against the second-best
+# record before assuming the config was transcribed wrong.
+#
+# The recording step uses --trial best rather than a fixed path: the fresh run
+# appends its own record to trials.jsonl, and since every older pen/kitchen
+# checkpoint has been deleted from disk, the new one is the best that still
+# exists and gets picked automatically. The three surviving 2026-09-05 kitchen
+# checkpoints do not compete — they have no trials.jsonl record at all.
+#
+# Neither env needs an optional extra. Sync before submitting anyway, so the
+# read-only .venv the jobs use is complete:
+#   uv sync --extra libero --extra pushing
+
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env pen --fixed-params '{"batch_size":512,"control_points":100,"cosine_t0":50000,"cosine_t_max":100000,"cp_depth":8,"cp_network_kind":"mlp","cp_use_spectral_norm":false,"cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_form":"hinge","gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.01,"inference_langevin_iterations":25,"inference_langevin_lr_final":1e-06,"inference_langevin_lr_init":0.01,"inference_langevin_noise_scale":0.1,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_init_kind":"uniform","langevin_lr_final":1e-05,"langevin_lr_init":0.5,"langevin_noise_scale":0.5,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_hidden_layers":8,"num_langevin_negatives":8,"num_neurons":512,"num_uniform_negatives":0,"q_depth":8,"q_network_kind":"mlp","q_use_spectral_norm":true,"q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":30,"training_steps":100000,"trial_seed":0,"use_spectral_norm":true}' && uv run --managed-python python scripts/record_env_videos.py --envs pen --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 12 --clips 4 --out results/env_videos_q3c_retrained
+uv run --managed-python python hyperparam_search.py combinedv2_cpascounter_training.py --run --active-env kitchen --fixed-params '{"batch_size":512,"control_points":200,"cosine_t0":50000,"cosine_t_max":150000,"cp_depth":4,"cp_network_kind":"resnet","cp_use_spectral_norm":false,"cp_width":512,"entropy_bandwidth":0.2,"estimator_learning_rate":0.0005,"generator_infonce_weight":0.05,"gradient_penalty_form":"hinge","gradient_penalty_margin":1.0,"gradient_penalty_weight":1.0,"inference_langevin_again_iterations":30,"inference_langevin_again_noise_scale":0.5,"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.5,"inference_langevin_iterations":50,"inference_langevin_lr_final":1e-05,"inference_langevin_lr_init":0.05,"inference_langevin_noise_scale":1.0,"inference_langevin_noise_via_stepsize":true,"inference_langevin_top_k":0,"info_nce_weight":0.5,"infonce_logit_clamp":20.0,"kitchen_qpos_only":true,"langevin_decay_power":2.0,"langevin_delta_clip":0.5,"langevin_init_kind":"uniform","langevin_lr_final":1e-05,"langevin_lr_init":0.5,"langevin_noise_scale":0.5,"langevin_num_iterations":100,"learning_rate":0.0005,"mse_weight":10.0,"num_hidden_layers":8,"num_langevin_negatives":16,"num_neurons":512,"num_uniform_negatives":0,"q_depth":4,"q_network_kind":"resnet","q_resnet_final_activation":false,"q_use_spectral_norm":true,"q_width":512,"scheduler_type":"cosine","separation_loss":"entropy","separation_weight":0.1,"top_k_control_points":50,"training_steps":150000,"trial_seed":0,"use_spectral_norm":true}' && uv run --managed-python python scripts/record_env_videos.py --envs kitchen --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 8 --clips 4 --out results/env_videos_q3c_retrained

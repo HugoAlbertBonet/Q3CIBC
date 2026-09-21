@@ -274,6 +274,40 @@ class Recorder:
         env._recorder_attached = True
 
 
+# ── clip selection ──────────────────────────────────────────────────────────
+
+# One recorded episode: its frames and a one-line provenance note.
+Clip = tuple[list[np.ndarray], str]
+
+
+def _pick_clips(segments: list[list[np.ndarray]], details: list[dict],
+                want: int, rank_key: str | None = None) -> tuple[list[Clip], str]:
+    """Choose up to *want* episodes to keep, best first.
+
+    Every episode is a different seed (the evaluators use `range(num_seeds)`),
+    so taking several gives genuinely different initial conditions rather than
+    the same rollout twice. Successful episodes win; `rank_key` ranks what is
+    left when success is not the env's metric (kitchen counts subtasks).
+    """
+    scored = []
+    for i, seg in enumerate(segments):
+        d = details[i] if i < len(details) else {}
+        success = bool(d.get("success", False))
+        rank = float(d.get(rank_key, 0)) if rank_key else 0.0
+        scored.append((success, rank, len(seg), i, d))
+    scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+
+    clips: list[Clip] = []
+    for success, rank, _, i, d in scored[:want]:
+        extra = {k: d[k] for k in ("seed", "success", "task_name", "tasks_completed", "reward")
+                 if k in d}
+        state = "success" if success else "no success"
+        clips.append((segments[i], f"episode {i} ({state}) {extra}".strip()))
+    n_ok = sum(1 for t in scored if t[0])
+    summary = f"{n_ok}/{len(segments)} episodes succeeded, kept {len(clips)}"
+    return clips, summary
+
+
 # ── policy-driven clips (reuse the wifi_bc evaluator) ───────────────────────
 
 @contextmanager
@@ -340,7 +374,7 @@ def _make_recording_sim(base_cls, env_key: str, rec: Recorder):
     return RecordingSimulation
 
 
-def record_policy_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], str]:
+def record_policy_env(env_key: str, spec: dict, args) -> list[Clip]:
     """Run the checkpoint for *env_key* and return (frames, provenance note)."""
     method = args.method or spec["method"]
     ckpt = WIFI_BC_ROOT / "checkpoints" / method / spec["config_env"]
@@ -374,18 +408,10 @@ def record_policy_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray],
     if not segments:
         raise RuntimeError("no frames captured")
 
-    successes = [bool(r.get("success", False)) for r in per_seed][: len(segments)]
-    pick = next((i for i, ok in enumerate(successes) if ok), None)
-    if pick is None:
-        # Nothing succeeded: show the longest attempt, and say so.
-        pick = max(range(len(segments)), key=lambda i: len(segments[i]))
-        note = f"episode {pick} (no success in {len(segments)} episodes)"
-    else:
-        note = f"episode {pick} (success)"
-    detail = per_seed[pick] if pick < len(per_seed) else {}
-    extra = {k: detail[k] for k in ("seed", "task_name", "tasks_completed", "reward") if k in detail}
-    print(f"  success rate over {len(segments)} episodes: {results.get('success_rate', 0.0):.2f}")
-    return segments[pick], f"{note} {extra}".strip()
+    clips, summary = _pick_clips(segments, per_seed, args.clips)
+    print(f"  success rate over {len(segments)} episodes: "
+          f"{results.get('success_rate', 0.0):.2f} — {summary}")
+    return clips
 
 
 # ── Q3C checkpoint clips (this repo's own trained policies) ─────────────────
@@ -467,11 +493,26 @@ def _q3c_config(hs, ckpt_dir: str, rec: dict | None, active_env: str, args) -> d
         raise ValueError(
             f"config active_env={config.get('active_env')!r}, expected {active_env!r}"
         )
+    overrides = json.loads(args.param_overrides) if args.param_overrides else {}
+    if overrides:
+        # Same allowlist reeval_trials.py enforces: these change how a saved
+        # checkpoint is QUERIED, never what was trained, so applying them to
+        # someone else's weights is sound. A training/model key is not, because
+        # it would describe an architecture these weights do not have.
+        invalid = sorted(set(overrides) - hs.INFERENCE_ONLY_PARAMS)
+        if invalid:
+            raise ValueError(
+                "--param-overrides takes evaluation-only parameters; rejected: "
+                + ", ".join(invalid)
+            )
+        config = hs.apply_params_to_config(config, overrides)
+        print(f"  inference overrides applied: {sorted(overrides)}")
+
     config["environments"][active_env]["num_eval_seeds"] = args.episodes
     return config
 
 
-def record_q3c_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], str]:
+def record_q3c_env(env_key: str, spec: dict, args) -> list[Clip]:
     """Film this repo's Q3C policy, as scored by the hyperparameter search.
 
     Runs against Q3CIBC's own `hyperparam_search.evaluate_q3c` and
@@ -530,29 +571,17 @@ def record_q3c_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], st
         raise RuntimeError("no frames captured")
     details = results.get("eval_details", results.get("per_seed", [])) or []
 
-    successes = [bool(d.get("success", False)) for d in details][: len(segments)]
-    pick = next((i for i, ok in enumerate(successes) if ok), None)
-    if pick is None and active_env == "kitchen":
-        # Kitchen reports subtasks, not success: film the best episode instead.
-        done = [int(d.get("tasks_completed", 0)) for d in details][: len(segments)]
-        if done:
-            pick = max(range(len(done)), key=lambda i: done[i])
-    if pick is None:
-        pick = max(range(len(segments)), key=lambda i: len(segments[i]))
-        note = f"episode {pick} (no success in {len(segments)} episodes)"
-    else:
-        note = f"episode {pick}"
-    detail = details[pick] if pick < len(details) else {}
-    extra = {k: detail[k] for k in ("seed", "success", "tasks_completed", "reward")
-             if k in detail}
-    headline = results.get(metric)
-    print(f"  {metric} over {len(segments)} episodes: {headline}")
-    return segments[pick], f"q3c {source}, {note} {extra}"
+    # Kitchen's success flag means "all four subtasks", which no trial ever
+    # cleared, so rank its episodes by how many they did solve.
+    rank_key = "tasks_completed" if active_env == "kitchen" else None
+    clips, summary = _pick_clips(segments, details, args.clips, rank_key)
+    print(f"  {metric} over {len(segments)} episodes: {results.get(metric)} — {summary}")
+    return [(frames, f"q3c {source}, {note}") for frames, note in clips]
 
 
 # ── LIBERO demonstration clip ───────────────────────────────────────────────
 
-def record_libero_demo(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], str]:
+def record_libero_demo(env_key: str, spec: dict, args) -> list[Clip]:
     """Film a LIBERO demonstration replayed in its own env.
 
     LIBERO ships each task's demos with the MuJoCo state they started from, so
@@ -587,8 +616,7 @@ def record_libero_demo(env_key: str, spec: dict, args) -> tuple[list[np.ndarray]
                                  camera_heights=args.render_size,
                                  camera_widths=args.render_size)
         rec = Recorder(GRABBERS[env_key], args.render_size)
-        best: list[np.ndarray] = []
-        note = ""
+        clips: list[Clip] = []
         try:
             with h5py.File(demo_path, "r") as f:
                 demos = sorted(f["data"].keys(), key=lambda k: int(k.split("_")[-1]))
@@ -609,15 +637,20 @@ def record_libero_demo(env_key: str, spec: dict, args) -> tuple[list[np.ndarray]
                     frames = rec.segments[-1]
                     print(f"  demo {i} ({demo}): {len(frames)} frames, success={success}")
                     if success:
-                        return frames, f"demo {demo} of {task.name!r} (success)"
-                    if len(frames) > len(best):
-                        best, note = frames, f"demo {demo} of {task.name!r} (no success)"
+                        clips.append((frames, f"demo {demo} of {task.name!r} (success)"))
+                        if len(clips) >= args.clips:
+                            break
         finally:
             env.close()
 
-    if not best:
-        raise RuntimeError("no frames captured")
-    return best, note
+    if not clips:
+        # Fall back to the longest attempt so the env is at least shown.
+        segments = [seg for seg in rec.segments if seg]
+        if not segments:
+            raise RuntimeError("no frames captured")
+        longest = max(segments, key=len)
+        return [(longest, f"{task.name!r} (no successful demo in {len(segments)})")]
+    return clips
 
 
 # ── pushing oracle clip ─────────────────────────────────────────────────────
@@ -711,7 +744,7 @@ class _OrientedPushOracle:
         return np.asarray(xy_delta, dtype=np.float32)
 
 
-def record_pushing_oracle(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], str]:
+def record_pushing_oracle(env_key: str, spec: dict, args) -> list[Clip]:
     """Film the scripted push oracle solving the block-pushing task."""
     with _wifi_bc_importable():
         from envs.pushing_pixels_env import PushingPixelsEnv
@@ -720,6 +753,7 @@ def record_pushing_oracle(env_key: str, spec: dict, args) -> tuple[list[np.ndarr
         rec = Recorder(GRABBERS[env_key], args.render_size)
         oracle = _OrientedPushOracle(env._env.get_control_frequency())
 
+        clips: list[Clip] = []
         best: tuple[float, list[np.ndarray], int] = (np.inf, [], -1)
         try:
             for ep in range(args.episodes):
@@ -741,21 +775,27 @@ def record_pushing_oracle(env_key: str, spec: dict, args) -> tuple[list[np.ndarr
                 print(f"  oracle episode {ep}: {len(frames)} frames, "
                       f"success={success}, min dist={min_dist:.4f}")
                 if success:
-                    return frames, f"oracle episode {ep} (success, seed {args.seed + ep})"
-                if min_dist < best[0]:
+                    # Each seed randomises the block and target placement, so
+                    # the kept clips differ in starting layout, not just noise.
+                    clips.append((frames, f"oracle episode {ep} (success, seed {args.seed + ep})"))
+                    if len(clips) >= args.clips:
+                        break
+                elif min_dist < best[0]:
                     best = (min_dist, frames, ep)
         finally:
             env.close()
 
+    if clips:
+        return clips
     min_dist, frames, ep = best
     if not frames:
         raise RuntimeError("no frames captured")
-    return frames, f"oracle episode {ep} (no success, closest {min_dist:.4f})"
+    return [(frames, f"oracle episode {ep} (no success, closest {min_dist:.4f})")]
 
 
 # ── demonstration clips (replay a dataset episode) ──────────────────────────
 
-def record_demo_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], str]:
+def record_demo_env(env_key: str, spec: dict, args) -> list[Clip]:
     """Film a D4RL demonstration replayed in the env.
 
     FrankaKitchen's reset is deterministic enough that stepping a demo's action
@@ -770,7 +810,8 @@ def record_demo_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], s
     rec = Recorder(GRABBERS[env_key], args.render_size)
     n_targets = len(getattr(env.unwrapped, "goal", ()) or ())
 
-    best: tuple[int, list[np.ndarray], int] = (-1, [], -1)
+    clips: list[Clip] = []
+    scored: list[tuple[int, list[np.ndarray], int]] = []
     try:
         for ep_i, episode in enumerate(ds.iterate_episodes()):
             if ep_i >= args.episodes:
@@ -787,22 +828,26 @@ def record_demo_env(env_key: str, spec: dict, args) -> tuple[list[np.ndarray], s
                     break
             frames = rec.segments[-1]
             print(f"  demo {ep_i}: {len(frames)} frames, subtasks {done}/{n_targets}")
-            if done > best[0]:
-                best = (done, frames, ep_i)
+            scored.append((done, frames, ep_i))
             if n_targets and done >= n_targets:
-                break
+                clips.append((frames, f"demo episode {ep_i} ({done}/{n_targets} subtasks)"))
+                if len(clips) >= args.clips:
+                    break
     finally:
         env.close()
 
-    done, frames, ep_i = best
-    if not frames:
+    if clips:
+        return clips
+    if not scored:
         raise RuntimeError("no frames captured")
-    return frames, f"demo episode {ep_i} ({done}/{n_targets} subtasks)"
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [(f, f"demo episode {i} ({d}/{n_targets} subtasks)")
+            for d, f, i in scored[: args.clips]]
 
 
 # ── particle oracle clip ────────────────────────────────────────────────────
 
-def record_particle(args) -> tuple[list[np.ndarray], str]:
+def record_particle(args) -> list[Clip]:
     """Scripted oracle on the 2-D particle env: first goal, then second goal."""
     with _wifi_bc_importable():
         from envs.particle_env import ParticleEnv
@@ -811,13 +856,16 @@ def record_particle(args) -> tuple[list[np.ndarray], str]:
         env = ParticleEnv(n_dim=n_dim, render_mode="rgb_array")
         rec = Recorder(GRABBERS["particle2d"], args.render_size)
 
+        clips: list[Clip] = []
         best: list[np.ndarray] = []
         note = ""
         for ep in range(args.episodes):
             rec.new_segment()
             obs, _ = env.reset(seed=args.seed + ep)
             rec.capture(None, env)
-            # obs = [pos_agent | vel_agent | pos_first_goal | pos_second_goal]
+            # obs = [pos_agent | vel_agent | pos_first_goal | pos_second_goal].
+            # Every seed redraws BOTH goals and the start position, so the kept
+            # clips differ in layout, not only in the path taken.
             first_goal = obs[2 * n_dim:3 * n_dim].copy()
             second_goal = obs[3 * n_dim:4 * n_dim].copy()
             reached_first = False
@@ -840,14 +888,17 @@ def record_particle(args) -> tuple[list[np.ndarray], str]:
             frames = rec.segments[-1]
             print(f"  episode {ep}: {len(frames)} frames, success={success}")
             if success:
-                env.close()
-                return frames, f"oracle episode {ep} (success, seed {args.seed + ep})"
-            if len(frames) > len(best):
+                clips.append((frames, f"oracle episode {ep} (success, seed {args.seed + ep})"))
+                if len(clips) >= args.clips:
+                    break
+            elif len(frames) > len(best):
                 best, note = frames, f"oracle episode {ep} (no success, seed {args.seed + ep})"
         env.close()
+        if clips:
+            return clips
         if not best:
             raise RuntimeError("no frames captured")
-        return best, note
+        return [(best, note)]
 
 
 # ── video writing ───────────────────────────────────────────────────────────
@@ -957,6 +1008,13 @@ def main() -> int:
     ap.add_argument("--gif-size", type=int, default=320, help="gif edge length (square)")
     ap.add_argument("--gif-fps", type=float, default=15.0, help="gif frame rate")
     ap.add_argument("--no-gif", action="store_true", help="write only the mp4")
+    ap.add_argument("--clips", type=int, default=1,
+                    help="how many episodes to keep per env; each is a different "
+                         "seed, so they differ in starting layout and (LIBERO) task")
+    ap.add_argument("--param-overrides", dest="param_overrides", default=None,
+                    help="with --q3c: JSON of EVALUATION-ONLY parameters to apply on "
+                         "top of the checkpoint's config, e.g. the best trial's "
+                         "inference settings. Training/model keys are rejected.")
     ap.add_argument("--q3c", action="store_true",
                     help="film this repo's Q3C checkpoints (hyperparam_search trials) "
                          "instead of each env's default driver")
@@ -983,28 +1041,38 @@ def main() -> int:
         try:
             driver = "q3c" if args.q3c else spec["driver"]
             if driver == "oracle":
-                frames, note = record_particle(args)
+                clips = record_particle(args)
             elif driver == "q3c":
-                frames, note = record_q3c_env(env_key, spec, args)
+                clips = record_q3c_env(env_key, spec, args)
             elif driver == "libero_demo":
-                frames, note = record_libero_demo(env_key, spec, args)
+                clips = record_libero_demo(env_key, spec, args)
             elif driver == "push_oracle":
-                frames, note = record_pushing_oracle(env_key, spec, args)
+                clips = record_pushing_oracle(env_key, spec, args)
             elif driver == "demo":
-                frames, note = record_demo_env(env_key, spec, args)
+                clips = record_demo_env(env_key, spec, args)
             else:
-                frames, note = record_policy_env(env_key, spec, args)
-            written = write_clips(frames, args.out / env_key, args, spec["fps"],
-                                  spec.get("crop"), spec.get("fit", "crop"))
+                clips = record_policy_env(env_key, spec, args)
         except Exception as exc:  # noqa: BLE001 — one env failing must not sink the rest
             print(f"  FAILED: {type(exc).__name__}: {exc}")
             failures.append(f"{env_key}: {type(exc).__name__}: {exc}")
             continue
-        dur = len(frames) / spec["fps"]
-        print(f"  {note}")
-        print(f"  {len(frames)} frames, {dur:.1f}s @ {spec['fps']}fps")
-        for path in written:
-            print(f"  -> {path}  ({path.stat().st_size / 1e6:.2f} MB)")
+
+        # A single clip keeps the bare name, so existing links do not break;
+        # several get a numeric suffix.
+        for i, (frames, note) in enumerate(clips, start=1):
+            stem = env_key if len(clips) == 1 else f"{env_key}_{i:02d}"
+            try:
+                written = write_clips(frames, args.out / stem, args, spec["fps"],
+                                      spec.get("crop"), spec.get("fit", "crop"))
+            except Exception as exc:  # noqa: BLE001
+                print(f"  FAILED writing {stem}: {type(exc).__name__}: {exc}")
+                failures.append(f"{env_key}/{stem}: {type(exc).__name__}: {exc}")
+                continue
+            dur = len(frames) / spec["fps"]
+            print(f"  {note}")
+            print(f"  {len(frames)} frames, {dur:.1f}s @ {spec['fps']}fps")
+            for path in written:
+                print(f"  -> {path}  ({path.stat().st_size / 1e6:.2f} MB)")
 
     if failures:
         print("\nFailed:")
