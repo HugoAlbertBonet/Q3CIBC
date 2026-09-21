@@ -3,7 +3,7 @@
 #
 # Submit with:  bash submit_experiments.sh batches/q3cEnvVideosVariety.txt
 #
-# 7 jobs, minutes each (evaluation only). Writes 512x512 mp4 + gif into
+# 6 jobs, minutes each (evaluation only). Writes 512x512 mp4 + gif into
 # results/env_videos_q3c_variety/<env>_NN.{mp4,gif}.
 #
 # --clips N keeps N episodes instead of one. Every episode is a different seed
@@ -25,7 +25,8 @@
 # scripted oracle (drive the setpoint to the first goal, then the second),
 # which is a demonstration of the ENVIRONMENT, not of the method. The 16-D Q3C
 # clip already recorded in results/env_videos_q3c/ is the one that shows the
-# policy. To get a genuine 2-D Q3C clip, a 2-D policy has to be trained first.
+# policy, and it is not repeated here. To get a genuine 2-D Q3C clip, a 2-D
+# policy has to be trained first.
 #
 # KITCHEN: the best-scoring trials' weights are gone (see the note in
 # batches/q3cEnvVideos.txt). Three Q3C checkpoints from 2026-09-05 survive, and
@@ -51,7 +52,6 @@
 uv run --managed-python python scripts/record_env_videos.py --envs particle2d --episodes 8 --clips 4 --out results/env_videos_q3c_variety
 uv run --managed-python --extra pushing python scripts/record_env_videos.py --envs pushing_pixels --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 10 --clips 4 --out results/env_videos_q3c_variety
 uv run --managed-python --extra libero python scripts/record_env_videos.py --envs libero_goal --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 10 --clips 4 --out results/env_videos_q3c_variety
-uv run --managed-python python scripts/record_env_videos.py --envs particle16 --q3c --script combinedv2_cpascounter_training.py --trial best --episodes 10 --clips 4 --out results/env_videos_q3c_variety
 uv run --managed-python python scripts/record_env_videos.py --envs kitchen --q3c --checkpoint checkpoints/hpsearch/run_20260905T120802_8f253d9d --episodes 8 --clips 4 --param-overrides '{"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.5,"inference_langevin_iterations":50,"inference_langevin_lr_final":1e-05,"inference_langevin_lr_init":0.05,"inference_langevin_noise_scale":1.0}' --out results/env_videos_q3c_variety/kitchen_8f253d9d
 uv run --managed-python python scripts/record_env_videos.py --envs kitchen --q3c --checkpoint checkpoints/hpsearch/run_20260905T120802_b7adfddd --episodes 8 --clips 4 --param-overrides '{"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.5,"inference_langevin_iterations":50,"inference_langevin_lr_final":1e-05,"inference_langevin_lr_init":0.05,"inference_langevin_noise_scale":1.0}' --out results/env_videos_q3c_variety/kitchen_b7adfddd
 uv run --managed-python python scripts/record_env_videos.py --envs kitchen --q3c --checkpoint checkpoints/hpsearch/run_20260905T120802_f1f97348 --episodes 8 --clips 4 --param-overrides '{"inference_langevin_decay_power":2.0,"inference_langevin_delta_clip":0.5,"inference_langevin_iterations":50,"inference_langevin_lr_final":1e-05,"inference_langevin_lr_init":0.05,"inference_langevin_noise_scale":1.0}' --out results/env_videos_q3c_variety/kitchen_f1f97348
